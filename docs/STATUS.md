@@ -10,4 +10,6 @@ Fresh isolated native qualifications now observe the staging-team transition, bo
 
 The direct-port-forwarding friend handoff is experimental and separate. It has transport/source checks, not complete off-site native qualification.
 
+The Light Spinfusor moving-feel report was audited separately. Original assets and native client/server shots match a 135 m/s base speed with 100% forward and 0% lateral inheritance, including controlled 50 m/s character-motion tests. The moving-only feel report remains unclosed because this does not qualify off-site visual prediction. See [the bounded speed audit](LIGHT-SPINFUSOR-AUDIT.md). No production weapon settings changed.
+
 Maps: Damnation, HighOctane, Scarabrae, Stonehenge, Snowblind, Rollercoaster, SnowblindBlizzard, HighOctane2026, Damnation2026, Scarabrae2026, Stonehenge2026, Snowblind2026, SnowblindBlizzard2026, Rollercoaster2026, Torment, DangerousCrossing, Drydock, Katabatic, Wavemist, Hollow, Raindance, Moonrise.
