@@ -10,13 +10,22 @@ class MapDefinition:
     asset_group: str
     level: str
     shared_group: str | None = None
+    native: bool = False
 
     @property
     def package(self):
-        return '/Game/Maps/Community/'+self.asset_group+'/'+self.level
+        return ('/Game/Maps/Active/' if self.native else '/Game/Maps/Community/')+self.asset_group+'/'+self.level
 
 
 DEFINITIONS=(
+    MapDefinition('Torment','Torment','Torment','Arena_Torment_P',native=True),
+    MapDefinition('DangerousCrossing','Dangerous Crossing','DangerousCrossing','Arena_DangerousCrossing_P',native=True),
+    MapDefinition('Drydock','Drydock','Drydock','Arena_Drydock_P',native=True),
+    MapDefinition('Katabatic','Katabatic','Katabatic','Arena_Katabatic_P',native=True),
+    MapDefinition('Wavemist','Wavemist','Wavemist','Arena_Wavemist_P',native=True),
+    MapDefinition('Hollow','Hollow','Hollow','Arena_Hollow_P',native=True),
+    MapDefinition('Raindance','Raindance','Raindance','Arena_Raindance_P',native=True),
+    MapDefinition('Moonrise','Moonrise','Moonrise','Arena_Moonrise_P',native=True),
     MapDefinition('Stonehenge','Stonehenge','Stonehenge','Arena_Stonehenge_P'),
     MapDefinition('Snowblind','Snowblind (clear)','Snowblind','Arena_Snowblind_P'),
     MapDefinition('Rollercoaster','Rollercoaster','Rollercoaster','Arena_Rollercoaster_P'),

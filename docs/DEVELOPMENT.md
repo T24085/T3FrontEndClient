@@ -1,5 +1,7 @@
 # Development and releases
 
+Player downloads are published as complete GitHub Release assets. See [player release verification](PLAYER-RELEASES.md). Cooked assets remain outside Git history and travel with their exact versioned player package.
+
 Use Python 3.13. Install test dependencies with `python -m pip install -r requirements-dev.txt`. Run `python tools/check_source.py` and `python -m unittest discover -s . -p "test_*.py" -v`. These checks use synthetic data and loopback HTTP fixtures; they do not launch the original game.
 
 Clone the paired repository alongside this checkout. The modules listed in shared-contracts.json are intentionally duplicated while the projects are split. Change both copies and their contract hashes in coordinated commits, then run `python tools/check_source.py --peer ../T3BackEndServer`. Keep the direct-network adapter identical in both experimental folders as well.

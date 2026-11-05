@@ -116,6 +116,9 @@ def inventory(bundle):
     for name in maps:
         paths=groups[name]
         definition=BY_ID[name]
+        if definition.native:
+            if not runtime[name]: raise CompatibilityError('Native map runtime is missing: '+name)
+            continue
         prefix='content/Maps/Community/'+definition.asset_group+'/'+definition.level
         for required in (prefix+'.umap',prefix+'.uexp'):
             if required not in paths: raise CompatibilityError('Map inventory is incomplete: '+name)
