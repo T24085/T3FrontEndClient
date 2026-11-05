@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import zipfile
 from community_maps import declared_maps, options
-from build_dynamic_client import require_spectator_runtime
+from build_dynamic_client import require_spectator_runtime, copy_spectator_runtime
 
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / 'dynamic-client-development'
@@ -156,6 +156,7 @@ def main():
     # The entry has one canonical producer; desktop wrapping must not revive a
     # stale generated CLI from its otherwise verified content source.
     shutil.copyfile(ROOT/'client_entry.py', OUTPUT/'client.py')
+    copy_spectator_runtime(manifest, OUTPUT)
     shutil.copyfile(ROOT/'player_profile.py', OUTPUT/'player_profile.py')
     shutil.copyfile(PYTHON/'pythonw.exe',OUTPUT/'python/pythonw.exe')
     shutil.copytree(PYTHON/'Lib/tkinter',OUTPUT/'python/tkinter',ignore=shutil.ignore_patterns('__pycache__','*.pyc','test'))
@@ -204,7 +205,7 @@ options. Remote players and multiple populated matches still need testing.
 SPECTATING
 
 Open Live matches, select a match, then click Spectate.
-F5/F6 switch players. F7 selects first person; F8 selects third person.
+Spectating is first person only. F5/F6 switch players; F7 restores first person.
 Stop watching closes only your viewer. Keep Starter open while watching.
 The leader can disable spectators during lobby setup. Spectators have separate
 seats and do not join either team or count toward the player load-in countdown.

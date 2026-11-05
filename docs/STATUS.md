@@ -1,3 +1,9 @@
+# Current source changes
+
+2026-11-05: Spectating is limited to first person while third person remains incomplete. The viewer starts in first person, restores it after native perspective toggles, and keeps F5/F6 player switching and F7 first-person reset. F8 third-person selection is removed. Launcher help and generated playtest instructions match this policy. Dynamic and desktop builders now include the canonical spectator runtime when the verified input declares spectator support.
+
+Validation: all 95 discovered unit tests pass under Python 3.13.5, including seven Lua 5.4/candidate-building regression checks. The paired source check parses 57 Python sources and verifies ten shared contracts. Local Tk tests require TCL_LIBRARY and TK_LIBRARY to point at that interpreter's installed tcl8.6 and tk8.6 directories. This is source and synthetic candidate validation; a full player package, native in-game qualification, installed-client update and deployment have not been performed for this change. Existing session-recovery work is separate.
+
 # Baseline status
 
 Imported on 2026-11-04 from the existing community starter project and verified source inventories. The active source catalog contains 22 maps. This import does not rebuild packages, alter desktop shortcuts, restart services, or change a live game.

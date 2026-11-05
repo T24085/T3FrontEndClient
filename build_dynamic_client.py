@@ -31,6 +31,13 @@ def require_spectator_runtime(manifest, verified_files):
             raise ValueError('Source spectator contract is missing its runtime: ' + ', '.join(missing))
 
 
+def copy_spectator_runtime(manifest, output):
+    """Use current camera policy when wrapping a verified spectator package."""
+    if manifest.get('spectator_contract') == 'native-spectator-v1':
+        for name in SPECTATOR_RUNTIME_FILES:
+            shutil.copyfile(ROOT / name, output / name)
+
+
 def verified_source(source):
     manifest = json.loads((source / 'package-manifest.json').read_text(encoding='utf-8'))
     if manifest.get('startup_contract') != 'prepared-client-v1':
@@ -86,6 +93,7 @@ def build_candidate(source, output):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(original, target)
     shutil.copyfile(ROOT / 'client_entry.py', output / 'client.py')
+    copy_spectator_runtime(manifest, output)
     shutil.copyfile(ROOT / 'dynamic_destination.py', output / 'lib/dynamic_destination.py')
     for name in CANONICAL_HELPERS:
         shutil.copyfile(ROOT / name, output / name)
