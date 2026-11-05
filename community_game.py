@@ -306,10 +306,14 @@ class CommunityGame:
                     raise CommunityError('Game client status evidence is unavailable.')
             if self.status == 'stopping' and self.current_artifacts is not None and not self.cancellation_written:
                 self._request_cancel()
+            preparation=self.preparation_snapshot()
+            progress=PHASES.get(self.startup_phase) if self.status=='starting' else None
+            if self.status=='starting' and self.startup_phase=='preparing_client' and preparation['status']=='preparing':
+                progress=preparation['progress']
             return {'status':self.status, 'error':self.error, 'run':str(self.run) if self.run else None,
                     'role':self.role, 'watchId':self.watch_id,
-                    'progress':PHASES.get(self.startup_phase) if self.status == 'starting' else None,
-                    'preparation':self.preparation_snapshot()}
+                    'progress':progress,
+                    'preparation':preparation}
 
     def preparation_snapshot(self):
         with self.lock:
@@ -318,7 +322,15 @@ class CommunityGame:
                 log=self.preparation_artifacts/'owner/stdout.log'
                 if log.is_file():
                     if log.stat().st_size>1048576:raise CommunityError('Preparation output exceeded its bound.')
-                    progress=PHASES.get(observed_phase(log.read_text(errors='replace').splitlines()))
+                    lines=log.read_text(errors='replace').splitlines()
+                    progress=PHASES.get(observed_phase(lines))
+                    for line in reversed(lines):
+                        match=re.fullmatch(r'CLIENT_PREPARATION_PROGRESS\|([0-9]{1,5})/([0-9]{1,5})',line)
+                        if match:
+                            done,total=map(int,match.groups())
+                            if 0<=done<=total<=10000 and total>0:
+                                progress=f'Preparing game files: {done:,} / {total:,} files…'
+                                break
             return {'status':self.preparation_status,'error':self.preparation_error,
                     'progress':progress or ('Game files ready.' if self.preparation_status=='ready' else 'Preparing game files in the background…')}
 

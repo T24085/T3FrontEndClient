@@ -1,7 +1,7 @@
-"""Back up and replace only the three inventoried lobby-recovery modules."""
+"""Back up and replace inventoried recovery and preparation modules."""
 import argparse,datetime,hashlib,json,os,sys,uuid
 from pathlib import Path
-FILES={'client':('desktop_launcher.py','community_game.py','community_transport.py'),
+FILES={'client':('desktop_launcher.py','community_game.py','community_transport.py','client_preparation.py','bulk_asset_cache.py'),
        'server':('operator/lobby_controller.py','operator/lobby_http.py','operator/community_transport.py')}
 REVISION='lobby-recovery-20261105-r3'
 def sha(raw):return hashlib.sha256(raw).hexdigest()

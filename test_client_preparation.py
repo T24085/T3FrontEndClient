@@ -52,6 +52,37 @@ class ClientPreparationTest(unittest.TestCase):
   self.assertEqual((game/'Topaz/Content/Maps/map.uasset').read_bytes(),b'cooked-map')
   self.assertEqual((game/EXECUTABLE.parent/'ue4ss/runtime.dll').read_bytes(),b'runtime')
   self.assertFalse((run/'profile').exists());self.assertFalse(record['native_started']);self.assertFalse(record['profile_created'])
+ def test_private_copy_is_exclusive_and_never_a_hardlink(self):
+  source=self.source/EXECUTABLE;target=self.root/'private.exe'
+  client_preparation._copy_private(source,target)
+  self.assertEqual(target.read_bytes(),source.read_bytes());self.assertFalse(source.samefile(target))
+  target.write_bytes(b'keep existing owner')
+  with self.assertRaises(OSError):client_preparation._copy_private(source,target)
+  self.assertEqual(target.read_bytes(),b'keep existing owner')
+ def test_independent_bulk_jobs_overlap_and_publish_only_complete_outputs(self):
+  barrier=threading.Barrier(2);entered=[];guard=threading.Lock()
+  class ConcurrentCache(BulkStageCache):
+   def stage(cache,source,destination,**kwargs):
+    with guard:entered.append(Path(source).name)
+    barrier.wait(timeout=3)
+    return super().stage(source,destination,**kwargs)
+  descriptor=stage(self.package,self.source,self.workspace,self.package_manifest,self.original,self.source_ids,'fixture',catalog=self.catalog,
+                   emit=lambda _:None,patches=((4,'e8621439ff'),),cache_factory=lambda p:ConcurrentCache(p,filesystem_loader=lambda _:None,emit=lambda _:None))
+  record=self.claim(descriptor)
+  self.assertCountEqual(entered,['original.pak','map.uasset'])
+  self.assertEqual(record['bulk_stage']['private_copied_bytes'],len(b'original-pak')+len(b'cooked-map'))
+ def test_bulk_failure_waits_for_other_writers_and_never_publishes_a_descriptor(self):
+  release,finished=threading.Event(),threading.Event()
+  class FailingCache(BulkStageCache):
+   def stage(cache,source,destination,**kwargs):
+    if Path(source).name=='map.uasset':release.set();raise ValueError('bulk failure')
+    if not release.wait(3):raise AssertionError('other worker never ran')
+    result=super().stage(source,destination,**kwargs);finished.set();return result
+  with self.assertRaisesRegex(ValueError,'bulk failure'):
+   stage(self.package,self.source,self.workspace,self.package_manifest,self.original,self.source_ids,'fixture',catalog=self.catalog,
+         emit=lambda _:None,patches=((4,'e8621439ff'),),cache_factory=lambda p:FailingCache(p,filesystem_loader=lambda _:None,emit=lambda _:None))
+  self.assertTrue(finished.is_set());self.assertEqual(list(self.workspace.glob('client-*/prepared.json')),[])
+  self.assertEqual((self.source/EXECUTABLE).read_bytes(),b'EXE!'+bytes.fromhex('e8621439ff')+b'payload')
  def test_original_change_invalidates_ready_stage(self):
   descriptor=self.prepare();(self.source/EXECUTABLE).write_bytes(b'changed')
   with self.assertRaisesRegex(ValueError,'changed'):self.claim(descriptor)

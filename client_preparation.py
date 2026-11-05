@@ -7,6 +7,7 @@ input and output identities, and win an exclusive claim before using the files.
 Profiles and match destinations deliberately do not exist during preparation.
 """
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -58,6 +59,10 @@ def _write(path,record):
  with path.open('xb')as output:output.write(raw)
  return hashlib.sha256(raw).hexdigest()
 
+def _copy_private(source,destination):
+ """Copy mutable runtime bytes exclusively into a fresh private file."""
+ with destination.open('xb')as output,source.open('rb')as stream:shutil.copyfileobj(stream,output,1024*1024)
+
 def stage(root,source,workspace,package,original,original_identities,verification,*,catalog,
           emit=print,cache_factory=BulkStageCache,patches=PATCHES):
  """Stage exactly the verified inventories into a fresh private directory."""
@@ -72,13 +77,14 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
  game=run/'game';game.mkdir()
  emit('Session: '+str(run))
  cache=cache_factory(workspace/'asset-cache')
+ jobs=[]
  for item in original['files']:
   rel=_relative(item['path']);src=_member(source,item['path']);dst=game/rel
   if list(identity(src))!=source_ids[item['path']]:raise ValueError('Original changed during client preparation.')
   dst.parent.mkdir(parents=True,exist_ok=True)
   if rel==EXECUTABLE:
-   with dst.open('xb')as output,src.open('rb')as stream:shutil.copyfileobj(stream,output,1024*1024)
-  else:cache.stage(src,dst,expected_sha256=item['sha256'],expected_bytes=item['bytes'],expected_source_identity=source_ids[item['path']])
+   _copy_private(src,dst)
+  else:jobs.append((src,dst,item['sha256'],item['bytes'],source_ids[item['path']]))
  exe=game/EXECUTABLE
  if os.path.samefile(exe,source/EXECUTABLE)or digest(exe)!=original['executable_sha256']:
   raise ValueError('Private prepared executable verification failed.')
@@ -92,10 +98,19 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
   if name.startswith('runtime/'):
    src=_member(root,name);dst=game/REL/_relative(name[len('runtime/'):]);dst.parent.mkdir(parents=True,exist_ok=True)
    # Never overwrite a destination which might share original immutable bytes.
-   with dst.open('xb')as output,src.open('rb')as stream:shutil.copyfileobj(stream,output,1024*1024)
+   _copy_private(src,dst)
    if digest(dst)!=item['sha256']:raise ValueError('Prepared runtime copy differs: '+name)
   elif name.startswith('content/'):
-   cache.stage(_member(root,name),game/'Topaz/Content'/_relative(name[len('content/'):]),expected_sha256=item['sha256'],expected_bytes=item['bytes'])
+   jobs.append((_member(root,name),game/'Topaz/Content'/_relative(name[len('content/'):]),item['sha256'],item['bytes'],None))
+ def stage_bulk(job):
+  src,dst,expected,size,source_identity=job
+  cache.stage(src,dst,expected_sha256=expected,expected_bytes=size,expected_source_identity=source_identity)
+ # Bound metadata I/O to four workers. All work finishes (including on an
+ # error) before the original input/output guards can publish a descriptor.
+ emit('CLIENT_PREPARATION_PROGRESS|0/'+str(len(jobs)))
+ with ThreadPoolExecutor(max_workers=4,thread_name_prefix='client-file-stage')as pool:
+  for done,_ in enumerate(pool.map(stage_bulk,jobs),1):
+   if done%128==0 or done==len(jobs):emit('CLIENT_PREPARATION_PROGRESS|'+str(done)+'/'+str(len(jobs)))
  _check_stamps(root,package_ids);_check_stamps(source,source_ids)
  if digest(package_path)!=package_sha:raise ValueError('Package manifest changed during client preparation.')
  output_names=[path.relative_to(game).as_posix()for path in sorted(game.rglob('*'))if path.is_file()]
