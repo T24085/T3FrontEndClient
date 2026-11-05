@@ -1,0 +1,479 @@
+{
+  "import_date": "2026-11-04",
+  "role": "client",
+  "sources": [
+    {
+      "path": "apply_weapon_input_update.py",
+      "origin": "community-lobby-prototype/apply_weapon_input_update.py",
+      "original_sha256": "5f30be66cbf73e81ef6ebb4fe2fecdd09e1da5ef7e62afe4cb81190e360c66d5",
+      "sha256": "5f30be66cbf73e81ef6ebb4fe2fecdd09e1da5ef7e62afe4cb81190e360c66d5",
+      "bytes": 4425
+    },
+    {
+      "path": "build_desktop_client.py",
+      "origin": "community-lobby-prototype/build_desktop_client.py",
+      "original_sha256": "77dd7b8da627a3f21d5b9e9d6893a186ba0b86c076ffd53dabfca607dc052094",
+      "sha256": "d988d76deb625ecf8276f42ba36e48f1df69366498ee8c45793b24f11b07e7c0",
+      "bytes": 13237
+    },
+    {
+      "path": "build_dynamic_client.py",
+      "origin": "community-lobby-prototype/build_dynamic_client.py",
+      "original_sha256": "664c616aaf2e0a1060830a45dc605e88f5c9c2039eed70b4258a07a1b6d509fd",
+      "sha256": "2238dddbbb8e683bb8db8a5738d6f98b00b1238188756d8ee3ff8dcdc0d9765b",
+      "bytes": 6106
+    },
+    {
+      "path": "build_linux_client.py",
+      "origin": "community-lobby-prototype/build_linux_client.py",
+      "original_sha256": "a5a41c3bc185d2c27e8ae8b40af8aeaa2a8f9a446adfb88304ed9f2c614ebf8b",
+      "sha256": "a5a41c3bc185d2c27e8ae8b40af8aeaa2a8f9a446adfb88304ed9f2c614ebf8b",
+      "bytes": 8231
+    },
+    {
+      "path": "bulk_asset_cache.py",
+      "origin": "community-lobby-prototype/bulk_asset_cache.py",
+      "original_sha256": "9f46c25c5c89ec3495b7d4686d56f293f4da53cf7c18bc90a19372fe47dc6b18",
+      "sha256": "9f46c25c5c89ec3495b7d4686d56f293f4da53cf7c18bc90a19372fe47dc6b18",
+      "bytes": 12526
+    },
+    {
+      "path": "bulk_verification_receipts.py",
+      "origin": "community-lobby-prototype/bulk_verification_receipts.py",
+      "original_sha256": "5cc957b393b036755527352abb42a0479184673ea888070d2aee30ebbf514be2",
+      "sha256": "5cc957b393b036755527352abb42a0479184673ea888070d2aee30ebbf514be2",
+      "bytes": 4831
+    },
+    {
+      "path": "client_bootstrap.py",
+      "origin": "community-lobby-prototype/client_bootstrap.py",
+      "original_sha256": "ddd43998141b6b4b0222d7d9037ce979d09b9387857e485f7a31710f2b045027",
+      "sha256": "ddd43998141b6b4b0222d7d9037ce979d09b9387857e485f7a31710f2b045027",
+      "bytes": 1473
+    },
+    {
+      "path": "client_entry.py",
+      "origin": "community-lobby-prototype/client_entry.py",
+      "original_sha256": "2e78fdd54e0f7593640266929f8f748c138091d24495edbee2f4da1042683190",
+      "sha256": "dd776fe392430bbe8b87bd097cbf38b0c18efff16435b3142dc2a3e7956c4442",
+      "bytes": 12513
+    },
+    {
+      "path": "client_preparation.py",
+      "origin": "community-lobby-prototype/client_preparation.py",
+      "original_sha256": "0244ea44c6d46ccbdb2cda00151efb5a62fffc8a90e8118a1384a96503be5a1a",
+      "sha256": "0244ea44c6d46ccbdb2cda00151efb5a62fffc8a90e8118a1384a96503be5a1a",
+      "bytes": 8965
+    },
+    {
+      "path": "community_game.py",
+      "origin": "community-lobby-prototype/community_game.py",
+      "original_sha256": "c4f147559b9e27318b8d59a6724f84936200494e30170b4e3962b65fd6d928b4",
+      "sha256": "d034ad3ceefa99dc004464f7aba7f4e2b0465fccfd73f13c5d50e783492e636e",
+      "bytes": 19492
+    },
+    {
+      "path": "community_maps.py",
+      "origin": "community-lobby-prototype/community_maps.py",
+      "original_sha256": "e22fc4e95f2c91c4e69164609e9b1e6c816183635f78b0f373a23f9665abab44",
+      "sha256": "c01908869006b4b0a9be73cb5c4f9dad0acced2f9733c52de9468273234f0cc7",
+      "bytes": 3478
+    },
+    {
+      "path": "community_transport.py",
+      "origin": "community-lobby-prototype/community_transport.py",
+      "original_sha256": "940f6750bfda985947216a85a9c28a4b3e416284ed7299c3efd33194eb56d49e",
+      "sha256": "940f6750bfda985947216a85a9c28a4b3e416284ed7299c3efd33194eb56d49e",
+      "bytes": 13487
+    },
+    {
+      "path": "compare_map_packages.py",
+      "origin": "community-lobby-prototype/compare_map_packages.py",
+      "original_sha256": "0290ab6415b59b10cc7df0c1647ebfb4155c64291b1917fd36e24c95eca662e4",
+      "sha256": "0290ab6415b59b10cc7df0c1647ebfb4155c64291b1917fd36e24c95eca662e4",
+      "bytes": 8294
+    },
+    {
+      "path": "desktop_launcher.py",
+      "origin": "community-lobby-prototype/desktop_launcher.py",
+      "original_sha256": "3b83376d4f98415b1631d4b475b7199adcec82851eb99f04e827d7b079f8653f",
+      "sha256": "9fb7d6b0548cb05707d9c6e71bbf86488b15a30255da08bc94efd9cbf09141b2",
+      "bytes": 30113
+    },
+    {
+      "path": "dynamic_destination.py",
+      "origin": "community-lobby-prototype/dynamic_destination.py",
+      "original_sha256": "270127b6e15ab2bcc848f48102cd4af1f67fd6422834bc392a6432e7dc638f55",
+      "sha256": "270127b6e15ab2bcc848f48102cd4af1f67fd6422834bc392a6432e7dc638f55",
+      "bytes": 2057
+    },
+    {
+      "path": "linux_launcher.py",
+      "origin": "community-lobby-prototype/linux_launcher.py",
+      "original_sha256": "3c77c1c6ebbd557fd488448ba544372d2923e6633ca26a61dfd6bd0e0fe73cb2",
+      "sha256": "3c77c1c6ebbd557fd488448ba544372d2923e6633ca26a61dfd6bd0e0fe73cb2",
+      "bytes": 11657
+    },
+    {
+      "path": "map_catalog.py",
+      "origin": "community-lobby-prototype/map_catalog.py",
+      "original_sha256": "029737f3abc3f992858ea54cdb93c27590cc05a155e6bc45dd883c2ead706f59",
+      "sha256": "029737f3abc3f992858ea54cdb93c27590cc05a155e6bc45dd883c2ead706f59",
+      "bytes": 840
+    },
+    {
+      "path": "player_names.py",
+      "origin": "community-lobby-prototype/player_names.py",
+      "original_sha256": "cd8667b6f015bcf12de9f9053e00bcc168d6e2b8bcbc8072bb60fe7ee2b18ea4",
+      "sha256": "cd8667b6f015bcf12de9f9053e00bcc168d6e2b8bcbc8072bb60fe7ee2b18ea4",
+      "bytes": 718
+    },
+    {
+      "path": "player_profile.py",
+      "origin": "community-lobby-prototype/player_profile.py",
+      "original_sha256": "d4369ac2f8b43d428c6fa53233695883a42c39f33674956b5564da48e915148c",
+      "sha256": "d4369ac2f8b43d428c6fa53233695883a42c39f33674956b5564da48e915148c",
+      "bytes": 18934
+    },
+    {
+      "path": "runtime_health.py",
+      "origin": "community-lobby-prototype/runtime_health.py",
+      "original_sha256": "21adc28862107eebd582062ffb4fec6a8320e00357e53c75e3df3c9166946f1e",
+      "sha256": "c06dda6c9789f94e1347e762f6c3d909775780d19633f98db2f893d5968e8e8c",
+      "bytes": 470
+    },
+    {
+      "path": "startup_paths.py",
+      "origin": "community-lobby-prototype/startup_paths.py",
+      "original_sha256": "309d4317919ca248a64f8699f720089aa4fe81cd76a12172ac8e76711e69c13c",
+      "sha256": "e81fc90f48c404ab794c49dc64e3630be1afe6f5431e03b911a089d97f91fc94",
+      "bytes": 2701
+    },
+    {
+      "path": "startup_progress.py",
+      "origin": "community-lobby-prototype/startup_progress.py",
+      "original_sha256": "85a96e7f48a25d30c2107d658bde8348724bea2fdb1a7ce1ef1dbd4978651191",
+      "sha256": "50ff5da65697efc053cb690550137320a12f1731dc7c7a0af447306bb0551175",
+      "bytes": 2976
+    },
+    {
+      "path": "startup_timing.py",
+      "origin": "community-lobby-prototype/startup_timing.py",
+      "original_sha256": "04623e10c90cfa0380f46e77df7d685c28fa95cc89a5860ef35949f2ac2ab209",
+      "sha256": "04623e10c90cfa0380f46e77df7d685c28fa95cc89a5860ef35949f2ac2ab209",
+      "bytes": 2179
+    },
+    {
+      "path": "steam_identity.py",
+      "origin": "community-lobby-prototype/steam_identity.py",
+      "original_sha256": "a0e2352bde28557d70b8ce929a1b6dd1a9240b5fb23d77328c7c5b3ba3e44b84",
+      "sha256": "a0e2352bde28557d70b8ce929a1b6dd1a9240b5fb23d77328c7c5b3ba3e44b84",
+      "bytes": 4817
+    },
+    {
+      "path": "test_bulk_verification_receipts.py",
+      "origin": "community-lobby-prototype/test_bulk_verification_receipts.py",
+      "original_sha256": "ca45573f3de5c1968bdd8a04eecfda111a7398b456c42f0fda1551b2a76f580a",
+      "sha256": "ca45573f3de5c1968bdd8a04eecfda111a7398b456c42f0fda1551b2a76f580a",
+      "bytes": 6604
+    },
+    {
+      "path": "test_client_preparation.py",
+      "origin": "community-lobby-prototype/test_client_preparation.py",
+      "original_sha256": "599b8079e1a107b0c8b10a9dc49a93908756fad15a7bdb5ad55893929a4ef3cc",
+      "sha256": "39180e51c5eeea9477251d8f277e5be4065fb0955c4d1a8b92d9dff2b43940b0",
+      "bytes": 8744
+    },
+    {
+      "path": "test_community_game.py",
+      "origin": "community-lobby-prototype/test_community_game.py",
+      "original_sha256": "67dfbea78b36f0af81525583703e6dfe4a8d5b6bb3700ae15f61614db887446c",
+      "sha256": "ff4120577466aeb4bd797b6b6940e01d97ae505f963fe8c1614f46fdb20450c4",
+      "bytes": 9353
+    },
+    {
+      "path": "test_community_preparation.py",
+      "origin": "community-lobby-prototype/test_community_preparation.py",
+      "original_sha256": "d03f70c635cd0f43fe10210e0e1a12daa31fbd96d49bc7f5defbf85bac62dd07",
+      "sha256": "d03f70c635cd0f43fe10210e0e1a12daa31fbd96d49bc7f5defbf85bac62dd07",
+      "bytes": 4832
+    },
+    {
+      "path": "test_dynamic_destination.py",
+      "origin": "community-lobby-prototype/test_dynamic_destination.py",
+      "original_sha256": "447b771dc9c6630e5b2b998df4eabd334d3e212d9b6ad64c6362d8403a25735c",
+      "sha256": "447b771dc9c6630e5b2b998df4eabd334d3e212d9b6ad64c6362d8403a25735c",
+      "bytes": 1552
+    },
+    {
+      "path": "test_player_names.py",
+      "origin": "community-lobby-prototype/test_player_names.py",
+      "original_sha256": "59ac810b5a2195f140d7735ff459a54a2d910f2e7abc21d1004769b9e20d0818",
+      "sha256": "59ac810b5a2195f140d7735ff459a54a2d910f2e7abc21d1004769b9e20d0818",
+      "bytes": 678
+    },
+    {
+      "path": "test_runtime_health.py",
+      "origin": "community-lobby-prototype/test_runtime_health.py",
+      "original_sha256": "6480d016ba5ab4560a042a6c4e078324ae3991d6bb59f56da5c0cfe105a1fc6e",
+      "sha256": "91008d33c904b37ab0ff48d7e93fcee01d881fc4b790e9784eeea1c80e11b02c",
+      "bytes": 885
+    },
+    {
+      "path": "test_spectator_game.py",
+      "origin": "community-lobby-prototype/test_spectator_game.py",
+      "original_sha256": "02c678eda80d3327d034d3f97df25c9417758f069b22252b760b397c180611e8",
+      "sha256": "6aad1801c1d3b99aeb118ea5d4debb03c7f1a813dfa8fe57b15a85e7280e110e",
+      "bytes": 8011
+    },
+    {
+      "path": "test_startup_paths.py",
+      "origin": "community-lobby-prototype/test_startup_paths.py",
+      "original_sha256": "27259643607b7c1c06b85d18d9285d807d2f4ba5202b33d32dcd95d10b5f9e9e",
+      "sha256": "27259643607b7c1c06b85d18d9285d807d2f4ba5202b33d32dcd95d10b5f9e9e",
+      "bytes": 2037
+    },
+    {
+      "path": "test_steam_identity.py",
+      "origin": "community-lobby-prototype/test_steam_identity.py",
+      "original_sha256": "c33980c9bea161654740983e6c0661c1fb63b7224aed2e79b46ef069994a4bdd",
+      "sha256": "c33980c9bea161654740983e6c0661c1fb63b7224aed2e79b46ef069994a4bdd",
+      "bytes": 3649
+    },
+    {
+      "path": "verified_file_cache.py",
+      "origin": "community-lobby-prototype/verified_file_cache.py",
+      "original_sha256": "9b535ed03a33d32ab8eff54fb3fd4ac890632b43799edfe42b5201d479e84e49",
+      "sha256": "9b535ed03a33d32ab8eff54fb3fd4ac890632b43799edfe42b5201d479e84e49",
+      "bytes": 7772
+    },
+    {
+      "path": "community_starter.pyw",
+      "origin": "community-lobby-prototype/community_starter.pyw",
+      "original_sha256": "0e307a67bf18b5625091db0efe0353dc8d101cee8846888035aa47f4cbf7ce3e",
+      "sha256": "b4c74ea102b0867593e20727dc9f2a9e9c9e132d0611d013fa07936656496686",
+      "bytes": 1633
+    },
+    {
+      "path": "linux_bootstrap.pyw",
+      "origin": "community-lobby-prototype/linux_bootstrap.pyw",
+      "original_sha256": "f98d0238b5070e46641612b2034a88cc6ef4b3111071923ded59a8999dde2a26",
+      "sha256": "f98d0238b5070e46641612b2034a88cc6ef4b3111071923ded59a8999dde2a26",
+      "bytes": 4902
+    },
+    {
+      "path": "README-Linux.txt",
+      "origin": "community-lobby-prototype/README-Linux.txt",
+      "original_sha256": "900723d7661d49832c873c48e4184c66c9c525cb5643af425230dc65a0f4fa9e",
+      "sha256": "900723d7661d49832c873c48e4184c66c9c525cb5643af425230dc65a0f4fa9e",
+      "bytes": 4165
+    },
+    {
+      "path": "lib/client_support.py",
+      "origin": "installed-client/lib/client_support.py",
+      "original_sha256": "2275d4fa7fdbfac3cec9209bfb65a60581ecdf3490c89c93c2186809e1f14829",
+      "sha256": "2275d4fa7fdbfac3cec9209bfb65a60581ecdf3490c89c93c2186809e1f14829",
+      "bytes": 5002
+    },
+    {
+      "path": "lib/community_maps.py",
+      "origin": "installed-client/lib/community_maps.py",
+      "original_sha256": "abcf729ce9159bdb0c3f455e926c5869b759d67ff25d10e43612d7f6e4e3a81a",
+      "sha256": "abcf729ce9159bdb0c3f455e926c5869b759d67ff25d10e43612d7f6e4e3a81a",
+      "bytes": 4247
+    },
+    {
+      "path": "lib/compare_map_packages.py",
+      "origin": "installed-client/lib/compare_map_packages.py",
+      "original_sha256": "6865bf7a951512503868c2a1e27e203ca3fb839591c6386c6bc5b44c99c83a2f",
+      "sha256": "6865bf7a951512503868c2a1e27e203ca3fb839591c6386c6bc5b44c99c83a2f",
+      "bytes": 8444
+    },
+    {
+      "path": "lib/dynamic_destination.py",
+      "origin": "installed-client/lib/dynamic_destination.py",
+      "original_sha256": "270127b6e15ab2bcc848f48102cd4af1f67fd6422834bc392a6432e7dc638f55",
+      "sha256": "270127b6e15ab2bcc848f48102cd4af1f67fd6422834bc392a6432e7dc638f55",
+      "bytes": 2057
+    },
+    {
+      "path": "lib/local_http_proxy.py",
+      "origin": "installed-client/lib/local_http_proxy.py",
+      "original_sha256": "b45096a0bad4ef7af2e6a2c6ec701320218a1ad9fbaf9997bf76f31d2e4a6509",
+      "sha256": "b45096a0bad4ef7af2e6a2c6ec701320218a1ad9fbaf9997bf76f31d2e4a6509",
+      "bytes": 1361
+    },
+    {
+      "path": "lib/owned_native_session.py",
+      "origin": "installed-client/lib/owned_native_session.py",
+      "original_sha256": "224da20b83e6eb3418382d793e33e381de1062f3d90331824f63844a1dbc1109",
+      "sha256": "541b375e404ea0f2f17057034d2f1cba20fd4785aa66f8623f232ef68c20a353",
+      "bytes": 9223
+    },
+    {
+      "path": "lua/client.lua",
+      "origin": "installed-client/lua/client.lua",
+      "original_sha256": "daf01e9ab75df816c2d92ce50ce0b5d4b823b7a88102ba83774b7ead4d87668b",
+      "sha256": "daf01e9ab75df816c2d92ce50ce0b5d4b823b7a88102ba83774b7ead4d87668b",
+      "bytes": 35049
+    },
+    {
+      "path": "lua/community_maps.lua",
+      "origin": "installed-client/lua/community_maps.lua",
+      "original_sha256": "55d953edf12b169aa54350dd88bc383abd73339b7803390e0ae863a40837825b",
+      "sha256": "55d953edf12b169aa54350dd88bc383abd73339b7803390e0ae863a40837825b",
+      "bytes": 59036
+    },
+    {
+      "path": "lua/flag_markers.lua",
+      "origin": "installed-client/lua/flag_markers.lua",
+      "original_sha256": "38b30a081d95246f69212179ad7caa9536856dcb2851832821970d7b258a6d0c",
+      "sha256": "38b30a081d95246f69212179ad7caa9536856dcb2851832821970d7b258a6d0c",
+      "bytes": 1529
+    },
+    {
+      "path": "lua/flag_projection.lua",
+      "origin": "installed-client/lua/flag_projection.lua",
+      "original_sha256": "5320a23dcfd989f00fbeadec4b12025a6da8cb7ca550ab0ccd3d7f5f252e72c4",
+      "sha256": "5320a23dcfd989f00fbeadec4b12025a6da8cb7ca550ab0ccd3d7f5f252e72c4",
+      "bytes": 2206
+    },
+    {
+      "path": "lua/geometry_runtime.lua",
+      "origin": "installed-client/lua/geometry_runtime.lua",
+      "original_sha256": "6423ac9babe6f122f44e49c82a917cc7ec68267e4c765fe73f4f404abeb1be89",
+      "sha256": "6423ac9babe6f122f44e49c82a917cc7ec68267e4c765fe73f4f404abeb1be89",
+      "bytes": 9842
+    },
+    {
+      "path": "lua/jetpack_input.lua",
+      "origin": "installed-client/lua/jetpack_input.lua",
+      "original_sha256": "b486d30c14e71afed59a3395602ea524077b612afa9921f45fcc60352dc0c701",
+      "sha256": "b486d30c14e71afed59a3395602ea524077b612afa9921f45fcc60352dc0c701",
+      "bytes": 2432
+    },
+    {
+      "path": "lua/level_settings.lua",
+      "origin": "installed-client/lua/level_settings.lua",
+      "original_sha256": "f929269f8d74b822f83cb9c8938b43ca03fc7a82250660b9fa1a60ed89fda766",
+      "sha256": "ded9df1e11dd9695419efe9f0d7247379c3c1e58642fb601231f4e388f1f4ed6",
+      "bytes": 100
+    },
+    {
+      "path": "lua/snowblind_weather.lua",
+      "origin": "installed-client/lua/snowblind_weather.lua",
+      "original_sha256": "1e65d160c201fc7ff26b56266ab2c13b5741a5dd277d4d15e7959126004df217",
+      "sha256": "b4d6e764e071a6e2bacab9e287c98cecd37583282a1bb104579c44250e0e735e",
+      "bytes": 7434
+    },
+    {
+      "path": "lua/spectator_client.lua",
+      "origin": "installed-client/lua/spectator_client.lua",
+      "original_sha256": "e8af1045345325b3d59bc9e0834afecdfaaf83febb532ed6f8cef1a1173de869",
+      "sha256": "e8af1045345325b3d59bc9e0834afecdfaaf83febb532ed6f8cef1a1173de869",
+      "bytes": 17217
+    },
+    {
+      "path": "lua/spectator_materials.lua",
+      "origin": "installed-client/lua/spectator_materials.lua",
+      "original_sha256": "abf6b61443083649107538dac3807306e7f3a3a08058af3a808cb9f19d02c4c6",
+      "sha256": "c140b6c9ee63167642060c68c502843e26ee38d56e87ea97eb4567dd15c04903",
+      "bytes": 14907
+    },
+    {
+      "path": "client_support.py",
+      "origin": "installed-client/lib/client_support.py",
+      "original_sha256": "2275d4fa7fdbfac3cec9209bfb65a60581ecdf3490c89c93c2186809e1f14829",
+      "sha256": "a973ad110a94cdfbe871f889bd6667208ec792673c3d45adb61c44df921ec8e1",
+      "bytes": 4995,
+      "adaptation": "Root support module resolves this source checkout; packaged lib support is unchanged."
+    },
+    {
+      "path": "local_http_proxy.py",
+      "origin": "installed-client/lib/local_http_proxy.py",
+      "original_sha256": "b45096a0bad4ef7af2e6a2c6ec701320218a1ad9fbaf9997bf76f31d2e4a6509",
+      "sha256": "b45096a0bad4ef7af2e6a2c6ec701320218a1ad9fbaf9997bf76f31d2e4a6509",
+      "bytes": 1361
+    },
+    {
+      "path": "owned_native_session.py",
+      "origin": "installed-client/lib/owned_native_session.py",
+      "original_sha256": "224da20b83e6eb3418382d793e33e381de1062f3d90331824f63844a1dbc1109",
+      "sha256": "541b375e404ea0f2f17057034d2f1cba20fd4785aa66f8623f232ef68c20a353",
+      "bytes": 9223
+    },
+    {
+      "path": "runtime-fixes/flag_markers.lua",
+      "origin": "community-lobby-prototype/runtime-fixes/flag_markers.lua",
+      "original_sha256": "38b30a081d95246f69212179ad7caa9536856dcb2851832821970d7b258a6d0c",
+      "sha256": "38b30a081d95246f69212179ad7caa9536856dcb2851832821970d7b258a6d0c",
+      "bytes": 1529
+    },
+    {
+      "path": "runtime-fixes/flag_projection.lua",
+      "origin": "community-lobby-prototype/runtime-fixes/flag_projection.lua",
+      "original_sha256": "5320a23dcfd989f00fbeadec4b12025a6da8cb7ca550ab0ccd3d7f5f252e72c4",
+      "sha256": "5320a23dcfd989f00fbeadec4b12025a6da8cb7ca550ab0ccd3d7f5f252e72c4",
+      "bytes": 2206
+    },
+    {
+      "path": "runtime-fixes/snowblind_weather.lua",
+      "origin": "community-lobby-prototype/runtime-fixes/snowblind_weather.lua",
+      "original_sha256": "37745bea277504d4cd98bb46f5f43bdb3c092e016fc832b7cf926624b157f2ff",
+      "sha256": "37745bea277504d4cd98bb46f5f43bdb3c092e016fc832b7cf926624b157f2ff",
+      "bytes": 3354
+    },
+    {
+      "path": "runtime-fixes/spectator_client.lua",
+      "origin": "community-lobby-prototype/runtime-fixes/spectator_client.lua",
+      "original_sha256": "e8af1045345325b3d59bc9e0834afecdfaaf83febb532ed6f8cef1a1173de869",
+      "sha256": "e8af1045345325b3d59bc9e0834afecdfaaf83febb532ed6f8cef1a1173de869",
+      "bytes": 17217
+    },
+    {
+      "path": "runtime-fixes/spectator_materials.lua",
+      "origin": "community-lobby-prototype/runtime-fixes/spectator_materials.lua",
+      "original_sha256": "abf6b61443083649107538dac3807306e7f3a3a08058af3a808cb9f19d02c4c6",
+      "sha256": "c140b6c9ee63167642060c68c502843e26ee38d56e87ea97eb4567dd15c04903",
+      "bytes": 14907
+    },
+    {
+      "path": "runtime-fixes/weapon_input.lua",
+      "origin": "community-lobby-prototype/runtime-fixes/weapon_input.lua",
+      "original_sha256": "816a2c97f0ca5be92b4072752aeea2049c45c816d405743fa4b2aa1980f0feeb",
+      "sha256": "816a2c97f0ca5be92b4072752aeea2049c45c816d405743fa4b2aa1980f0feeb",
+      "bytes": 5460
+    },
+    {
+      "path": "third-party-notices/Python-3.13.14-LICENSE.txt",
+      "origin": "community-lobby-prototype/third-party-notices/Python-3.13.14-LICENSE.txt",
+      "original_sha256": "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb",
+      "sha256": "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb",
+      "bytes": 13809
+    },
+    {
+      "path": "third-party-notices/zlib-1.3.1-LICENSE.txt",
+      "origin": "community-lobby-prototype/third-party-notices/zlib-1.3.1-LICENSE.txt",
+      "original_sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
+      "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
+      "bytes": 1002
+    },
+    {
+      "path": "experimental/direct-hosting/src/direct_network.py",
+      "origin": "friend-hosting-direct/src/direct_network.py",
+      "original_sha256": "181114848d71302f3c95c5611dc4194a8c05874128586a043d20cac2cb237a5b",
+      "sha256": "181114848d71302f3c95c5611dc4194a8c05874128586a043d20cac2cb237a5b",
+      "bytes": 11789
+    },
+    {
+      "path": "experimental/direct-hosting/src/direct_client.py",
+      "origin": "friend-hosting-direct/src/direct_client.py",
+      "original_sha256": "077aaff72ab69bc5842b18e332088677d5704932cb52c373194258cb0491ec1d",
+      "sha256": "077aaff72ab69bc5842b18e332088677d5704932cb52c373194258cb0491ec1d",
+      "bytes": 6388
+    }
+  ],
+  "copied_as_source_only": true,
+  "original_game_included": false,
+  "deployed_by_import": false
+}

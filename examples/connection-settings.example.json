@@ -1,0 +1,5 @@
+{
+  "hostname": "server.example.ts.net",
+  "port": 18443,
+  "server_address": "100.101.102.103"
+}
