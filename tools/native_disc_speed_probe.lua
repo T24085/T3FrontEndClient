@@ -1,8 +1,9 @@
 -- Isolated normal-input diagnostic. Never writes a projectile or weapon stat.
 return function(env)
  local valid,scope,signature,report=assert(env.valid),assert(env.scope),assert(env.signature),assert(env.report)
- local role=assert(env.role);local world,pc,pawn,asc;local readyAt;local stopped=false;local hooks={};local count=0;local taps=0;local movingCount=0;local lastTap
+ local role=assert(env.role);local world,pc,pawn,asc;local readyAt;local stopped=false;local hooks={};local count=0;local taps=0;local movingCount=0;local lastTap;local forwardScheduled=false;local lateralScheduled=false;local lastObserved
  local path='/Game/Topaz/Abilities/Weapons/LightSpinfusor/BP_Projectile_Topaz_LightSpinfusor.BP_Projectile_Topaz_LightSpinfusor_C'
+ local defaultsInspected=false
  local clock=StaticFindObject('/Script/Engine.Default__GameplayStatics')
  signature('/Script/Engine.GameplayStatics:GetTimeSeconds',{{'WorldContextObject','ObjectProperty',0},{'ReturnValue','DoubleProperty',8}})
  local function same(a,b)return valid(a)and valid(b)and a:GetAddress()==b:GetAddress()end
@@ -39,25 +40,23 @@ return function(env)
   if not valid(actor)or not same(actor:GetWorld(),world)or actor:GetClass():GetFullName()~='BlueprintGeneratedClass '..path then return end
   local source=actor.Instigator;if not valid(source)then return end
   local movement=actor.ProjectileMovement;assert(valid(movement),'disc_movement_required')
-  count=count+1;assert(count<=32,'disc_projectile_bound')
+  count=count+1;lastObserved=now();assert(count<=32,'disc_projectile_bound')
   local id=actor:GetFullName()..'@'..actor:GetAddress();local start=now();local pos=actor:K2_GetActorLocation();local v=movement.Velocity
   if magnitude(source:GetVelocity())>1000 then movingCount=movingCount+1 end
   emit('PROJECTILE','id='..id..'|authority='..tostring(actor:HasAuthority())..'|initial='..movement.InitialSpeed..'|max='..movement.MaxSpeed..'|gravity='..movement.ProjectileGravityScale..'|velocity='..vector(v)..'|speed='..magnitude(v)..'|sourceVelocity='..vector(source:GetVelocity())..'|position='..vector(pos))
-  if count==1 then
-   properties(actor,'projectile');properties(movement,'movement')
-   local cdo=StaticFindObject(path:gsub('%.BP_Projectile_Topaz_LightSpinfusor_C$','.Default__BP_Projectile_Topaz_LightSpinfusor_C'))
-   assert(valid(cdo)and valid(cdo.ProjectileMovement),'disc_original_defaults_required')
-   emit('DEFAULTS','initial='..cdo.ProjectileMovement.InitialSpeed..'|max='..cdo.ProjectileMovement.MaxSpeed..'|forward='..cdo.InheritForwardVelocityPercent..'|lateral='..cdo.InheritLateralVelocityPercent)
-  end
-  if role=='host'and(count==3 or count==4)then
-   local forward=count==3
+  local visualForward=env.visual_fixture and not forwardScheduled
+  local visualLateral=env.visual_fixture and forwardScheduled and not lateralScheduled and source:GetVelocity().X>1000
+  if role=='host'and(visualForward or visualLateral or(not env.visual_fixture and(count==3 or count==4)))then
+   local forward=env.visual_fixture and visualForward or(not env.visual_fixture and count==3)
+   if forward then forwardScheduled=true else lateralScheduled=true end
    later(3000,function()
     assert(valid(source)and same(source:GetWorld(),world)and valid(source.Controller)and same(source.Controller.Pawn,source),'disc_motion_fixture_original_owner_required')
     signature('/Script/Engine.Character:LaunchCharacter',{{'LaunchVelocity','StructProperty',0},{'bXYOverride','BoolProperty',24},{'bZOverride','BoolProperty',25}})
     if forward then
      signature('/Script/Engine.Actor:K2_TeleportTo',{{'DestLocation','StructProperty',0},{'DestRotation','StructProperty',24},{'ReturnValue','BoolProperty',48}})
      local at=source:K2_GetActorLocation()
-     assert(source:K2_TeleportTo({X=at.X,Y=at.Y,Z=at.Z+30000},{Pitch=0,Yaw=0,Roll=0}),'disc_private_airborne_fixture_required')
+     local height=env.manual_visual_fixture and 100000 or 30000
+     assert(source:K2_TeleportTo({X=at.X,Y=at.Y,Z=at.Z+height},{Pitch=0,Yaw=0,Roll=0}),'disc_private_airborne_fixture_required')
     end
     source:LaunchCharacter({X=forward and 5000 or 0,Y=forward and 0 or 5000,Z=0},true,true)
     emit('MOTION_SETUP','axis='..(forward and'forward'or'lateral')..'|requestedSpeed=5000|projectileWrites=false')
@@ -87,11 +86,27 @@ return function(env)
  local function pulse()
   assert(same(pc.Pawn,pawn)and same(pawn:GetWorld(),world)and same(pawn.AbilitySystemComponent,asc),'disc_probe_original_owner_changed')
   local elapsed=now()-readyAt
+  if env.manual_visual_fixture then
+   if count>=3 and movingCount>=2 and lastObserved and now()-lastObserved>=.5 then
+    for _,h in ipairs(hooks)do UnregisterHook(h[1],h[2],h[3])end
+    emit('COMPLETE','manualInput=true|projectiles='..count..'|movingProjectiles='..movingCount..'|projectileWrites=false');stopped=true;return
+   end
+   assert(elapsed<180,'disc_manual_input_observation_timeout');later(25,pulse);return
+  end
   -- The isolated authoritative host launches this one original character after
   -- the third/fourth shots. Normal native character physics and networking run;
   -- no projectile or weapon property is assigned by this diagnostic.
   local velocity=pawn:GetVelocity();local at={2,5,8}
-  if stage<3 and elapsed>=at[stage+1]then stage=stage+1;tap('stationary'..stage)
+  if env.visual_fixture then
+   if stage==0 and elapsed>=3 then stage=1;tap('stationary_visual')
+   elseif stage==1 and velocity.X>1000 and now()-lastTap>=2 then stage=2;tap('moving_forward')
+   elseif stage==2 and velocity.Y>1000 and now()-lastTap>=2 then stage=3;tap('moving_lateral')end
+   if elapsed<20 then later(25,pulse);return end
+   if pressed then asc:ReleaseInputID(5);pressed=false end
+   assert(taps==3 and count>=3 and movingCount>=2,'disc_visual_fixture_requires_actual_motion')
+   for _,h in ipairs(hooks)do UnregisterHook(h[1],h[2],h[3])end
+   emit('COMPLETE','taps='..taps..'|projectiles='..count..'|movingProjectiles='..movingCount..'|visualFixture=true|projectileWrites=false');stopped=true;return
+  elseif stage<3 and elapsed>=at[stage+1]then stage=stage+1;tap('stationary'..stage)
   elseif stage==3 and velocity.X>1000 and now()-lastTap>=2 then stage=4;tap('moving_forward')
   elseif stage==4 and velocity.Y>1000 and now()-lastTap>=2 then stage=5;tap('moving_lateral')
   elseif elapsed>=20 then
@@ -105,6 +120,14 @@ return function(env)
  return function(context)
   if stopped then return end
   scope();world=context:GetWorld()
+  if not defaultsInspected then
+   local cdo=StaticFindObject(path:gsub('%.BP_Projectile_Topaz_LightSpinfusor_C$','.Default__BP_Projectile_Topaz_LightSpinfusor_C'))
+   if valid(cdo)and valid(cdo.ProjectileMovement)then
+    properties(cdo,'projectile');properties(cdo.ProjectileMovement,'movement')
+    emit('DEFAULTS','initial='..cdo.ProjectileMovement.InitialSpeed..'|max='..cdo.ProjectileMovement.MaxSpeed..'|forward='..cdo.InheritForwardVelocityPercent..'|lateral='..cdo.InheritLateralVelocityPercent)
+    defaultsInspected=true
+   end
+  end
   if role=='host'or readyAt then return end
   pc=context;pawn=pc.Pawn
   if not valid(pawn)or not pawn.bInitialized or not valid(pc.PlayerState)or pc.PlayerState.r_PlayerLoadout.LoadoutId~=527 then return end
@@ -116,6 +139,6 @@ return function(env)
   signature('/Script/GameplayAbilities.AbilitySystemComponent:PressInputID',{{'InputID','IntProperty',0}})
   signature('/Script/GameplayAbilities.AbilitySystemComponent:ReleaseInputID',{{'InputID','IntProperty',0}})
   local slot={TagName=FName('EquipSlot.WeaponSlot.1')}
-  pawn:SwapToEquipSlot(slot);readyAt=now();emit('READY','loadout=527|pawn='..pawn:GetFullName());later(25,pulse)
+  pawn:SwapToEquipSlot(slot);readyAt=now();emit('READY','loadout=527|manualInput='..tostring(env.manual_visual_fixture==true)..'|pawn='..pawn:GetFullName());later(25,pulse)
  end
 end
