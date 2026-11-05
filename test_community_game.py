@@ -59,6 +59,13 @@ class CommunityGameTest(unittest.TestCase):
             self.game.start()
         self.assertEqual(self.game.snapshot()['status'], 'failed')
 
+    def test_selected_ui_map_cannot_launch_a_different_server_target(self):
+        with patch.object(self.game.owner,'run_owned_job') as owner:
+            with self.assertRaisesRegex(CommunityError,'selected map changed'):
+                self.game.start(expected_map='Snowblind')
+            owner.assert_not_called()
+        self.assertEqual(self.game.snapshot()['status'],'failed')
+
     def test_staging_failure_reports_child_reason_without_native_process(self):
         reason = 'Insufficient staging storage: need file bytes=8452589081 plus 2 GiB reserve; free=6568361984.'
         def run(argv, cwd, env, artifacts, budget, cancellation_path):

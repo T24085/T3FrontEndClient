@@ -150,10 +150,10 @@ class CommunityGame:
             self.preparation_descriptor=None;self.preparation_status='spent'
             return result
 
-    def start(self):
-        return self._start()
+    def start(self, *, expected_map=None):
+        return self._start(expected_map=expected_map)
 
-    def _start(self, *, watch_id=None):
+    def _start(self, *, watch_id=None, expected_map=None):
         self._release_watch()
         # Desktop calls this on a worker. Reserve the session briefly, then keep
         # expensive verification outside the snapshot lock used by the Tk loop.
@@ -171,6 +171,8 @@ class CommunityGame:
         try:
             target_loader = (lambda: self.lobby.spectator_target(watch_id)) if watch_id is not None else self.lobby.match_target
             target = target_loader()
+            if expected_map is not None and target.get('map') != expected_map:
+                raise CommunityError('The selected map changed. Refresh the lobby before joining.')
             if watch_id is not None:
                 if (target.get('role') != 'spectator' or target.get('watchId') != watch_id
                         or not re.fullmatch('[0-9a-f]{32}', target.get('matchId', ''))):

@@ -1,3 +1,9 @@
+# Lobby selection and membership recovery
+
+2026-11-05: Map choices are queued while refreshes run; the latest choice stays visible until the server confirms it, and Start waits for confirmation. Joining checks the displayed map against the returned match before preparing or launching a game. Startup can resume the same verified device's lobby, Create recovers an existing membership, and closing/leaving releases membership in active and finished rooms. Recovery requires the paired backend update; the client remains compatible with older servers.
+
+Validation: 98 discovered tests pass under Python 3.13.5 with the declared development dependencies, including delayed-reply Tk controls, transport recovery, map checks, and updater rollback. Paired source checks pass. The local installed client received only the three recovery modules with a saved backup and refreshed inventory; map inventories were preserved. Small client/server updater ZIPs were prepared outside Git. Server activation is pending an idle window; no native multiplayer game was launched for this change. The separate armor/weapon issue below remains unresolved.
+
 # Current source changes
 
 2026-11-05: Spectating is limited to first person while third person remains incomplete. The viewer starts in first person, restores it after native perspective toggles, and keeps F5/F6 player switching and F7 first-person reset. F8 third-person selection is removed. Launcher help and generated playtest instructions match this policy. Dynamic and desktop builders now include the canonical spectator runtime when the verified input declares spectator support.
