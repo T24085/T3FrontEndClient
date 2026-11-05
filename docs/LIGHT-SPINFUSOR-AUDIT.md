@@ -49,3 +49,19 @@ To reproduce the diagnostic with the backend qualifier, add these options to the
 ```
 
 Without `--manual-probe-input`, the diagnostic uses controlled native ASC taps. Manual mode generates no firing inputs; use the rendered native viewport and allow the original reload between clicks. Both modes move only the isolated test character and leave projectile properties, ammo and weapon cooldowns native. Detailed evidence, decoded original assets and game binaries remain outside source control.
+
+## Own first-person view
+
+The user clarified on 2026-11-05 that the symptom concerns their own first-person shot. The visible muzzle/trail and local input path remain relevant even though the earlier speed and fixed-direction origin checks matched the original assets.
+
+The visual probe now records camera pitch/yaw/roll and the current active muzzle in every pose sample. It also samples the selected original gun grant's native `InputPressed` state, checking the original local controller/pawn/ASC ownership on every callback. The requested interval is 25 ms, but callbacks may be delayed and short presses may be missed; these observations are not exact hardware mouse timestamps or input-to-photon measurements. Missing reflected Press/Release hook events still do not establish missing native input.
+
+For the controlled automatic fixture, replace `--manual-probe-input` with `--probe-turn`. This uses native `SetControlRotation` immediately before the two moving ASC taps, first yaw 90 and then yaw 180. It does not emulate a physical mouse-look event or prove the frame ordering of ordinary mouse input. `--maximum-seconds 1200` can accommodate cold private-file staging; the default remains 720 seconds.
+
+```powershell
+python tools/analyze_disc_visual.py <external-native-evidence>
+```
+
+The analyzer projects visual-component positions onto the recorded camera's forward direction, including pitch and yaw, rather than assuming world X is forward. It reports visual/muzzle agreement at birth, turn/request/birth timing, and native input-state observations. Its output preserves the native proof status and explicit rendered-particle, input-timing and fixture limitations.
+
+The user further described a possible slight delay before the disc appears, while remaining unsure. The 2026-11-05 follow-up has **no new qualified firing result**: `light-disc-first-person-20261105/turn80-r1` was closed before firing, and `turn80-r2`/`turn80-r3` stopped at the system-commit reserve. All remain `passed=false` with original owned Jobs empty. The new turn/input-state probes compile and the source/unit checks pass, but their gameplay observations remain unqualified. These attempts do not establish or rule out mouse-to-visible latency. Production Lua and installed weapon behavior are unchanged.

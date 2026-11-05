@@ -9,6 +9,8 @@ return function(env)
  local clock=StaticFindObject('/Script/Engine.Default__GameplayStatics')
  signature('/Script/Engine.SceneComponent:K2_GetComponentLocation',{{'ReturnValue','StructProperty',0}})
  signature('/Script/Engine.PlayerCameraManager:GetCameraLocation',{{'ReturnValue','StructProperty',0}})
+ signature('/Script/Engine.PlayerCameraManager:GetCameraRotation',{{'ReturnValue','StructProperty',0}})
+ signature('/Script/Valhalla.ValCharacter:GetActiveEquippedAbility',{{'ReturnValue','StructProperty',0}})
  signature('/Script/Valhalla.ValCharacter:GetActiveMuzzleLocation',{{'ReturnValue','StructProperty',0}})
  local function same(a,b)return valid(a)and valid(b)and a:GetAddress()==b:GetAddress()end
  local function now()return clock:GetTimeSeconds(world)end
@@ -50,6 +52,39 @@ return function(env)
   local manager=pc.PlayerCameraManager
   if valid(manager)then return copy(manager:GetCameraLocation())end
  end
+ local function camera_rotation(source)
+  local pc=source.Controller
+  if not valid(pc)or not valid(pc.PlayerCameraManager)then return'none'end
+  local r=pc.PlayerCameraManager:GetCameraRotation()
+  return string.format('%.5f,%.5f,%.5f',r.Pitch,r.Yaw,r.Roll)
+ end
+ local inputSampling=false
+ local function start_input_sampling(pc,source)
+  if inputSampling or role~='client'or not pc:IsLocalPlayerController()or pc:HasAuthority()then return end
+  local asc=source.AbilitySystemComponent;if not valid(asc)then return end
+  inputSampling=true
+  local started=now();local previous;local ticks=0;local changes=0
+  local sample
+  sample=safe(function()
+   scope();ticks=ticks+1
+   if ticks>8000 or now()-started>190 then emit('INPUT_SAMPLING_END','reason=bound|ticks='..ticks);return end
+   if not same(pc.Pawn,source)or not same(source.Controller,pc)or not same(source:GetWorld(),world)or not same(source.AbilitySystemComponent,asc)or not same(asc:GetOwner(),source)then emit('INPUT_SAMPLING_END','reason=owner_changed');return end
+   local selected=source:GetActiveEquippedAbility().Handle
+   local pressed;local count=0
+   asc.ActivatableAbilities.Items:ForEach(function(_,param)
+    count=count+1;assert(count<=256,'disc_input_grant_bound')
+    local spec=param:get()
+    if spec.InputID==5 and spec.Handle.Handle==selected then pressed=spec.InputPressed end
+   end)
+   if pressed~=nil and pressed~=previous then
+    changes=changes+1;assert(changes<=128,'disc_input_change_bound')
+    emit('INPUT_STATE','pressed='..tostring(pressed)..'|handle='..selected..'|pollMs=25|ticks='..ticks..'|source='..vec(source:K2_GetActorLocation())..'|sourceVelocity='..vec(source:GetVelocity())..'|cameraRotation='..camera_rotation(source))
+    previous=pressed
+   end
+   ExecuteInGameThreadWithDelay(25,sample)
+  end)
+  ExecuteInGameThreadWithDelay(25,sample)
+ end
  local function component_position(o)
   if valid(o)then return vec(o:K2_GetComponentLocation())end
   return'none'
@@ -58,7 +93,7 @@ return function(env)
   if not valid(actor)or actor:GetFullName()..'@'..actor:GetAddress()~=id or not same(actor:GetWorld(),world)or not valid(source)then return end
   local root=actor:K2_GetActorLocation();local visual=field(actor,'VisualRootSceneComponent');local trail=field(actor,'NS_Projectile_Trail')
   local view=camera(source)
-  emit('POSE','id='..id..'|prediction='..actor.r_PredictionID..'|dt='..(now()-start)..'|actor='..vec(root)..'|visual='..component_position(visual)..'|trail='..component_position(trail)..'|source='..vec(source:K2_GetActorLocation())..'|sourceVelocity='..vec(source:GetVelocity())..'|camera='..(view and vec(view)or'none')..'|stopped='..tostring(actor.bStopped)..'|exploded='..tostring(actor.HasExploded))
+  emit('POSE','id='..id..'|prediction='..actor.r_PredictionID..'|dt='..(now()-start)..'|actor='..vec(root)..'|visual='..component_position(visual)..'|trail='..component_position(trail)..'|source='..vec(source:K2_GetActorLocation())..'|sourceVelocity='..vec(source:GetVelocity())..'|camera='..(view and vec(view)or'none')..'|cameraRotation='..camera_rotation(source)..'|muzzle='..vec(source:GetActiveMuzzleLocation())..'|stopped='..tostring(actor.bStopped)..'|exploded='..tostring(actor.HasExploded))
  end
  local function observe(_,_,arg)
   if not valid(world)then return end
@@ -95,7 +130,7 @@ return function(env)
   if not valid(kind)or kind:GetFullName()~='BlueprintGeneratedClass '..path or not valid(source)or not same(source:GetWorld(),world)then return end
   local view=camera(source)
   local ok,spawn=pcall(function()return vec(transform:get().Translation)end)
-  emit('REQUEST','prediction='..prediction:get()..'|origin='..vec(origin:get())..'|spawn='..(ok and spawn or'unavailable')..'|source='..vec(source:K2_GetActorLocation())..'|sourceVelocity='..vec(source:GetVelocity())..'|muzzle='..vec(source:GetActiveMuzzleLocation())..'|camera='..(view and vec(view)or'none'))
+  emit('REQUEST','prediction='..prediction:get()..'|origin='..vec(origin:get())..'|spawn='..(ok and spawn or'unavailable')..'|source='..vec(source:K2_GetActorLocation())..'|sourceVelocity='..vec(source:GetVelocity())..'|muzzle='..vec(source:GetActiveMuzzleLocation())..'|camera='..(view and vec(view)or'none')..'|cameraRotation='..camera_rotation(source))
  end),function()end)
  for _,name in ipairs({'PressInputID','ReleaseInputID'})do
   signature('/Script/GameplayAbilities.AbilitySystemComponent:'..name,{{'InputID','IntProperty',0}})
@@ -114,7 +149,7 @@ return function(env)
     local source=controller.Pawn;local ps=controller.PlayerState
     if valid(source)and source.bInitialized and valid(ps)and ps.r_PlayerLoadout.LoadoutId==527 and same(source:GetWorld(),world)then
      local cdo=StaticFindObject(path:gsub('%.BP_Projectile_Topaz_LightSpinfusor_C$','.Default__BP_Projectile_Topaz_LightSpinfusor_C'))
-     if valid(cdo)then census(cdo,'projectile_default');census(source,'character');inspected=true;break end
+     if valid(cdo)then census(cdo,'projectile_default');census(source,'character');start_input_sampling(controller,source);inspected=true;break end
     end
    end
   end

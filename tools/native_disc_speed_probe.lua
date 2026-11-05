@@ -78,6 +78,12 @@ return function(env)
  local a,b=RegisterHook(hook,function()end,safe(observe));hooks[#hooks+1]={hook,a,b}
  local pressed=false
  local function tap(label)
+  if env.turn_fixture and label~='stationary_visual'then
+   signature('/Script/Engine.Controller:SetControlRotation',{{'NewRotation','StructProperty',0}})
+   local yaw=label=='moving_forward'and 90 or 180
+   pc:SetControlRotation({Pitch=0,Yaw=yaw,Roll=0})
+   emit('TURN','yaw='..yaw..'|input=controlled_native_controller_rotation|notMouseInput=true')
+  end
   taps=taps+1;lastTap=now();emit('ACTION','label='..label..'|sourceVelocity='..vector(pawn:GetVelocity()))
   asc:PressInputID(5);pressed=true
   later(50,function()assert(same(pc.Pawn,pawn),'disc_probe_pawn_changed');asc:ReleaseInputID(5);pressed=false end)
