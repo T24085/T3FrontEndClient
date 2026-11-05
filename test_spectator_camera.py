@@ -188,7 +188,9 @@ class SpectatorCameraTests(unittest.TestCase):
 
     def test_dynamic_candidate_inventories_current_camera_without_changing_input(self):
         with tempfile.TemporaryDirectory() as folder:
-            source, output = Path(folder) / 'source', Path(folder) / 'candidate'
+            # Windows hosted runners may expose TEMP through a short-name alias.
+            base = Path(folder).resolve()
+            source, output = base / 'source', base / 'candidate'
             required = ('client.py', 'connection-policy.json', 'lib/client_support.py',
                         'lib/owned_native_session.py', 'client_preparation.py', 'startup_timing.py',
                         'startup_paths.py', 'lua/client.lua', *SPECTATOR_RUNTIME_FILES)
