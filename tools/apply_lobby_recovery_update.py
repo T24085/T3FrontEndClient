@@ -3,7 +3,7 @@ import argparse,datetime,hashlib,json,os,sys,uuid
 from pathlib import Path
 FILES={'client':('desktop_launcher.py','community_game.py','community_transport.py'),
        'server':('operator/lobby_controller.py','operator/lobby_http.py','operator/community_transport.py')}
-REVISION='lobby-recovery-20261105-r1'
+REVISION='lobby-recovery-20261105-r2'
 def sha(raw):return hashlib.sha256(raw).hexdigest()
 def encode(value):return(json.dumps(value,indent=2)+'\n').encode()
 def replace(path,raw):

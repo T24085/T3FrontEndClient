@@ -5,12 +5,13 @@ from pathlib import Path
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 
 from community_game import CommunityGame
 from startup_paths import installation_options
-from community_transport import CommunityClient, CommunityError
+from community_transport import CommunityClient, CommunityError, CommunityConnectionError
 from community_maps import BY_ID, options, LEGACY_MAPS
 
 ROOT = Path(__file__).resolve().parent
@@ -45,6 +46,8 @@ class Desktop:
         self.room = None
         self.pending_map = None
         self.map_inflight = None
+        self.map_retry_count = 0
+        self.map_retry_at = 0
         self.watch_id = None
         self.game_status = 'idle'
         self.current_panel = 'lobbies'
@@ -224,13 +227,22 @@ class Desktop:
                 self.busy = False
                 completed = True
                 if error:
+                    message = str(error)
                     if self.map_inflight is not None:
                         if self.pending_map == self.map_inflight:
-                            self.pending_map = None
+                            if isinstance(error, CommunityConnectionError):
+                                self.map_retry_count += 1
+                                self.map_retry_at = (time.monotonic() + self.map_retry_count
+                                                     if self.map_retry_count < 3 else float('inf'))
+                                message = ('Connection interrupted. Checking your map selection again…'
+                                           if self.map_retry_count < 3 else
+                                           'Map selection is unconfirmed. Choose the map again to retry.')
+                            else:
+                                self.pending_map = None
                         self.map_inflight = None
                     if isinstance(error, CommunityError) and error.code in ('lobby_missing', 'session_invalid'):
                         self.render(None)
-                    self.status.set(str(error))
+                    self.status.set(message)
                     if self.current_panel=='live':self.live_status.set(str(error))
                     if (isinstance(error,CommunityError) and error.code in ('spectator_session_invalid','spectator_unavailable')
                             and self.watch_id is not None):
@@ -277,20 +289,27 @@ class Desktop:
         if self.room is None or self.room['phase'] != 'setup':
             return
         self.pending_map = (self.room['code'], matches[0])
+        self.map_retry_count = 0
+        self.map_retry_at = 0
         self.status.set('Applying map selection…')
         self.render(self.room)
         self.flush_map_selection()
 
     def flush_map_selection(self):
-        if self.busy or self.closing or self.pending_map is None:
+        if self.busy or self.closing or self.pending_map is None or time.monotonic() < self.map_retry_at:
             return
         selected = self.pending_map
         if self.room is None or self.room['code'] != selected[0] or self.room['phase'] != 'setup':
             self.pending_map = None
             return
         self.map_inflight = selected
+        reconciling = self.map_retry_count > 0
         def apply():
-            room = self.lobby.action('map', map=selected[1])
+            # A lost reply does not mean the POST failed. Read back first;
+            # resend only this idempotent map choice if it was not applied.
+            room = self.lobby.action('state') if reconciling else None
+            if room is None or room.get('map') != selected[1]:
+                room = self.lobby.action('map', map=selected[1])
             if room.get('map') != selected[1]:
                 raise CommunityError('The server did not confirm the selected map.')
             return room
@@ -298,6 +317,9 @@ class Desktop:
             self.map_inflight = None
             if self.pending_map == selected:
                 self.pending_map = None
+                self.map_retry_count = 0
+                self.map_retry_at = 0
+                self.status.set('Map selected: ' + BY_ID[selected[1]].label)
             self.render(room)
         self.run_async(apply, applied)
 

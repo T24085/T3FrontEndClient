@@ -2,6 +2,7 @@
 import copy,gc,threading,time,tkinter as tk,unittest
 from desktop_launcher import Desktop
 from community_maps import BY_ID
+from community_transport import CommunityError, CommunityConnectionError
 from test_desktop_launcher import FakeLobby,FakeGame
 
 class DesktopRecoveryTests(unittest.TestCase):
@@ -66,5 +67,49 @@ class DesktopRecoveryTests(unittest.TestCase):
   self.app.set_capabilities({'matchStartEnabled':True,'gameClientReady':True,'lobbyResumeEnabled':True})
   self.wait(lambda:not self.app.busy and self.app.room is not None)
   self.assertEqual(resumed,[True]);self.assertFalse(any(op=='create'for op,*_ in self.lobby.calls))
+ def test_lost_map_reply_keeps_choice_and_confirms_without_repeating_post(self):
+  original=self.lobby.action;lost=[]
+  def action(operation,**data):
+   result=copy.deepcopy(original(operation,**data))
+   if operation=='map'and not lost:
+    lost.append(True);raise CommunityConnectionError('reply lost')
+   return result
+  self.lobby.action=action;self.choose('Snowblind')
+  self.wait(lambda:self.app.map_retry_count==1 and not self.app.busy)
+  self.assertEqual(self.app.map_name.get(),BY_ID['Snowblind'].label)
+  self.assertEqual(str(self.app.start_button['state']),'disabled')
+  self.wait(lambda:self.app.pending_map is None and not self.app.busy)
+  self.assertEqual(self.app.room['map'],'Snowblind')
+  self.assertEqual(sum(op=='map'for op,_ in self.lobby.calls),1)
+  self.assertTrue(any(op=='state'for op,_ in self.lobby.calls))
+ def test_connection_loss_before_map_post_reads_back_then_applies_choice(self):
+  original=self.lobby.action;lost=[]
+  def action(operation,**data):
+   if operation=='map'and not lost:
+    lost.append(True);raise CommunityConnectionError('not delivered')
+   return copy.deepcopy(original(operation,**data))
+  self.lobby.action=action;self.choose('Snowblind')
+  self.wait(lambda:self.app.pending_map is None and not self.app.busy)
+  self.assertEqual(self.app.room['map'],'Snowblind')
+  self.assertEqual([op for op,_ in self.lobby.calls],['state','map'])
+ def test_persistent_outage_stops_retrying_and_reselecting_can_recover(self):
+  original=self.lobby.action;calls=[]
+  def offline(operation,**data):calls.append(operation);raise CommunityConnectionError('offline')
+  self.lobby.action=offline;self.choose('Snowblind')
+  self.wait(lambda:self.app.map_retry_count==3 and not self.app.busy)
+  # Normal periodic refreshes may also read state during the outage.
+  self.assertEqual(calls.count('map'),1);self.assertGreaterEqual(calls.count('state'),2)
+  self.assertEqual(self.app.map_name.get(),BY_ID['Snowblind'].label)
+  self.assertEqual(str(self.app.start_button['state']),'disabled')
+  self.assertEqual(self.app.map_retry_at,float('inf'))
+  self.lobby.action=original;self.choose('Rollercoaster')
+  self.wait(lambda:self.app.pending_map is None and not self.app.busy)
+  self.assertEqual(self.app.room['map'],'Rollercoaster')
+ def test_server_rejection_does_not_retry_a_denied_selection(self):
+  calls=[]
+  def denied(operation,**data):calls.append(operation);raise CommunityError('Only leader can choose')
+  self.lobby.action=denied;self.choose('Snowblind')
+  self.wait(lambda:self.app.pending_map is None and not self.app.busy)
+  self.assertEqual(calls,['map']);self.assertEqual(self.app.map_name.get(),BY_ID['Stonehenge'].label)
 
 if __name__=='__main__':unittest.main()

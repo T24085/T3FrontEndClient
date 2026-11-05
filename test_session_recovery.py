@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch
-from community_transport import CommunityClient,CommunityError
+from community_transport import CommunityClient,CommunityError,CommunityConnectionError
 
 class SessionRecoveryTests(unittest.TestCase):
  def client(self):return CommunityClient('community.test',18443,'100.101.0.1',{})
@@ -29,5 +29,12 @@ class SessionRecoveryTests(unittest.TestCase):
  def test_conflicting_match_map_is_rejected(self):
   c=self.client()
   with self.assertRaisesRegex(CommunityError,'selected map'):c._validated_target({'map':'Snowblind'},'Stonehenge')
+ def test_connection_failure_is_distinct_from_a_server_rejection(self):
+  c=self.client()
+  with patch('community_transport.PinnedHTTPSConnection')as connection:
+   connection.return_value.request.side_effect=TimeoutError('lost reply')
+   with self.assertRaises(CommunityConnectionError)as error:c.capabilities()
+   self.assertIsInstance(error.exception.__cause__,TimeoutError)
+   connection.return_value.close.assert_called_once()
 
 if __name__=='__main__':unittest.main()

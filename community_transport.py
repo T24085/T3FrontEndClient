@@ -21,6 +21,10 @@ class CommunityError(RuntimeError):
         self.code = code
 
 
+class CommunityConnectionError(CommunityError):
+    """The connection failed; a submitted operation may already have applied."""
+
+
 class PinnedHTTPSConnection(http.client.HTTPSConnection):
     """Connect to the configured IP while validating TLS against its DNS name."""
     def __init__(self, hostname, port, address, *, context, timeout=10, source_address=None):
@@ -101,8 +105,10 @@ class CommunityClient:
             return value
         except CommunityError:
             raise
-        except (OSError, ssl.SSLError, http.client.HTTPException, ValueError) as exc:
-            raise CommunityError('Could not securely contact the community lobby.') from exc
+        except (OSError, http.client.HTTPException) as exc:
+            raise CommunityConnectionError('Could not securely contact the community lobby.') from exc
+        except ValueError as exc:
+            raise CommunityError('Invalid lobby response.') from exc
         finally:
             conn.close()
 
