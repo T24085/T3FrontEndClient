@@ -55,6 +55,8 @@ class Desktop:
         self.caps = {'matchStartEnabled': False, 'gameClientReady': False}
         self.capabilities_loaded = False
         self.busy = False
+        self.background_busy = False
+        self.queued_action = None
         self.messages = queue.Queue()
         self.players = []
         self.closing = False
@@ -187,11 +189,23 @@ class Desktop:
         return tk.Button(parent,text=text,command=command,bg=ACCENT if primary else '#263e52',fg=BG if primary else TEXT,
                          activebackground='#6ff0d4',relief='flat',padx=10,pady=7,font=('Segoe UI',10,'bold'))
 
-    def run_async(self, work, success):
-        if self.busy or self.closing:
+    @property
+    def controls_busy(self):
+        return (self.busy and not self.background_busy) or self.queued_action is not None
+
+    def run_async(self, work, success, *, background=False):
+        if self.closing:
+            return False
+        if self.busy:
+            if self.background_busy and not background and self.queued_action is None:
+                self.queued_action = (work, success)
+                self.render(self.room)
+                return True
             return False
         self.busy = True
-        self.render(self.room)
+        self.background_busy = background
+        if not background:
+            self.render(self.room)
         def worker():
             try: self.messages.put((success,work(),None))
             except Exception as exc: self.messages.put((success,None,exc))
@@ -225,6 +239,7 @@ class Desktop:
             while True:
                 success,value,error = self.messages.get_nowait()
                 self.busy = False
+                self.background_busy = False
                 completed = True
                 if error:
                     message = str(error)
@@ -250,6 +265,10 @@ class Desktop:
                 else: success(value)
         except queue.Empty:
             pass
+        if self.queued_action is not None and not self.busy:
+            work, success = self.queued_action
+            self.queued_action = None
+            self.run_async(work, success)
         self.flush_map_selection()
         if completed:
             self.render(self.room)
@@ -343,8 +362,8 @@ class Desktop:
             self.spectator_toggle.pack(side='right',padx=(12,0))
             self.spectator_toggle.configure(state='normal' if setup and leader else 'disabled')
         else:self.spectator_toggle.pack_forget()
-        for widget in (self.name_entry,self.code_entry,self.create_button,self.join_button): widget.configure(state='disabled' if in_room or self.busy else 'normal')
-        if self.steam_name_loader and not in_room and not self.busy:
+        for widget in (self.name_entry,self.code_entry,self.create_button,self.join_button): widget.configure(state='disabled' if in_room or self.controls_busy else 'normal')
+        if self.steam_name_loader and not in_room and not self.controls_busy:
             self.name_entry.configure(state='readonly', readonlybackground='#20374a')
         self.room_heading.set('Lobby  '+room['code'] if in_room else 'Not in a lobby')
         self.phase.set(match_phase_text(room))
@@ -376,13 +395,13 @@ class Desktop:
                 self.roster.activate(index)
         if in_room:
             self.roster.yview_moveto(scroll_position)
-        for widget in (self.blue_button,self.red_button): widget.configure(state='normal' if setup and not self.busy else 'disabled')
-        for widget in (self.move_blue,self.move_red): widget.configure(state='normal' if setup and leader and not self.busy else 'disabled')
-        self.start_button.configure(state='normal' if setup and leader and not self.busy and self.pending_map is None and self.caps.get('matchStartEnabled') else 'disabled')
-        self.game_button.configure(state='normal' if in_room and phase=='ready' and not self.busy and self.pending_map is None and self.caps.get('gameClientReady') else 'disabled')
+        for widget in (self.blue_button,self.red_button): widget.configure(state='normal' if setup and not self.controls_busy else 'disabled')
+        for widget in (self.move_blue,self.move_red): widget.configure(state='normal' if setup and leader and not self.controls_busy else 'disabled')
+        self.start_button.configure(state='normal' if setup and leader and not self.controls_busy and self.pending_map is None and self.caps.get('matchStartEnabled') else 'disabled')
+        self.game_button.configure(state='normal' if in_room and phase=='ready' and not self.controls_busy and self.pending_map is None and self.caps.get('gameClientReady') else 'disabled')
         self.stop_button.configure(state='normal' if leader and phase in ('starting','ready') else 'disabled')
         self.reset_button.configure(state='normal' if leader and phase in ('stopped','ended','failed') else 'disabled')
-        self.leave_button.configure(state='normal' if in_room and not self.busy else 'disabled')
+        self.leave_button.configure(state='normal' if in_room and not self.controls_busy else 'disabled')
         # Preparation has no match endpoint or player profile. Start it as soon
         # as the service confirms support, while the player is choosing a lobby.
         if self.capabilities_loaded and self.caps.get('gameClientReady'):
@@ -434,7 +453,7 @@ class Desktop:
         self.call_action('team',team=team,playerId=self.players[selection[0]]['id'])
 
     def join_game(self):
-        if self.busy or self.closing: return
+        if self.controls_busy or self.closing: return
         if self.room is None or self.pending_map is not None:
             self.status.set('Wait for the selected map to be confirmed.');return
         if self.watch_id is not None:
@@ -465,9 +484,9 @@ class Desktop:
         target=self.live_targets.get(selected[0])if selected else None
         active=self.game_status not in ('idle','stopped','finished','failed')
         can_watch=supported and target is not None and target.get('canSpectate')is True and not active and self.watch_id is None
-        self.spectate_button.configure(state='normal'if can_watch and not self.busy else'disabled')
-        self.stop_watch_button.configure(state='normal'if self.watch_id is not None and not self.busy else'disabled')
-        self.live_refresh_button.configure(state='normal'if supported and not self.busy else'disabled')
+        self.spectate_button.configure(state='normal'if can_watch and not self.controls_busy else'disabled')
+        self.stop_watch_button.configure(state='normal'if self.watch_id is not None and not self.controls_busy else'disabled')
+        self.live_refresh_button.configure(state='normal'if supported and not self.controls_busy else'disabled')
         if not supported and self.capabilities_loaded:self.live_status.set('Spectating is unavailable on this server version.')
 
     def render_live_matches(self,matches):
@@ -488,8 +507,9 @@ class Desktop:
             self.live_status.set('Select a match to watch.'if matches else'No spectator-enabled matches are live right now.')
         self.render_live_controls()
 
-    def refresh_live_matches(self):
-        if self.busy or self.closing or self.caps.get('spectateEnabled')is not True:return
+    def refresh_live_matches(self, *, background=False):
+        if self.controls_busy or self.closing or self.caps.get('spectateEnabled')is not True:return
+        if background and self.busy:return
         if self.current_panel!='live'and self.watch_id is None:return
         watch_id=self.watch_id
         def work():
@@ -506,16 +526,16 @@ class Desktop:
             matches,stopped=value
             if stopped and self.watch_id==watch_id:self.watch_id=None
             self.render_live_matches(matches)
-        self.run_async(work,refreshed)
+        self.run_async(work,refreshed,background=background)
 
     def live_tick(self):
         self.live_refresh_handle=None
         if self.closing:return
-        self.refresh_live_matches()
+        self.refresh_live_matches(background=True)
         self.live_refresh_handle=self.root.after(3000,self.live_tick)
 
     def spectate_selected(self):
-        if self.busy or self.closing or self.watch_id is not None:return
+        if self.controls_busy or self.closing or self.watch_id is not None:return
         selected=self.live_list.selection()
         item=self.live_targets.get(selected[0])if selected else None
         if item is None or item.get('canSpectate')is not True:return
@@ -535,7 +555,7 @@ class Desktop:
         self.run_async(admit,admitted)
 
     def stop_watching(self):
-        if self.busy or self.closing or self.watch_id is None:return
+        if self.controls_busy or self.closing or self.watch_id is None:return
         watch_id=self.watch_id
         def work():
             if self.game:return self.game.stop_spectating()
@@ -549,7 +569,7 @@ class Desktop:
         self.refresh_handle=None
         if self.closing: return
         if self.room and not self.busy and not self.closing:
-            self.run_async(lambda:self.lobby.action('state'),self.render)
+            self.run_async(lambda:self.lobby.action('state'),self.render,background=True)
         if not self.closing: self.refresh_handle=self.root.after(2000,self.refresh)
 
     def close(self):

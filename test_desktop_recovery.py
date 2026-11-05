@@ -111,5 +111,48 @@ class DesktopRecoveryTests(unittest.TestCase):
   self.lobby.action=denied;self.choose('Snowblind')
   self.wait(lambda:self.app.pending_map is None and not self.app.busy)
   self.assertEqual(calls,['map']);self.assertEqual(self.app.map_name.get(),BY_ID['Stonehenge'].label)
+ def background_refresh(self,reply):
+  entered,release=threading.Event(),threading.Event();original=self.lobby.action
+  def action(operation,**data):
+   if operation=='state':entered.set();release.wait(3);return copy.deepcopy(reply)
+   return original(operation,**data)
+  self.lobby.action=action
+  self.root.after_cancel(self.app.refresh_handle);self.app.refresh()
+  self.assertTrue(entered.wait(2));self.addCleanup(release.set)
+  return release
+ def test_background_lobby_refresh_keeps_setup_buttons_stable(self):
+  widgets=(self.app.blue_button,self.app.red_button,self.app.start_button,self.app.leave_button)
+  before=[str(w['state'])for w in widgets]
+  release=self.background_refresh(self.lobby.room)
+  self.assertTrue(self.app.busy);self.assertFalse(self.app.controls_busy)
+  self.app.render(self.app.room)
+  self.assertEqual([str(w['state'])for w in widgets],before)
+  release.set();self.wait(lambda:not self.app.busy)
+  self.assertEqual([str(w['state'])for w in widgets],before)
+ def test_join_clicked_during_refresh_is_queued_once_and_not_lost(self):
+  ready=dict(self.lobby.room,phase='ready');self.app.render(ready)
+  release=self.background_refresh(ready)
+  self.assertEqual(str(self.app.game_button['state']),'normal')
+  self.app.game_button.invoke();self.app.game_button.invoke()
+  self.assertIsNotNone(self.app.queued_action);self.assertFalse(self.game.started)
+  self.assertEqual(str(self.app.game_button['state']),'disabled')
+  release.set();self.wait(lambda:not self.app.busy and self.game.started)
+  self.assertIsNone(self.app.queued_action)
+ def test_team_clicked_during_refresh_is_applied_after_fresh_state(self):
+  release=self.background_refresh(self.lobby.room)
+  self.app.blue_button.invoke();self.app.blue_button.invoke()
+  self.assertFalse(any(op=='team'for op,_ in self.lobby.calls))
+  release.set();self.wait(lambda:not self.app.busy and self.app.queued_action is None)
+  self.assertEqual([data for op,data in self.lobby.calls if op=='team'],[{'team':'blue'}])
+ def test_live_match_poll_keeps_refresh_button_enabled(self):
+  self.app.caps['spectateEnabled']=True;self.app.current_panel='live';self.app.render_live_controls()
+  entered,release=threading.Event(),threading.Event()
+  def matches():entered.set();release.wait(3);return[]
+  self.lobby.live_matches=matches;self.addCleanup(release.set)
+  self.root.after_cancel(self.app.live_refresh_handle);self.app.live_tick()
+  self.assertTrue(entered.wait(2));self.app.render_live_controls()
+  self.assertEqual(str(self.app.live_refresh_button['state']),'normal')
+  release.set();self.wait(lambda:not self.app.busy)
+  self.assertEqual(str(self.app.live_refresh_button['state']),'normal')
 
 if __name__=='__main__':unittest.main()
