@@ -10,7 +10,7 @@ The download includes the Community Starter, portable runtime and all custom map
 2. Start Steam and connect to the approved Tailscale network.
 3. Open `Start Community Starter.vbs` in the extracted folder.
 
-This is a playtest release. The server-side staging-team correction has been deployed; native loopback checks now show both players spawning and populated weapon menus. Off-site confirmation and the intermittent double-fire report remain open. The repository's **Code → Download ZIP** contains development source; use the complete release download above to play.
+This is a playtest release. The server-side staging-team correction has been deployed; native loopback checks now show both players spawning and populated weapon menus. Off-site confirmation remains open. The double-shot issue is recorded as fixed based on user confirmation. The repository's **Code → Download ZIP** contains development source; use the complete release download above to play.
 
 ## Development source
 
