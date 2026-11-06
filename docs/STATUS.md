@@ -1,3 +1,11 @@
+# Heavy Bolt whiteout follow-up - 2026-11-06
+
+The user's recording shows a large cyan effect covering the view after firing Heavy Bolt and switching weapons. The running client's Lua and event markers confirm the previous stowed-trail correction was loaded; the earlier component-state qualification did not establish that the visible whiteout was fixed.
+
+The private `fix/heavy-bolt-whiteout-r2` candidate excludes stopped/unknown-state projectiles, resets inherited first-person Niagara override parameters when selecting the original world-space trail, and changes each observed live projectile only once. It retains the existing exact local-player, weapon, world and component-owner guards and does not change projectile physics, damage or ammo. These are plausible unguarded cases identified from the clip and original Blueprint inspection, not a confirmed visible root cause.
+
+Validation: all 125 client tests and paired source checks pass, including stopped-effect exclusion, override reset, native asset revisit, new-flight state cleanup, input-release isolation and canonical embedded Lua checks. No native game was launched or stopped for this follow-up. Visual confirmation, installed activation and public release updates remain separate and pending; r7 still contains the previous candidate.
+
 # Complete client r7 published
 
 The [2026-11-06 complete r7 playtest release](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.06-r7) is public. Its 1,445,723,086-byte ZIP retains the frozen cooked maps and portable/native binaries from the SHA256-pinned r6 parent while overlaying current canonical client source, including `lua/client.lua`. All 5,522 declared files passed streamed SHA256 checks and all 22 map fingerprints match a fresh read of the current server. The exact extracted package passed bundled Python/Tk/control smoke checks, with its original owned Job empty. The included client Lua matches the byte hash used in the Heavy Bolt native firing/stowing run. All 121 release-source tests and paired source checks pass.

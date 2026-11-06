@@ -26,18 +26,23 @@ function f.asc.ActivatableAbilities.Items:ForEach(cb)cb(1,{get=function()return{
 local base='/Game/VFX/Weapons/BoltLauncher/Heavy/Projectile/NS_BoltLauncher_Heavy_Projectile_'
 f.one=o('NiagaraSystem '..base..'1P.NS_BoltLauncher_Heavy_Projectile_1P')
 f.three=o('NiagaraSystem '..base..'3P.NS_BoltLauncher_Heavy_Projectile_3P')
-f.projectile=o('Projectile');f.projectile.Instigator=f.pawn
+f.projectile=o('Projectile');f.projectile.Instigator=f.pawn;f.projectile.bStopped=false
 function f.projectile:GetClass()return o('BlueprintGeneratedClass /Game/Topaz/Abilities/Weapons/HeavyBoltLauncher/BP_Projectile_Topaz_HeavyBoltLauncher.BP_Projectile_Topaz_HeavyBoltLauncher_C')end
 function f.projectile:GetAudioVisual()return{IsValid=function()return true end,ProjectileTrail1P=f.one,ProjectileTrail3P=f.three}end
-f.trail=o('Trail');f.trail.Asset=f.one
+f.trail=o('Trail');f.trail.Asset=f.one;f.staleOverrides=true
 function f.trail:GetOwner()return f.projectile end
-function f.trail:SetAsset(asset,reset)assert(asset==f.three and reset==false);self.Asset=asset;f.changes=f.changes+1 end
+function f.trail:SetAsset(asset,reset)assert(asset==f.three and reset==true);self.Asset=asset;f.staleOverrides=false;f.changes=f.changes+1 end
 f.projectile.NS_Projectile_Trail=f.trail
 function FindAllOf(name)assert(name=='BP_Projectile_Topaz_HeavyBoltLauncher_C');return{f.projectile}end
 f.env={valid=function(a)return a~=nil and a:IsValid()end,scope=function()end,signature=function()end,report=function(s)f.events[#f.events+1]=s end}
 return f
 """
 class HeavyBoltTests(unittest.TestCase):
+ def test_client_embeds_the_canonical_visual_guard(self):
+  client=(ROOT/'lua/client.lua').read_text()
+  prefix='local heavyBoltVisualFactory=(function()\n'
+  embedded=client.split(prefix,1)[1].split('\nend)()',1)[0]
+  self.assertEqual(embedded,(ROOT/'runtime-fixes/heavy_bolt_visual.lua').read_text().strip())
  def fixture(self):
   lua=LuaRuntime(unpack_returned_tuples=True,max_memory=8*1024*1024);f=lua.execute(FIXTURE)
   f.service=lua.execute((ROOT/'runtime-fixes/heavy_bolt_visual.lua').read_text())(f.env)
@@ -45,6 +50,20 @@ class HeavyBoltTests(unittest.TestCase):
  def test_stowing_uses_original_world_trail_once(self):
   f=self.fixture();f.service(f.pc,f.pawn,f.asc,20);f.service(f.pc,f.pawn,f.asc,20)
   self.assertEqual(f.changes,1)
+  self.assertFalse(f.staleOverrides)
+ def test_stopped_or_unknown_projectile_does_not_restart_its_impact_effect(self):
+  for stopped in (True,None):
+   f=self.fixture();f.projectile.bStopped=stopped;f.service(f.pc,f.pawn,f.asc,20)
+   self.assertEqual(f.changes,0);self.assertTrue(f.staleOverrides)
+ def test_native_asset_revisit_does_not_replay_the_same_live_effect(self):
+  f=self.fixture();f.service(f.pc,f.pawn,f.asc,20)
+  f.trail.Asset=f.one;f.service(f.pc,f.pawn,f.asc,20)
+  self.assertEqual(f.changes,1)
+ def test_an_observed_stop_allows_a_new_flight_without_retaining_old_state(self):
+  f=self.fixture();f.service(f.pc,f.pawn,f.asc,20)
+  f.projectile.bStopped=True;f.service(f.pc,f.pawn,f.asc,20)
+  f.projectile.bStopped=False;f.trail.Asset=f.one;f.service(f.pc,f.pawn,f.asc,20)
+  self.assertEqual(f.changes,2)
  def test_client_predicted_projectile_with_local_authority_also_changes(self):
   f=self.fixture();f.projectile.authority=True;f.service(f.pc,f.pawn,f.asc,20)
   self.assertEqual(f.changes,1)
