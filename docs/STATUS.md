@@ -1,3 +1,9 @@
+# Automatic server-access setup - 2026-11-06
+
+`feat/tailscale-server-access` adds an optional **Set up server access** window: install/sign into Tailscale, obtain and accept a server-sharing invitation through a public HTTPS bootstrap, then check the existing pinned-TLS lobby connection. Setup work has its own queue and does not clear foreground lobby operations. The paired broker automates device-sharing invitations without adding tailnet members. Only a three-field player bootstrap enters client packages; API tokens and operator/cache files are excluded. New runtime modules are included by the dynamic, desktop and complete-release builders; configured builds accept `--server-access`.
+
+Validation: all 128 client tests and paired source checks pass, including Tk setup controls, TLS/redirect/destination rejection, credential separation and a real fixture-ZIP bootstrap inventory/hash audit. Live setup activation and external-user acceptance remain separate; r7 and Drive archives are unchanged. No native game was launched or stopped for this feature.
+
 # Complete client r7 published
 
 The [2026-11-06 complete r7 playtest release](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.06-r7) is public. Its 1,445,723,086-byte ZIP retains the frozen cooked maps and portable/native binaries from the SHA256-pinned r6 parent while overlaying current canonical client source, including `lua/client.lua`. All 5,522 declared files passed streamed SHA256 checks and all 22 map fingerprints match a fresh read of the current server. The exact extracted package passed bundled Python/Tk/control smoke checks, with its original owned Job empty. The included client Lua matches the byte hash used in the Heavy Bolt native firing/stowing run. All 121 release-source tests and paired source checks pass.

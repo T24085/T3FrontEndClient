@@ -1,0 +1,9 @@
+# Player server-access setup
+
+When a player-only `server-access.json` is configured, Starter adds **Set up server access**. The window guides the player through installing/signing into Tailscale, accepting a game-server share, and checking the existing pinned-TLS lobby connection. Setup requests use a public HTTPS broker, because the private lobby is not reachable before acceptance. Network work runs outside Tk and uses a separate completion queue so it cannot clear another lobby operation's busy state.
+
+The player configuration has exactly three fields: `contract` (`tailscale-server-access-v1`), `endpoint` (HTTPS `/v1/server-access`) and `enrollment_code`. The code allows its holder to request a server invitation; it is not an operator API credential. Keep configured builds within the intended playtest audience. Never publish the operator config, API token file or broker cache. Both full desktop and release builders support `--server-access <player-json>` and reject operator fields in that JSON. The runtime modules are included in future builds even when onboarding is not configured.
+
+Invites must point exactly at `https://login.tailscale.com/admin/invite/<code>`. Setup does not accept redirects, disable TLS verification, change the user's tailnet, run Tailscale as another user, add a tailnet member or alter lobby/game admission. Install/sign-in and browser acceptance remain user actions. Existing members can continue using the current connection without onboarding.
+
+Backend setup, API token renewal, access-policy restrictions and public endpoint activation are documented in the paired backend's `docs/SERVER_ACCESS.md`. Before distribution, confirm the live endpoint and a new user's server share, lobby TLS and game UDP access. Source/Tk tests are separate from that external-user qualification. No public release or installed activation is implied by this source feature.

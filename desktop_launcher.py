@@ -39,7 +39,7 @@ def match_phase_text(room):
 
 
 class Desktop:
-    def __init__(self, root, lobby, game_factory, *, steam_name_loader=None):
+    def __init__(self, root, lobby, game_factory, *, steam_name_loader=None, server_access=None):
         self.root, self.lobby, self.game_factory = root, lobby, game_factory
         self.steam_name_loader = steam_name_loader
         self.game = None
@@ -58,6 +58,8 @@ class Desktop:
         self.background_busy = False
         self.queued_action = None
         self.messages = queue.Queue()
+        self.access_messages = queue.Queue()
+        self.access_window = None
         self.players = []
         self.closing = False
         self.copy_reset_handle = None
@@ -91,6 +93,10 @@ class Desktop:
         self.lobbies_nav.pack(fill='x',padx=18,pady=(0,6))
         self.live_nav=self.button(side,'Live matches',lambda:self.show_panel('live'),False)
         self.live_nav.pack(fill='x',padx=18)
+        if server_access is not None:
+            from server_access import show_setup
+            self.access_button = self.button(side, 'Set up server access', lambda: show_setup(self, server_access), False)
+            self.access_button.pack(fill='x', padx=18, pady=(20, 0))
         self.label(side, 'Private playtest', 10, color=MUTED, bg='#0d1927').pack(side='bottom', anchor='w', padx=26, pady=24)
         tk.Label(side,textvariable=self.preparation,bg='#0d1927',fg=MUTED,font=('Segoe UI',10),
                  anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
@@ -234,6 +240,11 @@ class Desktop:
     def poll(self):
         self.poll_handle=None
         if self.closing: return
+        try:
+            while True:
+                self.access_messages.get_nowait()()
+        except queue.Empty:
+            pass
         completed = False
         try:
             while True:
@@ -629,7 +640,12 @@ def main(*, ssl_context=None):
         workspace = selected_workspace
         return CommunityGame(current_lobby,CLIENT_PACKAGE,source,workspace,workspace/'desktop-control')
     root = tk.Tk()
-    Desktop(root,lobby,game_factory,steam_name_loader=steam_name_loader)
+    from server_access import ServerAccess
+    try:
+        access = ServerAccess.load(CLIENT_PACKAGE)
+    except (ValueError, OSError):
+        access = None
+    Desktop(root,lobby,game_factory,steam_name_loader=steam_name_loader,server_access=access)
     root.mainloop()
 
 

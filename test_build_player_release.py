@@ -46,5 +46,14 @@ class CompleteReleaseBuildTests(unittest.TestCase):
  def test_wrong_current_server_catalog_is_rejected(self):
   self.fixture.server.write_text(json.dumps({'verified_map_catalog':{'Snowblind':'f'*64}}))
   with self.assertRaisesRegex(ValueError,'differ from the verified server'):self.build()
+ def test_player_bootstrap_is_inventoried_and_keeps_operator_credentials_out(self):
+  from test_server_access import SETTINGS
+  bootstrap=self.fixture.root/'server-access.json';bootstrap.write_text(json.dumps(SETTINGS))
+  archive=self.build(server_access=bootstrap)
+  report=verify(archive,self.fixture.server,self.fixture.root/'verification');self.assertTrue(report['passed'])
+  with zipfile.ZipFile(archive)as z:
+   self.assertEqual(json.loads(z.read('TRIBES3-Community-Starter/server-access.json')),SETTINGS)
+  self.assertIn('server_access.py',SOURCE_MEMBERS)
+  self.assertIn('server_access_contract.py',SOURCE_MEMBERS)
 
 if __name__=='__main__':unittest.main()

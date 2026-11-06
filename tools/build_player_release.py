@@ -6,6 +6,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from tools.verify_player_release import map_catalog,safe_name
 SOURCE_MEMBERS={name:name for name in (
+ 'server_access.py','server_access_contract.py',
  'desktop_launcher.py','community_transport.py','community_game.py','client_preparation.py',
  'bulk_asset_cache.py','community_starter.pyw','map_catalog.py','compare_map_packages.py',
  'community_maps.py','steam_identity.py','player_names.py','runtime_health.py','startup_progress.py',
@@ -19,7 +20,7 @@ def encoded(value):return (json.dumps(value,indent=2)+'\n').encode()
 def sha(raw):return hashlib.sha256(raw).hexdigest()
 
 def build(base,expected_sha,server_catalog,output,*,source=ROOT,frontend_ref,backend_ref,
-          tag,release_id,archive_name,source_members=None,readme=None,known_issues=None):
+          tag,release_id,archive_name,source_members=None,readme=None,known_issues=None,server_access=None):
  base,source,output=Path(base),Path(source).resolve(strict=True),Path(output).resolve()
  if source==output or source in output.parents:raise ValueError('Keep release artifacts outside the source checkout')
  if not all(re.fullmatch('[0-9a-f]{40}',ref)for ref in (frontend_ref,backend_ref)):raise ValueError('Full source commit references required')
@@ -51,6 +52,9 @@ def build(base,expected_sha,server_catalog,output,*,source=ROOT,frontend_ref,bac
   source_info={'format':1,'source_commits':references,'source_members':{n:{'source':members[n],'sha256':sha(raw)}for n,raw in replacements.items()},
                'base_archive_sha256':expected_sha,'frozen_inputs':'All cooked content, map fingerprint runtime, portable Python/Tk and native runtime binaries are retained from the pinned parent archive.',
                'backend_reference_scope':'Protocol/source reference only; this client build does not deploy or rebuild the server.'}
+  if server_access is not None:
+   from server_access import bootstrap_payload
+   replacements['server-access.json']=bootstrap_payload(server_access)
   created=datetime.datetime.now(datetime.timezone.utc).isoformat()
   info=json.loads(old.read(prefix+'RELEASE-INFO.json'))
   info.update(release=release_id,created_utc=created,source_commits=references,
@@ -144,10 +148,11 @@ def main():
  for name in ('base','server-catalog','output','backend-repo'):p.add_argument('--'+name,type=Path,required=True)
  for name in ('base-sha256','tag','release-id','archive-name'):p.add_argument('--'+name,required=True)
  p.add_argument('--readme',type=Path);p.add_argument('--known-issues',type=Path)
+ p.add_argument('--server-access',type=Path,help='Player-only setup JSON; never operator credentials.')
  a=p.parse_args();refs={repo:git(repo,'rev-parse','HEAD')for repo in (ROOT,a.backend_repo)}
  if any(git(repo,'status','--porcelain')for repo in refs):raise RuntimeError('Commit the selected source before building')
  build(a.base,a.base_sha256,a.server_catalog,a.output,frontend_ref=refs[ROOT],backend_ref=refs[a.backend_repo],
        tag=a.tag,release_id=a.release_id,archive_name=a.archive_name,readme=a.readme,
-       known_issues=json.loads(a.known_issues.read_bytes())if a.known_issues else None)
+       known_issues=json.loads(a.known_issues.read_bytes())if a.known_issues else None,server_access=a.server_access)
  if any(git(repo,'rev-parse','HEAD')!=ref or git(repo,'status','--porcelain')for repo,ref in refs.items()):raise RuntimeError('Source changed while building; do not publish this archive')
 if __name__=='__main__':main()

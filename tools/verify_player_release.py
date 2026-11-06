@@ -55,7 +55,7 @@ def verify(archive,server_catalog,output):
    expected[name.casefold()]=name
    if type(row['bytes'])is not int or not 0<=row['bytes']<=256*1024**2 or not re.fullmatch('[0-9a-f]{64}',row['sha256']):raise ValueError('Invalid size or hash')
    total+=row['bytes']
-   if p.suffix.lower()in('.key','.pem','.p12','.pfx','.pak','.sig','.dmp')or p.name.lower()=='tribesrivals.exe'or any(x.lower()in('profile','logs','local-settings')for x in p.parts):raise ValueError('Private/original-game member: '+name)
+   if p.suffix.lower()in('.key','.pem','.p12','.pfx','.pak','.sig','.dmp')or p.name.lower()in('tribesrivals.exe','tailscale-api-token.txt','server-access-operator.json','server-access-state.json')or any(x.lower()in('profile','logs','local-settings')for x in p.parts):raise ValueError('Private/original-game member: '+name)
    if p.suffix.lower()=='.exe'and name not in('python/python.exe','python/pythonw.exe'):raise ValueError('Unexpected executable: '+name)
   if total>8*1024**3:raise ValueError('Expanded archive bounds exceeded')
   required={'client.py','community_starter.pyw','Start Community Starter.vbs','python/pythonw.exe','lua/client.lua','README-FIRST.txt','RELEASE-INFO.json','base-game-manifest.json'}
@@ -64,7 +64,7 @@ def verify(archive,server_catalog,output):
   for n in names:safe_name(n)
   catalog=map_catalog(manifest)
   if catalog!=server['verified_map_catalog']:raise ValueError('Client map fingerprints do not match the current server')
-  secret=re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}')
+  secret=re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|tskey-api-[A-Za-z0-9_-]{20,}')
   for i,row in enumerate(rows,1):
    name=row['path'];info=z.getinfo(root+name)
    if info.file_size!=row['bytes']:raise ValueError('ZIP length mismatch: '+name)
