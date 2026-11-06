@@ -2,11 +2,11 @@
 
 ## Download and play
 
-**[Download the complete Windows playtest client — r6](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.05-r6/TRIBES3-Community-Starter-Windows-20261105-r6.zip)** · [Release notes and checksums](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.05-r6)
+**[Download the complete Windows playtest client — r6](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.06-r7/TRIBES3-Community-Starter-Windows-20261106-r7.zip)** · [Release notes and checksums](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.06-r7)
 
 The download includes the Community Starter, portable runtime and all custom map content for the 22-map catalog. No separate map-update ZIPs are needed. You still need your own matching Steam installation of TRIBES 3 Rivals and an approved account on the community's Tailscale network.
 
-R6 adds confirmed map selection, crash/lobby recovery, stable buttons during automatic refreshes, bounded parallel file preparation with a file counter, and first-person spectator viewing. First verification can take minutes; warm preparation is not guaranteed to finish in 6–10 seconds.
+R7 includes the Heavy Bolt trail correction for shots still airborne after switching weapons; visible whiteout resolution still needs player confirmation. The paired server has the Katabatic turret and flag-return updates. R6 lobby recovery, stable refresh controls, parallel preparation and first-person spectator features are retained. First verification can take minutes; warm preparation is not guaranteed to finish in 6–10 seconds.
 
 1. Download and extract the entire ZIP into a fresh folder.
 2. Start Steam and connect to the approved Tailscale network.
