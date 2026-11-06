@@ -1,3 +1,7 @@
+# Complete client r7 preparation
+
+2026-11-06: The complete-release builder now overlays the canonical `lua/client.lua` so the Heavy Bolt runtime correction is included in public packages, and accepts explicit release README/known-issue metadata. A real ZIP regression check verifies the runtime overlay while map contents remain frozen. All 121 frontend tests and paired source checks pass. R7 is being rebuilt from the SHA256-pinned complete r6 archive against a fresh read-only verification of the current server's 22-map catalog. Native gameplay evidence below remains separate from archive qualification and publication; visible whiteout confirmation remains pending.
+
 # Heavy Bolt visual candidate - 2026-11-06
 
 On `fix/weapon-retail-objectives`, a stowed Heavy Bolt uses its original world-space projectile trail after switching weapons. The correction covers the local predicted projectile (which has local authority) and its replicated counterpart, only for the original Heavy Bolt class fired by this exact remote local player. Other weapons and players are excluded. Projectile physics, ammo, damage and per-weapon timing remain native. Visual errors are isolated from input-release handling.

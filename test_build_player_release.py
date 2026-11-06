@@ -2,7 +2,7 @@
 import hashlib,json,unittest,zipfile
 from pathlib import Path
 import test_player_release as fixtures
-from tools.build_player_release import build
+from tools.build_player_release import build,SOURCE_MEMBERS
 from tools.verify_player_release import verify
 
 class CompleteReleaseBuildTests(unittest.TestCase):
@@ -28,6 +28,18 @@ class CompleteReleaseBuildTests(unittest.TestCase):
   self.digest='0'*64
   with self.assertRaisesRegex(ValueError,'Base archive SHA256 mismatch'):self.build()
   self.assertFalse((self.fixture.root/'release').exists())
+ def test_release_includes_current_client_lua_and_explicit_release_notes(self):
+  self.assertEqual(SOURCE_MEMBERS['lua/client.lua'],'lua/client.lua')
+  path=self.source/'lua/client.lua';path.parent.mkdir();path.write_text('-- current Heavy Bolt runtime\n')
+  readme=self.source/'release-readme.txt';readme.write_text('R7 playtest: visual confirmation pending.\n')
+  archive=self.build(source_members={'lua/client.lua':'lua/client.lua'},readme=readme,
+                     known_issues=['Heavy Bolt whiteout needs visual confirmation.'])
+  report=verify(archive,self.fixture.server,self.fixture.root/'verification');self.assertTrue(report['passed'])
+  with zipfile.ZipFile(archive)as z:
+   self.assertEqual(z.read('TRIBES3-Community-Starter/lua/client.lua'),path.read_bytes())
+   self.assertEqual(z.read('TRIBES3-Community-Starter/README-FIRST.txt'),readme.read_bytes())
+   info=json.loads(z.read('TRIBES3-Community-Starter/RELEASE-INFO.json'))
+   self.assertEqual(info['known_issues'],['Heavy Bolt whiteout needs visual confirmation.'])
  def test_source_cannot_replace_frozen_content(self):
   destination='content/Community/Snowblind/fixture.uasset'
   with self.assertRaisesRegex(ValueError,'payload is frozen'):self.build(source_members={destination:'client_entry.py'})

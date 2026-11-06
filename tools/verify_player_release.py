@@ -84,7 +84,7 @@ def verify(archive,server_catalog,output):
  after=archive.stat()
  if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise ValueError('Archive changed during verification')
  with archive.open('rb')as f:archive_sha=hashlib.file_digest(f,'sha256').hexdigest()
- report={'archive':archive.name,'archive_bytes':before.st_size,'archive_sha256':archive_sha,'verified_members':len(rows),'expanded_bytes':total,'maps':list(catalog),'verified_map_catalog':catalog,'server_manifest_sha256':server['host_manifest_sha256'],'server_map_match':True,'all_archive_members_sha256_verified':True,'original_game_included':False,'private_keys_included':False,'scope':'Distribution integrity and current server map fingerprint match. Existing multiplayer/loadout issues are not fixed by this release.','passed':True}
+ report={'archive':archive.name,'archive_bytes':before.st_size,'archive_sha256':archive_sha,'verified_members':len(rows),'expanded_bytes':total,'maps':list(catalog),'verified_map_catalog':catalog,'server_manifest_sha256':server['host_manifest_sha256'],'server_map_match':True,'all_archive_members_sha256_verified':True,'original_game_included':False,'private_keys_included':False,'scope':'Distribution integrity and current server map fingerprint match. Gameplay qualification is recorded separately.','passed':True}
  (output/'VERIFICATION.json').write_text(json.dumps(report,indent=2)+'\n',newline='\n')
  (output/'MAP-CATALOG.json').write_text(json.dumps({'release':info['release'],'maps':catalog},indent=2)+'\n',newline='\n')
  print(json.dumps({'passed':True,'archive_sha256':archive_sha,'maps':len(catalog),'members':len(rows)}),flush=True)
