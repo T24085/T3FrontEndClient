@@ -1,3 +1,7 @@
+# Personal turret diagnostic fixture - 2026-11-06
+
+On `fix/personal-turret-fire`, `tools/native_personal_turret.lua` is a development-only original Medium inventory/pack-input fixture for the paired server investigation. It is not included in player runtime or the existing r7 release. Client gameplay source is unchanged; all 121 tests and paired source checks pass. The paired server's isolated two-client original Katabatic run passed original Medium Technician (530) / pack 19 deployment, friendly-only no-fire and enemy targeting/firing with 525 damage while other AI controllers were disabled. All original Jobs ended at zero, with no test mesh override. Other maps, moving targets and cross-PC latency were not qualified; no new client package was published.
+
 # Complete client r7 published
 
 The [2026-11-06 complete r7 playtest release](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.06-r7) is public. Its 1,445,723,086-byte ZIP retains the frozen cooked maps and portable/native binaries from the SHA256-pinned r6 parent while overlaying current canonical client source, including `lua/client.lua`. All 5,522 declared files passed streamed SHA256 checks and all 22 map fingerprints match a fresh read of the current server. The exact extracted package passed bundled Python/Tk/control smoke checks, with its original owned Job empty. The included client Lua matches the byte hash used in the Heavy Bolt native firing/stowing run. All 121 release-source tests and paired source checks pass.
