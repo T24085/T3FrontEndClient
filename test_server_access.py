@@ -74,6 +74,12 @@ class AccessTests(unittest.TestCase):
             path = Path(name) / 'settings.json'
             path.write_text(json.dumps(SETTINGS))
             self.assertEqual(json.loads(bootstrap_payload(path)), SETTINGS)
+            public = {k:v for k,v in SETTINGS.items() if k != 'enrollment_code'}
+            path.write_text(json.dumps(public))
+            self.assertEqual(json.loads(bootstrap_payload(path)), public)
+            access = ServerAccess(public)
+            self.assertIsNone(access.code)
+            with self.assertRaisesRegex(RuntimeError, 'playtest access code'): access.request_invite()
             path.write_text(json.dumps(dict(SETTINGS, token_file='private-api-token.txt')))
             with self.assertRaises(ValueError): bootstrap_payload(path)
 
@@ -95,8 +101,9 @@ class SetupWindowTests(unittest.TestCase):
         desktop = FakeDesktop();desktop.root = root
         opened = []
         class Access:
+            code = 'e' * 43
             browser = staticmethod(lambda url: True)
-            def request_invite(self): return URL
+            def request_invite(self, code): return URL
             def open_invite(self, value): opened.append(value)
         try:
             show_setup(desktop, Access())

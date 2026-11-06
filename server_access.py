@@ -16,7 +16,7 @@ def bootstrap_payload(path):
     if len(raw) > MAX_RESPONSE:
         raise ValueError('Invalid server-access configuration.')
     settings = json.loads(raw)
-    if not isinstance(settings, dict) or set(settings) != {'contract', 'endpoint', 'enrollment_code'}:
+    if not isinstance(settings, dict) or set(settings) not in ({'contract', 'endpoint'}, {'contract', 'endpoint', 'enrollment_code'}):
         raise ValueError('Player setup must not contain operator settings or API credentials.')
     ServerAccess(settings)
     return (json.dumps(settings, indent=2) + '\n').encode()
@@ -32,7 +32,7 @@ class ServerAccess:
         if not isinstance(settings, dict) or settings.get('contract') != CONTRACT:
             raise ValueError('Unsupported server-access configuration.')
         self.endpoint = endpoint_url(settings.get('endpoint'))
-        self.code = enrollment_code(settings.get('enrollment_code'))
+        self.code = enrollment_code(settings['enrollment_code']) if 'enrollment_code' in settings else None
         self.opener = opener or urllib.request.build_opener(
             urllib.request.ProxyHandler({}), NoRedirects())
         self.browser = browser or webbrowser.open
@@ -46,9 +46,13 @@ class ServerAccess:
             raise ValueError('Invalid server-access configuration.')
         return cls(json.loads(path.read_bytes()))
 
-    def request_invite(self):
+    def request_invite(self, code=None):
+        try:
+            code = enrollment_code(self.code if code is None else code)
+        except ValueError:
+            raise RuntimeError('Paste the playtest access code from your organizer, then try again.') from None
         request = urllib.request.Request(self.endpoint, data=b'{}', method='POST', headers={
-            'Authorization': 'Bearer ' + self.code,
+            'Authorization': 'Bearer ' + code,
             'Content-Type': 'application/json', 'Accept': 'application/json'})
         try:
             with self.opener.open(request, timeout=12) as response:
@@ -93,6 +97,12 @@ def show_setup(desktop, access):
              fg='#9fb3c6', font=('Segoe UI', 11)).pack(anchor='w', padx=24, pady=(0, 18))
     buttons = []
     pending = False
+    code = tk.StringVar(value=access.code or '')
+    if access.code is None:
+        tk.Label(window, text='PLAYTEST ACCESS CODE', bg='#132335', fg='#9fb3c6',
+                 font=('Segoe UI', 9)).pack(anchor='w', padx=24)
+        tk.Entry(window, textvariable=code, width=48, font=('Segoe UI', 11)).pack(fill='x', padx=24, pady=(4, 16))
+        status.set('Install Tailscale and sign in. Paste the shared playtest access code from your organizer, then accept server access.')
 
     def close():
         desktop.access_window = None
@@ -138,9 +148,13 @@ def show_setup(desktop, access):
         desktop.set_capabilities(value)
         status.set('Connected to the game server. You can close this window and create or join a lobby.')
 
+    def request():
+        entered = code.get().strip()
+        work(lambda: access.request_invite(entered), accepted)
+
     for text, command in (
             ('1. Install Tailscale', lambda: access.browser(DOWNLOAD_URL)),
-            ('2. Accept server access', lambda: work(access.request_invite, accepted)),
+            ('2. Accept server access', request),
             ('3. Check connection', lambda: work(desktop.lobby.capabilities, checked))):
         button = desktop.button(window, text, command)
         button.pack(fill='x', padx=24, pady=(0, 10))

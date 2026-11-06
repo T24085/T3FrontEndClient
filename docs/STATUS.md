@@ -2,7 +2,7 @@
 
 `feat/tailscale-server-access` adds an optional **Set up server access** window: install/sign into Tailscale, obtain and accept a server-sharing invitation through a public HTTPS bootstrap, then check the existing pinned-TLS lobby connection. Setup work has its own queue and does not clear foreground lobby operations. The paired broker automates device-sharing invitations without adding tailnet members. Only a three-field player bootstrap enters client packages; API tokens and operator/cache files are excluded. New runtime modules are included by the dynamic, desktop and complete-release builders; configured builds accept `--server-access`.
 
-Validation: all 128 client tests and paired source checks pass, including Tk setup controls, TLS/redirect/destination rejection, credential separation and a real fixture-ZIP bootstrap inventory/hash audit. Live setup activation and external-user acceptance remain separate; r7 and Drive archives are unchanged. No native game was launched or stopped for this feature.
+Validation: all 129 client tests and paired source checks pass, including Tk setup controls, TLS/redirect/destination rejection, credential separation and real fixture-ZIP bootstrap inventory/hash audits. Public builds omit the enrollment code and prompt for the one shared playtest code; private builds can preconfigure it. Live setup activation and external-user acceptance remain separate; r7 and Drive archives are unchanged. No native game was launched or stopped for this feature.
 
 # Complete client r7 published
 

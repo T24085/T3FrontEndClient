@@ -55,5 +55,13 @@ class CompleteReleaseBuildTests(unittest.TestCase):
    self.assertEqual(json.loads(z.read('TRIBES3-Community-Starter/server-access.json')),SETTINGS)
   self.assertIn('server_access.py',SOURCE_MEMBERS)
   self.assertIn('server_access_contract.py',SOURCE_MEMBERS)
+ def test_public_bootstrap_does_not_embed_the_playtest_access_code(self):
+  from test_server_access import SETTINGS
+  public={k:v for k,v in SETTINGS.items()if k!='enrollment_code'}
+  bootstrap=self.fixture.root/'public-server-access.json';bootstrap.write_text(json.dumps(public))
+  archive=self.build(server_access=bootstrap)
+  with zipfile.ZipFile(archive)as z:
+   self.assertEqual(json.loads(z.read('TRIBES3-Community-Starter/server-access.json')),public)
+   self.assertNotIn(SETTINGS['enrollment_code'].encode(),z.read('TRIBES3-Community-Starter/server-access.json'))
 
 if __name__=='__main__':unittest.main()
