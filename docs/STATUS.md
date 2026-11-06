@@ -1,3 +1,7 @@
+# Complete client release r6
+
+The 2026-11-05 r6 complete playtest release is being prepared from the pinned, fully inventoried r5 archive plus current canonical frontend modules and first-person spectator runtime. Cooked maps, shared map-fingerprint Lua, original-game inventory and Python/Tk/native runtime binaries remain frozen. The builder records exact frontend/backend source references and validates every inherited member before producing a new archive. Public release status and final verification are recorded after publication; a source push alone does not update the player download.
+
 # Lobby selection and membership recovery
 
 Controls follow-up 2026-11-05: Automatic lobby/live-match polls now run as background work without disabling action buttons. A click during a background read is queued once and runs after that read; foreground operations still disable duplicate actions. The installed r3 update takes effect when Starter is reopened. The user's existing native game was observed running with `REMOTE_PAWN_READY` and has not been stopped.
