@@ -4,6 +4,14 @@ The original in-map results widget owns both the final scoreboard and summary ta
 
 All 135 client tests and 12 paired source contracts pass. The keyboard behavior still requires a rendered in-game retest. This is a source candidate for the community game runtime. The stock retail install is outside its scope. The paired server candidate separately lets the native match finish without treating results as an adapter error.
 
+# Heavy Bolt whiteout follow-up - 2026-11-06
+
+The user's recording shows a large cyan effect covering the view after firing Heavy Bolt and switching weapons. The running client's Lua and event markers confirm the previous stowed-trail correction was loaded; the earlier component-state qualification did not establish that the visible whiteout was fixed.
+
+The private `fix/heavy-bolt-whiteout-r2` candidate excludes stopped/unknown-state projectiles, resets inherited first-person Niagara override parameters when selecting the original world-space trail, and changes each observed live projectile only once. It retains the existing exact local-player, weapon, world and component-owner guards and does not change projectile physics, damage or ammo. These are plausible unguarded cases identified from the clip and original Blueprint inspection, not a confirmed visible root cause.
+
+Validation: all 125 client tests and paired source checks pass, including stopped-effect exclusion, override reset, native asset revisit, new-flight state cleanup, input-release isolation and canonical embedded Lua checks. No native game was launched or stopped for this follow-up. Visual confirmation, installed activation and public release updates remain separate and pending; r7 still contains the previous candidate.
+
 # Flag toss aim server update active - 2026-11-06
 
 The current client passed the pinned-TLS readiness check against private host revision `flag-toss-aim-20261106-r1`. The host supplies the player's aim to the original flag toss. All 134 client and 136 backend tests pass. Grounded toss flight remains for in-game verification.
