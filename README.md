@@ -2,15 +2,17 @@
 
 ## Download and play
 
-**[Download the complete Windows playtest client — r5](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.04-r5/TRIBES3-Community-Starter-Windows-20261104-r5.zip)** · [Release notes and checksums](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.04-r5)
+**[Download the complete Windows playtest client — r6](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.05-r6/TRIBES3-Community-Starter-Windows-20261105-r6.zip)** · [Release notes and checksums](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.05-r6)
 
 The download includes the Community Starter, portable runtime and all custom map content for the 22-map catalog. No separate map-update ZIPs are needed. You still need your own matching Steam installation of TRIBES 3 Rivals and an approved account on the community's Tailscale network.
+
+R6 adds confirmed map selection, crash/lobby recovery, stable buttons during automatic refreshes, bounded parallel file preparation with a file counter, and first-person spectator viewing. First verification can take minutes; warm preparation is not guaranteed to finish in 6–10 seconds.
 
 1. Download and extract the entire ZIP into a fresh folder.
 2. Start Steam and connect to the approved Tailscale network.
 3. Open `Start Community Starter.vbs` in the extracted folder.
 
-This is a playtest release. The reported multiplayer join and missing weapon-slot issues remain under investigation. The repository's **Code → Download ZIP** contains development source; use the complete release download above to play.
+This is a playtest release. The server-side staging-team correction has been deployed; native loopback checks now show both players spawning and populated weapon menus. Off-site confirmation remains open. The double-shot issue is recorded as fixed based on user confirmation. The repository's **Code → Download ZIP** contains development source; use the complete release download above to play.
 
 ## Development source
 

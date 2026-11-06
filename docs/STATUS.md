@@ -1,6 +1,8 @@
 # Complete client release r6
 
-The 2026-11-05 r6 complete playtest release is being prepared from the pinned, fully inventoried r5 archive plus current canonical frontend modules and first-person spectator runtime. Cooked maps, shared map-fingerprint Lua, original-game inventory and Python/Tk/native runtime binaries remain frozen. The builder records exact frontend/backend source references and validates every inherited member before producing a new archive. Public release status and final verification are recorded after publication; a source push alone does not update the player download.
+The [2026-11-05 r6 complete playtest release](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.05-r6) is published. Its 1,445,721,840-byte ZIP was rebuilt from the pinned, fully inventoried r5 archive plus canonical frontend modules and first-person spectator runtime from commit `577b697d4db1128a0061a1d77e29ae338bcce99f`. All 5,522 declared files passed streamed SHA256 verification, all 22 map fingerprints matched a fresh read of the current server, and all six remote asset digests matched locally. The public download returned HTTP 200 with the expected size, ZIP signature and checksum.
+
+Cooked maps, shared map-fingerprint Lua, original-game inventory and Python/Tk/native runtime binaries remain frozen. All 115 source tests and the exact extracted package's Python/Tk/control smoke checks passed. An extra bounded headless spawn check did not establish ready-player evidence and was stopped at the user's request, with owned process cleanup confirmed; it is not represented as a passing spawn qualification. Existing player spawning is confirmed by the user. Off-site multiplayer, loadout and distinct-player spectator confirmation remain separate. The main README now points to r6. No server update/restart was performed for publication.
 
 # Lobby selection and membership recovery
 
