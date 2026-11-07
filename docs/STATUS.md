@@ -1,3 +1,7 @@
+# Paired private server candidate ready for user testing - 2026-11-06
+
+The paired laptop server now runs private candidate `turret-damage-chain-candidate-20261106-r1`, preserving its latest repair-capture and onboarding fixes. The current installed client passed the pinned-TLS readiness check against the restarted service; no client Lua or release was replaced by this task. All 134 client tests and 126 paired backend tests pass. The user will perform the turret gameplay tests. Incoming damage and opposing Medium Chaingun tracer appearance remain unverified candidates; see the paired backend deployment record. Original game assets, keys, populated settings and native logs remain outside Git.
+
 # Foreign Chaingun delivery observations - 2026-11-06
 
 The private incoming-damage fixture now includes an exact foreign-source native projectile/cue observer, including OnRep events, the actual Niagara trail asset and its visibility fields. Five focused observer simulations and all 134 client tests pass; paired source checks pass. The actual Heavy Gladiator item and mortar secondary slot replace incorrect diagnostic selections. No player runtime was modified. The paired server has a narrow Medium Chaingun prediction-branch candidate awaiting the native comparison; an original host-only inspection confirmed its authored 3P trail and enabled replication defaults, but does not establish peer rendering. Further native launches are paused for the user's Bolt white-screen comparison. No installed client or release was updated.
