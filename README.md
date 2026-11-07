@@ -6,11 +6,7 @@
 
 The download includes the Community Starter, portable runtime and all custom map content for the 22-map catalog. No separate map-update ZIPs are needed. You still need your own matching Steam installation of TRIBES 3 Rivals and an approved account on the community's Tailscale network.
 
-r9 restores **Set up server access** in Starter and includes the Heavy Bolt trail fix and final-scoreboard Escape fallback. The refreshed download includes **Damnation (2026)** with reshaped shorelines, animated ripples, and stone footings. All 22 map fingerprints match the shared server. First-time game file verification can take several minutes.
-
-Already on r9? Close Starter and TRIBES 3, extract the updater inside your existing `TRIBES3-Community-Starter` folder, and run `Apply r9 Shoreline Update.bat` from the extracted updater folder. [Download the r9 shoreline updater](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.07-r9/TRIBES3-Windows-r9-Shoreline-Update.zip)
-
-On r8? Download the refreshed complete r9 ZIP, or apply the r8-to-r9 updater first and then apply the shoreline updater. [Download the r8-to-r9 updater](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.07-r9/TRIBES3-Windows-r8-to-r9-Update.zip)
+r9 restores **Set up server access** in Starter and includes the Heavy Bolt trail fix and final-scoreboard Escape fallback. The complete download includes the taller Starter window and **Damnation (2026)** with reshaped shorelines, animated ripples, and stone footings. All 22 map fingerprints match the shared server. First-time game file verification can take several minutes.
 
 1. Download and extract the entire ZIP into a fresh folder.
 2. Start Steam and connect to the approved Tailscale network.
