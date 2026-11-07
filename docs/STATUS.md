@@ -1,3 +1,7 @@
+# Flag toss aim server update active - 2026-11-06
+
+The current client passed the pinned-TLS readiness check against private host revision `flag-toss-aim-20261106-r1`. The host supplies the player's aim to the original flag toss. All 134 client and 136 backend tests pass. Grounded toss flight remains for in-game verification.
+
 # All-three Chaingun private server candidate active - 2026-11-06
 
 Private server revision `turret-damage-chain-candidate-20261106-r2` is active after the user's authorized restart. It covers original Light, Medium and Heavy Chaingun main abilities. The existing installed client passes the pinned-TLS readiness check against the fresh server; no download/runtime change is required. All 134 client and 127 backend source tests pass. Sustained incoming damage and actual enemy tracer rendering remain for the user's gameplay test.
