@@ -500,6 +500,95 @@ local releaseRadarRuntime=releaseRadarRuntimeFactory({valid=valid,report=report,
  map_descriptors=mapDefinitions,guard_factory=releaseRadarGuardFactory,helper_factory=releaseRadarHelperFactory,
  primary_assembly_factory=releasePrimaryAssemblyFactory,world_settings_guard_factory=releaseNativeWorldSettingsFactory,blueprint_contracts=releaseRadarBlueprintContracts})
 
+local postMatchEscapeBound=false
+local function bind_post_match_escape()
+ if postMatchEscapeBound then return end
+ local path='/Game/UI/RallyHereUpdates/UI_Scene_Result_Frontier_RH_v2.UI_Scene_Result_Frontier_RH_v2_C'
+ local menuHide='/Game/UI/RallyHereUpdates/Shared/Scenes/UI_Scene_Menu_RH_v2.UI_Scene_Menu_RH_v2_C:OnHide'
+ if not valid(StaticFindObject(menuHide)) then return end
+ postMatchEscapeBound=true
+ local pending,checked,failed,reported=false,false,false,false
+ local closing
+ local function same(a,b)
+  return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() and a:GetFullName()==b:GetFullName()
+ end
+ local function results_world()
+  scope()
+  if stopped or failed then return end
+  local gs=state()
+  if not valid(gs) or gs:HasAuthority()
+   or gs.r_GameplayPhaseInfo.Phase.TagName:ToString()~='GamePhase.GameplayEndedPhase' then return end
+  return gs:GetWorld()
+ end
+ local function owns_widget(widget,world)
+  if not valid(widget) or not same(widget:GetWorld(),world) then return false end
+  local pc=widget:GetOwningPlayer()
+  return valid(pc) and pc:IsLocalPlayerController() and not pc:HasAuthority() and same(pc:GetWorld(),world)
+ end
+ local function active_result()
+  if closing then return end
+  local world=results_world()
+  if not valid(world) then return end
+  local result=nil
+  for _,widget in ipairs(FindAllOf('UI_Scene_Result_Frontier_RH_v2_C') or {}) do
+   if owns_widget(widget,world) and widget:GetClass():GetFullName()=='WidgetBlueprintGeneratedClass '..path
+    and widget:IsVisible() and widget:IsTopViewRoute() then
+    if result then return end
+    result=widget
+   end
+  end
+  return result
+ end
+ local function fail(reason)
+  pending=false
+  if failed then return end
+  failed=true
+  report('POST_MATCH_ESCAPE_ERROR|'..tostring(reason))
+ end
+ local function on_escape()
+  if closing or pending or failed or stopped then return end
+  pending=true
+  local queued,reason=pcall(ExecuteInGameThread,function()
+   local ok,why=pcall(function()
+    local result=active_result()
+    if not result then pending=false;return end
+    -- Let the normal press/release handler take the menu route first.
+    ExecuteInGameThreadWithDelay(175,function()
+     pending=false
+     local handled,err=pcall(function()
+      if not same(result,active_result()) then return end
+      if not checked then signature(path..':OnNavigateMenu',{});checked=true end
+      result:OnNavigateMenu()
+      if not reported and result:GetViewManager():GetTopViewRoute():ToString()=='StartMenu' then
+       reported=true;report('POST_MATCH_ESCAPE_MENU|route=StartMenu|nativeHandler=true')
+      end
+     end)
+     if not handled then fail(err) end
+    end)
+   end)
+   if not ok then fail(why) end
+  end)
+  if not queued then fail(reason) end
+ end
+ local ok,why=pcall(function()
+  signature(menuHide,{})
+  RegisterHook(menuHide,function(context)
+   local observed,err=pcall(function()
+    local world=results_world()
+    if not valid(world) or not owns_widget(context:get(),world) then return end
+    -- A native Back can close StartMenu before the queued Escape callback.
+    local token={}
+    closing=token
+    ExecuteInGameThreadWithDelay(250,function() if closing==token then closing=nil end end)
+   end)
+   if not observed then fail(err) end
+  end)
+  RegisterKeyBind(Key.ESCAPE,on_escape)
+  report('POST_MATCH_ESCAPE_READY')
+ end)
+ if not ok then fail(why) end
+end
+
 local function client_tick(sys)
     if joined and os.time()-lastJoin>=30 then
         local modes=FindAllOf('TopGameMode_Topaz') or {}
@@ -529,6 +618,7 @@ local function client_tick(sys)
         spectatorRuntime.tick(pc,ps,gs);return
     end
     assert(SPECTATOR_ROLE=="player","unknown_client_role")
+    bind_post_match_escape()
     local plc=pc.PlayerLoadoutComponent;if not valid(plc) then return end
     local r=player_record(pc,ps)
     if valid(pc.Pawn) and pc.Pawn.bInitialized==true then observe_markers(pc,ps,gs);releaseRadarRuntime.tick(pc,gs);if not r.ready then r.ready=true;report("REMOTE_PAWN_READY|role=client") end;return end

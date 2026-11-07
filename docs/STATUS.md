@@ -1,3 +1,9 @@
+# Post-match Escape candidate - 2026-11-06
+
+The original in-map results widget owns both the final scoreboard and summary tabs. Its original `OnNavigateMenu` action requests the stock `StartMenu` when `Result` is the top route. The private player runtime adds a fallback for Escape only on that owned, visible results widget after the replicated gameplay-ended phase. It defers to the stock handler, skips other routes and ignores the Escape that just closed the original menu. It does not change the desktop launcher.
+
+All 135 client tests and 12 paired source contracts pass. The keyboard behavior still requires a rendered in-game retest. This is a source candidate for the community game runtime. The stock retail install is outside its scope. The paired server candidate separately lets the native match finish without treating results as an adapter error.
+
 # Flag toss aim server update active - 2026-11-06
 
 The current client passed the pinned-TLS readiness check against private host revision `flag-toss-aim-20261106-r1`. The host supplies the player's aim to the original flag toss. All 134 client and 136 backend tests pass. Grounded toss flight remains for in-game verification.
