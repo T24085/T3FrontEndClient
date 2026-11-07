@@ -2,7 +2,7 @@
 
 The original in-map results widget owns both the final scoreboard and summary tabs. Its original `OnNavigateMenu` action requests the stock `StartMenu` when `Result` is the top route. The private player runtime adds a fallback for Escape only on that owned, visible results widget after the replicated gameplay-ended phase. It defers to the stock handler, skips other routes and ignores the Escape that just closed the original menu. It does not change the desktop launcher.
 
-All 135 client tests and 12 paired source contracts pass. The keyboard behavior still requires a rendered in-game retest. This is a source candidate for the community game runtime. The stock retail install is outside its scope. The paired server candidate separately lets the native match finish without treating results as an adapter error.
+Private revision `post-match-escape-20261106-r1` is installed on the local community client with a rollback backup. The installed Lua matches the source and preserves the latest Heavy Bolt trail update. All 139 client tests and 12 paired source contracts passed. In an isolated original Katabatic match, the registered fallback callback opened `StartMenu` on the actual final summary. The subsequent close fixture stopped at its Blueprint reflection check. Physical Escape and closing in the rendered game still need a player retest. The paired live server now preserves the original results phase. The stock retail install and public download are outside this activation. Evidence is outside Git at `verification/post-match-escape-20261106/deployment/VERIFICATION.json`.
 
 # Heavy Bolt whiteout follow-up - 2026-11-06
 
