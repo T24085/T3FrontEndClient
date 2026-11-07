@@ -1,5 +1,6 @@
 """Fetch and stage immutable cooked-map revisions without changing the client ZIP's files."""
 import gzip
+from contextlib import closing
 import hashlib
 import http.client
 import json
@@ -96,7 +97,7 @@ class MapSync:
 
     def _inventory(self):
         try:
-            with self._connection() as connection:
+            with closing(self._connection()) as connection:
                 connection.request('GET', MANIFEST_ROUTE, headers={'Host': self.lobby.authority})
                 with connection.getresponse() as response:
                     if response.status != 200 or response.getheader('Content-Type', '').split(';')[0] != 'application/json':
@@ -109,7 +110,7 @@ class MapSync:
         sha, length = row['sha256'], row['bytes']
         for attempt in range(30):
             self._check_cancelled()
-            with self._connection() as connection:
+            with closing(self._connection()) as connection:
                 connection.request('GET', FILE_ROUTE + sha, headers={'Host': self.lobby.authority})
                 with connection.getresponse() as response:
                     if response.status != 503:
