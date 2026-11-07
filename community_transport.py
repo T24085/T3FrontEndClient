@@ -21,6 +21,10 @@ class CommunityError(RuntimeError):
         self.code = code
 
 
+class CommunityConnectionError(CommunityError):
+    """The connection failed; a submitted operation may already have applied."""
+
+
 class PinnedHTTPSConnection(http.client.HTTPSConnection):
     """Connect to the configured IP while validating TLS against its DNS name."""
     def __init__(self, hostname, port, address, *, context, timeout=10, source_address=None):
@@ -101,8 +105,10 @@ class CommunityClient:
             return value
         except CommunityError:
             raise
-        except (OSError, ssl.SSLError, http.client.HTTPException, ValueError) as exc:
-            raise CommunityError('Could not securely contact the community lobby.') from exc
+        except (OSError, http.client.HTTPException) as exc:
+            raise CommunityConnectionError('Could not securely contact the community lobby.') from exc
+        except ValueError as exc:
+            raise CommunityError('Invalid lobby response.') from exc
         finally:
             conn.close()
 
@@ -113,14 +119,33 @@ class CommunityClient:
     def create(self, name):
         with self.lock:
             if self.code is not None:
-                raise CommunityError('Already in a lobby.')
+                try:
+                    return self.action('state')
+                except CommunityError as exc:
+                    if exc.code not in ('lobby_missing', 'session_invalid'):
+                        raise
             return self._remember(self._request('create', {'name':name}))
 
     def join(self, code, name):
         with self.lock:
-            if self.code is not None:
-                raise CommunityError('Already in a lobby.')
+            if self.code is not None and self.code != code:
+                try:
+                    self.action('state')
+                except CommunityError as exc:
+                    if exc.code not in ('lobby_missing', 'session_invalid'):
+                        raise
+                else:
+                    raise CommunityError('Leave lobby '+self.code+' before joining another lobby.')
             return self._remember(self._request('join', {'code':code, 'name':name}))
+
+    def resume(self):
+        """Recover only this freshly verified device's existing membership."""
+        with self.lock:
+            response = self._request('resume', {})
+            if response.get('room') is None and set(response) == {'room'}:
+                self.code = self.token = self.player_id = None
+                return None
+            return self._remember(response)
 
     def _remember(self, response):
         room, token = response.get('room'), response.get('token')
@@ -169,6 +194,8 @@ class CommunityClient:
 
     def _validated_target(self,match,name,*,spectator=False):
         if not isinstance(match,dict):raise CommunityError('Invalid match response.')
+        if match.get('map', name) != name:
+            raise CommunityError('The allocated match does not match the selected map.')
         fingerprint,match_id=match.get('contentHash'),match.get('id')
         pattern=r'[0-9a-f]{32}' if spectator else r'[A-Za-z0-9_-]{1,64}'
         if not isinstance(match_id,str) or not re.fullmatch(pattern,match_id):

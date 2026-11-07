@@ -40,6 +40,7 @@ end
 local mapDefinitions=assert(loadfile(@@MAP_DEFINITIONS@@))()
 local configure_geometry=assert(loadfile(@@GEOMETRY@@))()({valid=valid,report=report,signature=signature,settings=assert(loadfile(@@LEVEL_SETTINGS@@))(),descriptors=mapDefinitions})
 local configure_weather=assert(loadfile(@@SNOWBLIND_WEATHER@@))()({valid=valid,report=report,scope=scope,descriptors=mapDefinitions})
+local configure_water=assert(loadfile(@@DAMNATION_WATER@@))()({valid=valid,report=report})
 local allowedMaps={}
 for name,row in pairs(mapDefinitions)do
  assert(name==row.name,"map_descriptor_identity_disagreement");allowedMaps[#allowedMaps+1]=row
@@ -63,7 +64,7 @@ local function state()
 end
 local markerService=nil
 local inputService=nil
--- BEGIN_WEAPON_INPUT_RECOVERY_V1|sha256=816a2c97f0ca5be92b4072752aeea2049c45c816d405743fa4b2aa1980f0feeb
+-- BEGIN_WEAPON_INPUT_RECOVERY_V1|sha256=f4f505a0b6a3e27b3f30c1e4d8a4b7940e4c5a4b1e84a92df12347765162efdd
 local weaponInputFactory=(function()
 -- Client-side completion of original weapon input and cancellation protocols.
 -- Projectile creation, ammo, per-weapon last-shot times and cooldowns stay native.
@@ -74,7 +75,7 @@ return function(env)
  signature('/Script/Valhalla.ValCharacter:GetActiveEquippedAbility',{{'ReturnValue','StructProperty',0}})
  local masterPath='/Game/Abilities/Devices/Gun/GA_Gun_Master.GA_Gun_Master_C'
  local reloadPath='/Game/Abilities/Devices/Gun/GA_Gun_Master_Reload.GA_Gun_Master_Reload_C'
- local master=nil;local reloadMaster=nil;local state;local stopped=false
+ local master=nil;local reloadMaster=nil;local state;local stopped=false;local visualObserver=env.observeVisuals
  local function same(a,b)return valid(a)and valid(b)and a:GetAddress()==b:GetAddress()end
  local function owned(s)
   return valid(s.pc)and s.pc:IsLocalPlayerController()and not s.pc:HasAuthority()
@@ -89,6 +90,10 @@ return function(env)
   if not valid(master)then return end
   assert(master:GetFullName()=='BlueprintGeneratedClass '..masterPath,'weapon_input_master_identity_changed')
   local selected=s.pawn:GetActiveEquippedAbility().Handle
+  if visualObserver then
+   local ok,why=pcall(visualObserver,s.pc,s.pawn,s.asc,selected)
+   if not ok then visualObserver=nil;report('HEAVY_BOLT_VISUAL_ERROR|'..tostring(why):sub(1,500))end
+  end
   if not valid(reloadMaster)then reloadMaster=StaticFindObject(reloadPath)end
   if valid(reloadMaster)then assert(reloadMaster:GetFullName()=='BlueprintGeneratedClass '..reloadPath,'weapon_input_reload_identity_changed')end
   local pressed=false;local grants={};local reloads={};local count=0
@@ -169,8 +174,58 @@ return function(env)
  end
 end
 
+
 end)()
-local weaponInput=weaponInputFactory({valid=valid,scope=scope,signature=signature,report=report})
+local heavyBoltVisualFactory=(function()
+-- Candidate: retire the first-person-only Heavy Bolt trail after stowing its
+-- weapon. Use the original world-space trail; never change projectile physics.
+return function(env)
+ local valid,scope,signature,report=env.valid,env.scope,env.signature,env.report
+ local gun='BlueprintGeneratedClass /Game/Topaz/Abilities/Weapons/HeavyBoltLauncher/GA_Topaz_HeavyBoltLauncher.GA_Topaz_HeavyBoltLauncher_C'
+ local projectile='BlueprintGeneratedClass /Game/Topaz/Abilities/Weapons/HeavyBoltLauncher/BP_Projectile_Topaz_HeavyBoltLauncher.BP_Projectile_Topaz_HeavyBoltLauncher_C'
+ local one='NiagaraSystem /Game/VFX/Weapons/BoltLauncher/Heavy/Projectile/NS_BoltLauncher_Heavy_Projectile_1P.NS_BoltLauncher_Heavy_Projectile_1P'
+ local three='NiagaraSystem /Game/VFX/Weapons/BoltLauncher/Heavy/Projectile/NS_BoltLauncher_Heavy_Projectile_3P.NS_BoltLauncher_Heavy_Projectile_3P'
+ local checked=false;local changed={}
+ local function same(a,b)return valid(a)and valid(b)and a:GetAddress()==b:GetAddress()end
+ return function(pc,pawn,asc,selected)
+  scope()
+  if not valid(pc)or not pc:IsLocalPlayerController()or pc:HasAuthority()or not same(pc.Pawn,pawn)or not same(pawn.Controller,pc)or not same(pawn.AbilitySystemComponent,asc)or not same(asc:GetOwner(),pawn)then return end
+  local hasBolt,equipped=false,false
+  asc.ActivatableAbilities.Items:ForEach(function(_,p)
+   local spec=p:get()
+   if spec.InputID==5 and valid(spec.Ability)and spec.Ability:GetClass():GetFullName()==gun then hasBolt=true;equipped=equipped or spec.Handle.Handle==selected end
+  end)
+  if not hasBolt or equipped then return end
+  local all=FindAllOf('BP_Projectile_Topaz_HeavyBoltLauncher_C')or{};assert(#all<=128,'heavy_bolt_projectile_bound')
+  local active={}
+  for _,p in ipairs(all)do
+   if valid(p)and p.bStopped==false and p:GetClass():GetFullName()==projectile and same(p:GetWorld(),pawn:GetWorld())and same(p.Instigator,pawn)then
+    local id,name=p:GetAddress(),p:GetFullName();active[id]=name
+    local trail=p.NS_Projectile_Trail
+    if changed[id]~=name and valid(trail)and same(trail:GetOwner(),p)and same(trail:GetWorld(),p:GetWorld())and valid(trail.Asset)and trail.Asset:GetFullName()==one then
+     local av=p:GetAudioVisual()
+     if valid(av)and valid(av.ProjectileTrail1P)and av.ProjectileTrail1P:GetFullName()==one and valid(av.ProjectileTrail3P)and av.ProjectileTrail3P:GetFullName()==three then
+      if not checked then
+       signature('/Script/Niagara.NiagaraComponent:SetAsset',{{'InAsset','ObjectProperty',0},{'bResetExistingOverrideParameters','BoolProperty',8}})
+       checked=true
+      end
+      -- Camera-relative parameters from the 1P system must not survive into
+      -- the world-space system. Never restart an already stopped/impact FX,
+      -- or repeatedly restart a live system if native code revisits its asset.
+      trail:SetAsset(av.ProjectileTrail3P,true)
+      assert(valid(trail.Asset)and trail.Asset:GetFullName()==three,'heavy_bolt_stowed_trail_readback_failed')
+      changed[id]=name
+      report('HEAVY_BOLT_STOWED_TRAIL|owner=original_3P_trail|resetOverrides=true|oncePerFlight=true|localAuthority='..tostring(p:HasAuthority())..'|predicted='..tostring(p.bIsClientProjectile)..'|physicsChanged=false')
+     end
+    end
+   end
+  end
+  for id,name in pairs(changed)do if active[id]~=name then changed[id]=nil end end
+ end
+end
+end)()
+local heavyBoltVisual=heavyBoltVisualFactory({valid=valid,scope=scope,signature=signature,report=report})
+local weaponInput=weaponInputFactory({valid=valid,scope=scope,signature=signature,report=report,observeVisuals=heavyBoltVisual})
 -- END_WEAPON_INPUT_RECOVERY_V1
 local function observe_markers(pc,ps,gs)
  weaponInput(pc,ps)
@@ -452,6 +507,98 @@ local releaseRadarRuntime=releaseRadarRuntimeFactory({valid=valid,report=report,
  map_descriptors=mapDefinitions,guard_factory=releaseRadarGuardFactory,helper_factory=releaseRadarHelperFactory,
  primary_assembly_factory=releasePrimaryAssemblyFactory,world_settings_guard_factory=releaseNativeWorldSettingsFactory,blueprint_contracts=releaseRadarBlueprintContracts})
 
+local postMatchEscapeBound=false
+local function bind_post_match_escape()
+ if postMatchEscapeBound then return end
+ local path='/Game/UI/RallyHereUpdates/UI_Scene_Result_Frontier_RH_v2.UI_Scene_Result_Frontier_RH_v2_C'
+ local menuClass='WidgetBlueprintGeneratedClass /Game/UI/RallyHereUpdates/Shared/Scenes/UI_Scene_Menu_RH_v2.UI_Scene_Menu_RH_v2_C'
+ local menuHide='/Script/RallyHereStart.RHWidget:OnHide'
+ if not valid(StaticFindObject(menuHide)) then return end
+ postMatchEscapeBound=true
+ local pending,checked,failed,reported=false,false,false,false
+ local closing
+ local function same(a,b)
+  return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() and a:GetFullName()==b:GetFullName()
+ end
+ local function results_world()
+  scope()
+  if stopped or failed then return end
+  local gs=state()
+  if not valid(gs) or gs:HasAuthority()
+   or gs.r_GameplayPhaseInfo.Phase.TagName:ToString()~='GamePhase.GameplayEndedPhase' then return end
+  return gs:GetWorld()
+ end
+ local function owns_widget(widget,world)
+  if not valid(widget) or not same(widget:GetWorld(),world) then return false end
+  local pc=widget:GetOwningPlayer()
+  return valid(pc) and pc:IsLocalPlayerController() and not pc:HasAuthority() and same(pc:GetWorld(),world)
+ end
+ local function active_result()
+  if closing then return end
+  local world=results_world()
+  if not valid(world) then return end
+  local result=nil
+  for _,widget in ipairs(FindAllOf('UI_Scene_Result_Frontier_RH_v2_C') or {}) do
+   if owns_widget(widget,world) and widget:GetClass():GetFullName()=='WidgetBlueprintGeneratedClass '..path
+    and widget:IsVisible() and widget:IsTopViewRoute() then
+    if result then return end
+    result=widget
+   end
+  end
+  return result
+ end
+ local function fail(reason)
+  pending=false
+  if failed then return end
+  failed=true
+  report('POST_MATCH_ESCAPE_ERROR|'..tostring(reason))
+ end
+ local function on_escape()
+  if closing or pending or failed or stopped then return end
+  pending=true
+  local queued,reason=pcall(ExecuteInGameThread,function()
+   local ok,why=pcall(function()
+    local result=active_result()
+    if not result then pending=false;return end
+    -- Let the normal press/release handler take the menu route first.
+    ExecuteInGameThreadWithDelay(175,function()
+     pending=false
+     local handled,err=pcall(function()
+      if not same(result,active_result()) then return end
+      if not checked then signature(path..':OnNavigateMenu',{});checked=true end
+      result:OnNavigateMenu()
+      if not reported and result:GetViewManager():GetTopViewRoute():ToString()=='StartMenu' then
+       reported=true;report('POST_MATCH_ESCAPE_MENU|route=StartMenu|nativeHandler=true')
+      end
+     end)
+     if not handled then fail(err) end
+    end)
+   end)
+   if not ok then fail(why) end
+  end)
+  if not queued then fail(reason) end
+ end
+ local ok,why=pcall(function()
+  signature(menuHide,{})
+  RegisterHook(menuHide,function(context)
+   local observed,err=pcall(function()
+    local world=results_world()
+    local widget=context:get()
+    if not valid(world) or not valid(widget) or widget:GetClass():GetFullName()~=menuClass
+     or not owns_widget(widget,world) then return end
+    -- A native Back can close StartMenu before the queued Escape callback.
+    local token={}
+    closing=token
+    ExecuteInGameThreadWithDelay(250,function() if closing==token then closing=nil end end)
+   end)
+   if not observed then fail(err) end
+  end)
+  RegisterKeyBind(Key.ESCAPE,on_escape)
+  report('POST_MATCH_ESCAPE_READY')
+ end)
+ if not ok then fail(why) end
+end
+
 local function client_tick(sys)
     if joined and os.time()-lastJoin>=30 then
         local modes=FindAllOf('TopGameMode_Topaz') or {}
@@ -475,12 +622,14 @@ local function client_tick(sys)
     local pcs=FindAllOf("ValPlayerController") or {};if #pcs~=1 or not valid(pcs[1]) then return end
     local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() or not valid(pc.PlayerState) then return end
     configure_weather(gs,pc)
+    configure_water(gs)
     local ps=pc.PlayerState
     if SPECTATOR_ROLE=="spectator" then
         if not spectatorRuntime then spectatorRuntime=assert(loadfile(@@SPECTATOR_RUNTIME@@))()({valid=valid,scope=scope,signature=signature,report=report,lease_id=SPECTATOR_LEASE,watch_id=SPECTATOR_WATCH,material_factory=assert(loadfile(@@SPECTATOR_MATERIAL_RUNTIME@@))()})end
         spectatorRuntime.tick(pc,ps,gs);return
     end
     assert(SPECTATOR_ROLE=="player","unknown_client_role")
+    bind_post_match_escape()
     local plc=pc.PlayerLoadoutComponent;if not valid(plc) then return end
     local r=player_record(pc,ps)
     if valid(pc.Pawn) and pc.Pawn.bInitialized==true then observe_markers(pc,ps,gs);releaseRadarRuntime.tick(pc,gs);if not r.ready then r.ready=true;report("REMOTE_PAWN_READY|role=client") end;return end

@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import zipfile
 from community_maps import declared_maps, options
-from build_dynamic_client import require_spectator_runtime
+from build_dynamic_client import require_spectator_runtime, copy_spectator_runtime
 
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / 'dynamic-client-development'
@@ -103,6 +103,7 @@ def main():
     parser.add_argument('--source', type=Path, default=SOURCE, help='Verified dynamic client candidate.')
     parser.add_argument('--output', type=Path, default=OUTPUT, help='New output directory; existing directories are never overwritten.')
     parser.add_argument('--playtest',action='store_true',help='Package the explicitly requested live lobby playtest launcher.')
+    parser.add_argument('--server-access',type=Path,help='Player-only automatic server-sharing setup JSON.')
     parser.add_argument('--connection-settings',type=Path,required=True,
                         help='Explicit target laptop lobby JSON; no host-PC default is inferred.')
     args = parser.parse_args()
@@ -151,11 +152,12 @@ def main():
         dest = OUTPUT.joinpath(*PurePosixPath(name).parts)
         dest.parent.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(source,dest)
-    for name in ('desktop_launcher.py','community_transport.py','community_game.py','map_catalog.py','compare_map_packages.py','community_maps.py','steam_identity.py','player_names.py','runtime_health.py','startup_progress.py','community_starter.pyw','verified_file_cache.py','startup_timing.py','startup_paths.py','bulk_asset_cache.py','client_preparation.py','client_bootstrap.py','bulk_verification_receipts.py'):
+    for name in ('server_access.py','server_access_contract.py','desktop_launcher.py','community_transport.py','community_game.py','map_catalog.py','compare_map_packages.py','community_maps.py','steam_identity.py','player_names.py','runtime_health.py','startup_progress.py','community_starter.pyw','verified_file_cache.py','startup_timing.py','startup_paths.py','bulk_asset_cache.py','client_preparation.py','client_bootstrap.py','bulk_verification_receipts.py'):
         shutil.copyfile(ROOT/name,OUTPUT/name)
     # The entry has one canonical producer; desktop wrapping must not revive a
     # stale generated CLI from its otherwise verified content source.
     shutil.copyfile(ROOT/'client_entry.py', OUTPUT/'client.py')
+    copy_spectator_runtime(manifest, OUTPUT)
     shutil.copyfile(ROOT/'player_profile.py', OUTPUT/'player_profile.py')
     shutil.copyfile(PYTHON/'pythonw.exe',OUTPUT/'python/pythonw.exe')
     shutil.copytree(PYTHON/'Lib/tkinter',OUTPUT/'python/tkinter',ignore=shutil.ignore_patterns('__pycache__','*.pyc','test'))
@@ -204,12 +206,16 @@ options. Remote players and multiple populated matches still need testing.
 SPECTATING
 
 Open Live matches, select a match, then click Spectate.
-F5/F6 switch players. F7 selects first person; F8 selects third person.
+Spectating is first person only. F5/F6 switch players; F7 restores first person.
 Stop watching closes only your viewer. Keep Starter open while watching.
 The leader can disable spectators during lobby setup. Spectators have separate
 seats and do not join either team or count toward the player load-in countdown.
 Both the community server and the watching client need this update.
 '''
+    if args.server_access:
+        from server_access import bootstrap_payload
+        (OUTPUT/'server-access.json').write_bytes(bootstrap_payload(args.server_access))
+        readme+='\nSERVER ACCESS\nNew players: select Set up server access in Starter. Install/sign into Tailscale,\naccept the server invitation, then check the connection. Keep Tailscale connected.\n'
     (OUTPUT/'README-FIRST.txt').write_text(readme,encoding='utf-8')
     provenance={'embedded_python':embedded_version,'tk_source_python':tkinter_version,
                 'connection_settings_sha256':sha(args.connection_settings),

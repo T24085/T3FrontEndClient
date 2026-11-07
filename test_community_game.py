@@ -35,6 +35,17 @@ class CommunityGameTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_file_progress_reaches_join_status_and_invalid_counts_are_ignored(self):
+        artifacts=self.game.artifacts/'prepare';(artifacts/'owner').mkdir(parents=True)
+        log=artifacts/'owner/stdout.log'
+        log.write_text('CLIENT_STARTUP|phase=staging_game\nCLIENT_PREPARATION_PROGRESS|128/512\nCLIENT_PREPARATION_PROGRESS|999/512\n')
+        self.game.preparation_artifacts=artifacts;self.game.preparation_status='preparing'
+        self.game.status='starting';self.game.startup_phase='preparing_client'
+        state=self.game.snapshot();self.assertEqual(state['progress'],'Preparing game files: 128 / 512 files…')
+        self.assertEqual(state['preparation']['progress'],state['progress'])
+        log.write_text('CLIENT_STARTUP|phase=staging_game\nCLIENT_PREPARATION_PROGRESS|1/0\n')
+        self.assertEqual(self.game.snapshot()['progress'],'Preparing your isolated game session…')
+
     def test_only_fresh_lobby_endpoint_and_owned_stop(self):
         event = threading.Event()
         captured = {}
@@ -58,6 +69,13 @@ class CommunityGameTest(unittest.TestCase):
         with self.assertRaises(CommunityError):
             self.game.start()
         self.assertEqual(self.game.snapshot()['status'], 'failed')
+
+    def test_selected_ui_map_cannot_launch_a_different_server_target(self):
+        with patch.object(self.game.owner,'run_owned_job') as owner:
+            with self.assertRaisesRegex(CommunityError,'selected map changed'):
+                self.game.start(expected_map='Snowblind')
+            owner.assert_not_called()
+        self.assertEqual(self.game.snapshot()['status'],'failed')
 
     def test_staging_failure_reports_child_reason_without_native_process(self):
         reason = 'Insufficient staging storage: need file bytes=8452589081 plus 2 GiB reserve; free=6568361984.'

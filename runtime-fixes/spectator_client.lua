@@ -3,7 +3,7 @@
 return function(env)
  local valid,scope,signature,report=assert(env.valid),assert(env.scope),assert(env.signature),assert(env.report)
  local pc,ps,world,rig,nextHandle;local stopped=false;local started=false
- local ready=false;local lastNext=0;local lastTarget=nil;local preferredThird=true
+ local ready=false;local lastNext=0;local lastTarget=nil
  local materials=nil
  local retired={}
  local service={};local now=env.now or os.time
@@ -166,20 +166,29 @@ return function(env)
   pc:SetViewTargetWithBlend(spectator,0,0,0,false)
   pc:SetViewTargetWithBlend(target,0,0,0,false)
  end
+ local function first_person()
+  local changed=pc:IsThirdPerson()
+  if changed then pc:ToggleThirdPerson()end
+  assert(not pc:IsThirdPerson(),'spectator_first_person_required')
+  return changed
+ end
  function service.action(action)
   if stopped or not pc then return end
   guard()
   if action=='next'or action=='previous'then pc:ServerSpectateNext(action=='next'and 1 or -1)
   elseif action=='first'or action=='third'then
-   preferredThird=action=='third'
-   if pc:IsThirdPerson()~=preferredThird then pc:ToggleThirdPerson()end
+   -- Older callers may still request third person; keep this viewer in first.
+   first_person()
    local target=current_target();refresh_camera(target)
-   if target then materials.apply(target,preferredThird)end
-   report('SPECTATOR_VIEW|mode='..action)
+   if target then materials.apply(target,false)end
+   report('SPECTATOR_VIEW|mode=first')
   else error('spectator_unknown_camera_action')end
  end
  local function follow()
   guard()
+  -- Native input can also toggle perspective. Restore first person on every
+  -- observer update, including while waiting for a live target to replicate.
+  local perspectiveChanged=first_person()
   -- Watching is intentionally passive. The original local AFK clock also
   -- kicks observer-only controllers; exempt this exact admitted viewer while
   -- its native spectator context remains valid, without manufacturing input
@@ -196,13 +205,16 @@ return function(env)
   local changed=lastTarget~=identity(target)
   if changed then
    target_rig(target);lastTarget=identity(target)
-   if pc:IsThirdPerson()~=preferredThird then pc:ToggleThirdPerson()end
+  end
+  if changed or perspectiveChanged then
    refresh_camera(target)
-   materials.apply(target,preferredThird)
+   materials.apply(target,false)
+  end
+  if changed then
    report('SPECTATOR_TARGET|lease='..env.lease_id..'|watch='..env.watch_id..'|player='..target:GetFullName())
   end
-  materials.poll(target,pc:IsThirdPerson())
-  if not ready then ready=true;report('SPECTATOR_READY|lease='..env.lease_id..'|watch='..env.watch_id..'|mode='..(pc:IsThirdPerson()and'third'or'first'))end
+  materials.poll(target,false)
+  if not ready then ready=true;report('SPECTATOR_READY|lease='..env.lease_id..'|watch='..env.watch_id..'|mode=first')end
  end
  local schedule
  schedule=function()
@@ -240,11 +252,12 @@ return function(env)
    -- Reset the server's view target through its spectator-only RPC as well;
    -- otherwise a one-player server can suppress the unchanged target update
    -- when this viewer starts again. Reliable RPC order preserves the reset.
+   first_person()
    started=true;pc:ServerViewSelf({BlendTime=0,BlendFunction=0,BlendExp=2,bLockOutgoing=false})
    pc:ServerRequestStartSpectating()
    RegisterKeyBind(Key.F5,key_action('next'));RegisterKeyBind(Key.F6,key_action('previous'))
-   RegisterKeyBind(Key.F7,key_action('first'));RegisterKeyBind(Key.F8,key_action('third'))
-   report('SPECTATOR_CONTROLS|F5=next_player|F6=previous_player|F7=first_person|F8=third_person')
+   RegisterKeyBind(Key.F7,key_action('first'))
+   report('SPECTATOR_CONTROLS|F5=next_player|F6=previous_player|F7=first_person')
    report('SPECTATOR_IDLE_POLICY|scope=local_observer_only')
    schedule()
   end

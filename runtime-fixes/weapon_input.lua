@@ -7,7 +7,7 @@ return function(env)
  signature('/Script/Valhalla.ValCharacter:GetActiveEquippedAbility',{{'ReturnValue','StructProperty',0}})
  local masterPath='/Game/Abilities/Devices/Gun/GA_Gun_Master.GA_Gun_Master_C'
  local reloadPath='/Game/Abilities/Devices/Gun/GA_Gun_Master_Reload.GA_Gun_Master_Reload_C'
- local master=nil;local reloadMaster=nil;local state;local stopped=false
+ local master=nil;local reloadMaster=nil;local state;local stopped=false;local visualObserver=env.observeVisuals
  local function same(a,b)return valid(a)and valid(b)and a:GetAddress()==b:GetAddress()end
  local function owned(s)
   return valid(s.pc)and s.pc:IsLocalPlayerController()and not s.pc:HasAuthority()
@@ -22,6 +22,10 @@ return function(env)
   if not valid(master)then return end
   assert(master:GetFullName()=='BlueprintGeneratedClass '..masterPath,'weapon_input_master_identity_changed')
   local selected=s.pawn:GetActiveEquippedAbility().Handle
+  if visualObserver then
+   local ok,why=pcall(visualObserver,s.pc,s.pawn,s.asc,selected)
+   if not ok then visualObserver=nil;report('HEAVY_BOLT_VISUAL_ERROR|'..tostring(why):sub(1,500))end
+  end
   if not valid(reloadMaster)then reloadMaster=StaticFindObject(reloadPath)end
   if valid(reloadMaster)then assert(reloadMaster:GetFullName()=='BlueprintGeneratedClass '..reloadPath,'weapon_input_reload_identity_changed')end
   local pressed=false;local grants={};local reloads={};local count=0

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent
 SOURCE = Path(r'D:\Tribes3-Research\releases\staging\Tribes3-Community-Windows-Worldbuilding-20261102-r1')
 SOURCE_MANIFEST_SHA256 = '740081ed79694c486fcff871b4e5ff3329100e5f7407eaf01985d3ed4c44a009'
 OUTPUT = ROOT / 'dynamic-client-development'
-CANONICAL_HELPERS = ('player_profile.py', 'client_bootstrap.py', 'bulk_verification_receipts.py', 'runtime_health.py', 'startup_progress.py', 'startup_paths.py', 'startup_timing.py',
+CANONICAL_HELPERS = ('server_access.py', 'server_access_contract.py', 'player_profile.py', 'client_bootstrap.py', 'bulk_verification_receipts.py', 'runtime_health.py', 'startup_progress.py', 'startup_paths.py', 'startup_timing.py',
                      'client_preparation.py', 'bulk_asset_cache.py', 'verified_file_cache.py')
 SPECTATOR_RUNTIME_FILES = ('lua/spectator_client.lua', 'lua/spectator_materials.lua')
 
@@ -29,6 +29,13 @@ def require_spectator_runtime(manifest, verified_files):
         missing = [name for name in SPECTATOR_RUNTIME_FILES if name not in verified_files]
         if missing:
             raise ValueError('Source spectator contract is missing its runtime: ' + ', '.join(missing))
+
+
+def copy_spectator_runtime(manifest, output):
+    """Use current camera policy when wrapping a verified spectator package."""
+    if manifest.get('spectator_contract') == 'native-spectator-v1':
+        for name in SPECTATOR_RUNTIME_FILES:
+            shutil.copyfile(ROOT / name, output / name)
 
 
 def verified_source(source):
@@ -86,6 +93,7 @@ def build_candidate(source, output):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(original, target)
     shutil.copyfile(ROOT / 'client_entry.py', output / 'client.py')
+    copy_spectator_runtime(manifest, output)
     shutil.copyfile(ROOT / 'dynamic_destination.py', output / 'lib/dynamic_destination.py')
     for name in CANONICAL_HELPERS:
         shutil.copyfile(ROOT / name, output / name)

@@ -5,12 +5,13 @@ from pathlib import Path
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 
 from community_game import CommunityGame
 from startup_paths import installation_options
-from community_transport import CommunityClient, CommunityError
+from community_transport import CommunityClient, CommunityError, CommunityConnectionError
 from community_maps import BY_ID, options, LEGACY_MAPS
 
 ROOT = Path(__file__).resolve().parent
@@ -38,11 +39,15 @@ def match_phase_text(room):
 
 
 class Desktop:
-    def __init__(self, root, lobby, game_factory, *, steam_name_loader=None):
+    def __init__(self, root, lobby, game_factory, *, steam_name_loader=None, server_access=None):
         self.root, self.lobby, self.game_factory = root, lobby, game_factory
         self.steam_name_loader = steam_name_loader
         self.game = None
         self.room = None
+        self.pending_map = None
+        self.map_inflight = None
+        self.map_retry_count = 0
+        self.map_retry_at = 0
         self.watch_id = None
         self.game_status = 'idle'
         self.current_panel = 'lobbies'
@@ -50,7 +55,11 @@ class Desktop:
         self.caps = {'matchStartEnabled': False, 'gameClientReady': False}
         self.capabilities_loaded = False
         self.busy = False
+        self.background_busy = False
+        self.queued_action = None
         self.messages = queue.Queue()
+        self.access_messages = queue.Queue()
+        self.access_window = None
         self.players = []
         self.closing = False
         self.copy_reset_handle = None
@@ -84,6 +93,10 @@ class Desktop:
         self.lobbies_nav.pack(fill='x',padx=18,pady=(0,6))
         self.live_nav=self.button(side,'Live matches',lambda:self.show_panel('live'),False)
         self.live_nav.pack(fill='x',padx=18)
+        if server_access is not None:
+            from server_access import show_setup
+            self.access_button = self.button(side, 'Set up server access', lambda: show_setup(self, server_access), False)
+            self.access_button.pack(fill='x', padx=18, pady=(20, 0))
         self.label(side, 'Private playtest', 10, color=MUTED, bg='#0d1927').pack(side='bottom', anchor='w', padx=26, pady=24)
         tk.Label(side,textvariable=self.preparation,bg='#0d1927',fg=MUTED,font=('Segoe UI',10),
                  anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
@@ -143,7 +156,7 @@ class Desktop:
         tk.Label(main,textvariable=self.status,bg=BG,fg=MUTED,font=('Segoe UI',10),anchor='w',wraplength=700).pack(fill='x',pady=(12,0))
         self.live_panel=tk.Frame(root,bg=BG)
         self.label(self.live_panel,'Watch live matches.',27,True).pack(anchor='w')
-        self.live_summary=self.label(self.live_panel,'Spectate a running community match. In game: F5/F6 switch players, F7 selects first person, and F8 selects third person.',
+        self.live_summary=self.label(self.live_panel,'Spectate a running community match in first person. In game: F5/F6 switch players; F7 restores first person.',
                    11,color=MUTED)
         self.live_summary.configure(wraplength=500,justify='left')
         self.live_summary.pack(anchor='w',pady=(4,18))
@@ -182,14 +195,28 @@ class Desktop:
         return tk.Button(parent,text=text,command=command,bg=ACCENT if primary else '#263e52',fg=BG if primary else TEXT,
                          activebackground='#6ff0d4',relief='flat',padx=10,pady=7,font=('Segoe UI',10,'bold'))
 
-    def run_async(self, work, success):
-        if self.busy or self.closing:
-            return
+    @property
+    def controls_busy(self):
+        return (self.busy and not self.background_busy) or self.queued_action is not None
+
+    def run_async(self, work, success, *, background=False):
+        if self.closing:
+            return False
+        if self.busy:
+            if self.background_busy and not background and self.queued_action is None:
+                self.queued_action = (work, success)
+                self.render(self.room)
+                return True
+            return False
         self.busy = True
+        self.background_busy = background
+        if not background:
+            self.render(self.room)
         def worker():
             try: self.messages.put((success,work(),None))
             except Exception as exc: self.messages.put((success,None,exc))
         threading.Thread(target=worker,daemon=True).start()
+        return True
 
     def reset_copy_feedback(self):
         if self.copy_reset_handle is not None:
@@ -215,12 +242,33 @@ class Desktop:
         if self.closing: return
         try:
             while True:
+                self.access_messages.get_nowait()()
+        except queue.Empty:
+            pass
+        completed = False
+        try:
+            while True:
                 success,value,error = self.messages.get_nowait()
                 self.busy = False
+                self.background_busy = False
+                completed = True
                 if error:
+                    message = str(error)
+                    if self.map_inflight is not None:
+                        if self.pending_map == self.map_inflight:
+                            if isinstance(error, CommunityConnectionError):
+                                self.map_retry_count += 1
+                                self.map_retry_at = (time.monotonic() + self.map_retry_count
+                                                     if self.map_retry_count < 3 else float('inf'))
+                                message = ('Connection interrupted. Checking your map selection again…'
+                                           if self.map_retry_count < 3 else
+                                           'Map selection is unconfirmed. Choose the map again to retry.')
+                            else:
+                                self.pending_map = None
+                        self.map_inflight = None
                     if isinstance(error, CommunityError) and error.code in ('lobby_missing', 'session_invalid'):
                         self.render(None)
-                    self.status.set(str(error))
+                    self.status.set(message)
                     if self.current_panel=='live':self.live_status.set(str(error))
                     if (isinstance(error,CommunityError) and error.code in ('spectator_session_invalid','spectator_unavailable')
                             and self.watch_id is not None):
@@ -228,6 +276,13 @@ class Desktop:
                 else: success(value)
         except queue.Empty:
             pass
+        if self.queued_action is not None and not self.busy:
+            work, success = self.queued_action
+            self.queued_action = None
+            self.run_async(work, success)
+        self.flush_map_selection()
+        if completed:
+            self.render(self.room)
         if self.game:
             try:
                 state = self.game.snapshot()
@@ -251,14 +306,52 @@ class Desktop:
         self.status.set('Community service connected.')
         self.render(self.room)
         self.render_live_controls()
-        if self.current_panel=='live':self.refresh_live_matches()
+        if self.room is None and caps.get('lobbyResumeEnabled') is True:
+            self.run_async(self.lobby.resume, self.render)
+        elif self.current_panel=='live':
+            self.refresh_live_matches()
 
     def choose_map(self):
         selected=self.map_name.get()
         matches=[item['id'] for item in self.map_options if item['label']==selected]
         if len(matches)!=1:
             self.status.set('Choose an available map.');return
-        self.call_action('map',map=matches[0])
+        if self.room is None or self.room['phase'] != 'setup':
+            return
+        self.pending_map = (self.room['code'], matches[0])
+        self.map_retry_count = 0
+        self.map_retry_at = 0
+        self.status.set('Applying map selection…')
+        self.render(self.room)
+        self.flush_map_selection()
+
+    def flush_map_selection(self):
+        if self.busy or self.closing or self.pending_map is None or time.monotonic() < self.map_retry_at:
+            return
+        selected = self.pending_map
+        if self.room is None or self.room['code'] != selected[0] or self.room['phase'] != 'setup':
+            self.pending_map = None
+            return
+        self.map_inflight = selected
+        reconciling = self.map_retry_count > 0
+        def apply():
+            # A lost reply does not mean the POST failed. Read back first;
+            # resend only this idempotent map choice if it was not applied.
+            room = self.lobby.action('state') if reconciling else None
+            if room is None or room.get('map') != selected[1]:
+                room = self.lobby.action('map', map=selected[1])
+            if room.get('map') != selected[1]:
+                raise CommunityError('The server did not confirm the selected map.')
+            return room
+        def applied(room):
+            self.map_inflight = None
+            if self.pending_map == selected:
+                self.pending_map = None
+                self.map_retry_count = 0
+                self.map_retry_at = 0
+                self.status.set('Map selected: ' + BY_ID[selected[1]].label)
+            self.render(room)
+        self.run_async(apply, applied)
 
     def set_steam_name(self, name):
         self.name.set(name)
@@ -273,13 +366,15 @@ class Desktop:
         phase = room['phase'] if in_room else None
         leader = in_room and any(p['id']==room['playerId'] and p['leader'] for p in room['players'])
         setup = in_room and phase=='setup'
+        if not setup or not leader or self.pending_map is not None and self.pending_map[0] != room['code']:
+            self.pending_map = None
         self.allow_spectators.set(room.get('allowSpectators',True) if in_room else True)
         if self.caps.get('spectateEnabled') is True:
             self.spectator_toggle.pack(side='right',padx=(12,0))
             self.spectator_toggle.configure(state='normal' if setup and leader else 'disabled')
         else:self.spectator_toggle.pack_forget()
-        for widget in (self.name_entry,self.code_entry,self.create_button,self.join_button): widget.configure(state='disabled' if in_room else 'normal')
-        if self.steam_name_loader and not in_room:
+        for widget in (self.name_entry,self.code_entry,self.create_button,self.join_button): widget.configure(state='disabled' if in_room or self.controls_busy else 'normal')
+        if self.steam_name_loader and not in_room and not self.controls_busy:
             self.name_entry.configure(state='readonly', readonlybackground='#20374a')
         self.room_heading.set('Lobby  '+room['code'] if in_room else 'Not in a lobby')
         self.phase.set(match_phase_text(room))
@@ -297,7 +392,8 @@ class Desktop:
             return
         self.map_options=available
         self.map_combo.configure(values=tuple(item['label'] for item in available),height=min(18,len(available)),state='readonly' if setup and leader else 'disabled')
-        if in_room: self.map_name.set(BY_ID[room['map']].label)
+        if in_room:
+            self.map_name.set(BY_ID[self.pending_map[1] if self.pending_map else room['map']].label)
         selected = self.roster.curselection()
         selected_id = self.players[selected[0]]['id'] if selected and selected[0] < len(self.players) else None
         scroll_position = self.roster.yview()[0]
@@ -310,13 +406,13 @@ class Desktop:
                 self.roster.activate(index)
         if in_room:
             self.roster.yview_moveto(scroll_position)
-        for widget in (self.blue_button,self.red_button): widget.configure(state='normal' if setup else 'disabled')
-        for widget in (self.move_blue,self.move_red): widget.configure(state='normal' if setup and leader else 'disabled')
-        self.start_button.configure(state='normal' if setup and leader and self.caps.get('matchStartEnabled') else 'disabled')
-        self.game_button.configure(state='normal' if in_room and phase=='ready' and self.caps.get('gameClientReady') else 'disabled')
+        for widget in (self.blue_button,self.red_button): widget.configure(state='normal' if setup and not self.controls_busy else 'disabled')
+        for widget in (self.move_blue,self.move_red): widget.configure(state='normal' if setup and leader and not self.controls_busy else 'disabled')
+        self.start_button.configure(state='normal' if setup and leader and not self.controls_busy and self.pending_map is None and self.caps.get('matchStartEnabled') else 'disabled')
+        self.game_button.configure(state='normal' if in_room and phase=='ready' and not self.controls_busy and self.pending_map is None and self.caps.get('gameClientReady') else 'disabled')
         self.stop_button.configure(state='normal' if leader and phase in ('starting','ready') else 'disabled')
         self.reset_button.configure(state='normal' if leader and phase in ('stopped','ended','failed') else 'disabled')
-        self.leave_button.configure(state='normal' if setup else 'disabled')
+        self.leave_button.configure(state='normal' if in_room and not self.controls_busy else 'disabled')
         # Preparation has no match endpoint or player profile. Start it as soon
         # as the service confirms support, while the player is choosing a lobby.
         if self.capabilities_loaded and self.caps.get('gameClientReady'):
@@ -352,7 +448,15 @@ class Desktop:
             if not self.capabilities_loaded:
                 self.run_async(self.lobby.capabilities, self.set_capabilities)
         self.run_async(work,entered)
-    def call_action(self,operation,**data): self.run_async(lambda:self.lobby.action(operation,**data),self.render)
+    def call_action(self,operation,**data):
+        if operation == 'start' and self.pending_map is not None:
+            self.status.set('Wait for the selected map to be confirmed.')
+            return
+        def work():
+            if operation == 'leave' and self.game and self.game.snapshot()['status'] in ('starting','playing','stopping'):
+                self.game.stop()
+            return self.lobby.action(operation,**data)
+        self.run_async(work,self.render)
 
     def move(self,team):
         selection = self.roster.curselection()
@@ -360,13 +464,16 @@ class Desktop:
         self.call_action('team',team=team,playerId=self.players[selection[0]]['id'])
 
     def join_game(self):
-        if self.busy or self.closing: return
+        if self.controls_busy or self.closing: return
+        if self.room is None or self.pending_map is not None:
+            self.status.set('Wait for the selected map to be confirmed.');return
         if self.watch_id is not None:
             self.status.set('Stop watching the current match first.');return
         self.status.set('Checking the selected match…')
+        selected_map = self.room['map']
         def begin():
             if not self.game: self.game = self.game_factory(self.lobby)
-            return self.game.start()
+            return self.game.start(expected_map=selected_map)
         self.run_async(begin,lambda _:self.status.set('Opening game…'))
 
     def toggle_spectators(self):
@@ -388,9 +495,9 @@ class Desktop:
         target=self.live_targets.get(selected[0])if selected else None
         active=self.game_status not in ('idle','stopped','finished','failed')
         can_watch=supported and target is not None and target.get('canSpectate')is True and not active and self.watch_id is None
-        self.spectate_button.configure(state='normal'if can_watch and not self.busy else'disabled')
-        self.stop_watch_button.configure(state='normal'if self.watch_id is not None and not self.busy else'disabled')
-        self.live_refresh_button.configure(state='normal'if supported and not self.busy else'disabled')
+        self.spectate_button.configure(state='normal'if can_watch and not self.controls_busy else'disabled')
+        self.stop_watch_button.configure(state='normal'if self.watch_id is not None and not self.controls_busy else'disabled')
+        self.live_refresh_button.configure(state='normal'if supported and not self.controls_busy else'disabled')
         if not supported and self.capabilities_loaded:self.live_status.set('Spectating is unavailable on this server version.')
 
     def render_live_matches(self,matches):
@@ -411,8 +518,9 @@ class Desktop:
             self.live_status.set('Select a match to watch.'if matches else'No spectator-enabled matches are live right now.')
         self.render_live_controls()
 
-    def refresh_live_matches(self):
-        if self.busy or self.closing or self.caps.get('spectateEnabled')is not True:return
+    def refresh_live_matches(self, *, background=False):
+        if self.controls_busy or self.closing or self.caps.get('spectateEnabled')is not True:return
+        if background and self.busy:return
         if self.current_panel!='live'and self.watch_id is None:return
         watch_id=self.watch_id
         def work():
@@ -429,16 +537,16 @@ class Desktop:
             matches,stopped=value
             if stopped and self.watch_id==watch_id:self.watch_id=None
             self.render_live_matches(matches)
-        self.run_async(work,refreshed)
+        self.run_async(work,refreshed,background=background)
 
     def live_tick(self):
         self.live_refresh_handle=None
         if self.closing:return
-        self.refresh_live_matches()
+        self.refresh_live_matches(background=True)
         self.live_refresh_handle=self.root.after(3000,self.live_tick)
 
     def spectate_selected(self):
-        if self.busy or self.closing or self.watch_id is not None:return
+        if self.controls_busy or self.closing or self.watch_id is not None:return
         selected=self.live_list.selection()
         item=self.live_targets.get(selected[0])if selected else None
         if item is None or item.get('canSpectate')is not True:return
@@ -458,7 +566,7 @@ class Desktop:
         self.run_async(admit,admitted)
 
     def stop_watching(self):
-        if self.busy or self.closing or self.watch_id is None:return
+        if self.controls_busy or self.closing or self.watch_id is None:return
         watch_id=self.watch_id
         def work():
             if self.game:return self.game.stop_spectating()
@@ -472,7 +580,7 @@ class Desktop:
         self.refresh_handle=None
         if self.closing: return
         if self.room and not self.busy and not self.closing:
-            self.run_async(lambda:self.lobby.action('state'),self.render)
+            self.run_async(lambda:self.lobby.action('state'),self.render,background=True)
         if not self.closing: self.refresh_handle=self.root.after(2000,self.refresh)
 
     def close(self):
@@ -483,10 +591,24 @@ class Desktop:
             if handle is not None:
                 self.root.after_cancel(handle)
                 setattr(self,name,None)
-        if self.game:
-            if self.watch_id is not None:self.game.stop_spectating()
-            else:self.game.stop()
-        elif self.watch_id is not None:self.lobby.release_spectator(self.watch_id)
+        lobby,game,watch_id = self.lobby,self.game,self.watch_id
+        if game:
+            game.stop()
+        def release():
+            try:
+                if watch_id is not None:
+                    if game:game.stop_spectating()
+                    else:lobby.release_spectator(watch_id)
+            except Exception:
+                pass
+            try:
+                lobby.action('leave')
+            except Exception:
+                # Network failure must not trap window closure. Authenticated
+                # resume/Create can recover this same membership next launch.
+                pass
+        self.close_worker = threading.Thread(target=release,daemon=False)
+        self.close_worker.start()
         self.root.destroy()
 
 
@@ -518,7 +640,12 @@ def main(*, ssl_context=None):
         workspace = selected_workspace
         return CommunityGame(current_lobby,CLIENT_PACKAGE,source,workspace,workspace/'desktop-control')
     root = tk.Tk()
-    Desktop(root,lobby,game_factory,steam_name_loader=steam_name_loader)
+    from server_access import ServerAccess
+    try:
+        access = ServerAccess.load(CLIENT_PACKAGE)
+    except (ValueError, OSError):
+        access = None
+    Desktop(root,lobby,game_factory,steam_name_loader=steam_name_loader,server_access=access)
     root.mainloop()
 
 

@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import uuid
+import threading
 
 from verified_file_cache import digest, identity
 
@@ -70,7 +71,8 @@ class BulkStageCache:
         self.filesystem = filesystem_loader(cache_root.parent)
         self.enabled = self.filesystem == 'NTFS'
         self.root = cache_root
-        self.emit = emit or (lambda line: print(line, flush=True))
+        self._lock = threading.RLock()
+        self._output = emit or (lambda line: print(line, flush=True))
         self.counts = {'direct_hardlinks': 0, 'cache_hardlinks': 0, 'cache_published_bytes': 0,
                        'private_copied_bytes': 0, 'cache_reused_files': 0}
         if self.enabled:
@@ -78,6 +80,14 @@ class BulkStageCache:
             self.root = self.root.resolve(strict=True)
         self.emit('BULK_STAGE|' + ('cache_ntfs' if self.enabled else 'private_copy') +
                   '|filesystem=' + str(self.filesystem))
+
+    def emit(self, line):
+        with self._lock:
+            self._output(line)
+
+    def _count(self, name, amount=1):
+        with self._lock:
+            self.counts[name] += amount
 
     def _verify_cached(self, target, expected, size):
         before = identity(target)
@@ -127,18 +137,18 @@ class BulkStageCache:
             else:
                 if identity(src) != before:
                     raise BulkCacheError('Bulk source changed during direct staging: ' + str(src))
-                self.counts['direct_hardlinks'] += 1
+                self._count('direct_hardlinks')
                 return 'hardlink'
         if not self.enabled:
             self._copy_verified(src, dst, before, expected_sha256, expected_bytes)
-            self.counts['private_copied_bytes'] += expected_bytes
+            self._count('private_copied_bytes', expected_bytes)
             return 'copy'
         bucket = self.root / expected_sha256[:2]
         _directory(bucket)
         target = bucket / (expected_sha256 + '.asset')
         if os.path.lexists(target):
             self._verify_cached(target, expected_sha256, expected_bytes)
-            self.counts['cache_reused_files'] += 1
+            self._count('cache_reused_files')
         else:
             temp = bucket / (expected_sha256 + '.' + uuid.uuid4().hex + '.tmp')
             temp_id = None
@@ -160,7 +170,7 @@ class BulkStageCache:
                 except FileExistsError:
                     self._verify_cached(target, expected_sha256, expected_bytes)
                 else:
-                    self.counts['cache_published_bytes'] += expected_bytes
+                    self._count('cache_published_bytes', expected_bytes)
                 self._verify_cached(target, expected_sha256, expected_bytes)
             finally:
                 if temp_id is not None and os.path.lexists(temp):
@@ -186,12 +196,12 @@ class BulkStageCache:
             if (identity(src) != before
                     or self._verify_cached(target, expected_sha256, expected_bytes) != cache_id):
                 raise BulkCacheError('Bulk source/cache changed during link-limit copy.')
-            self.counts['private_copied_bytes'] += expected_bytes
+            self._count('private_copied_bytes', expected_bytes)
             self.emit('BULK_STAGE|cache_link_limit_copy|winerror=1142|bytes=' + str(expected_bytes))
             return 'copy'
         if identity(src) != before or identity(dst) != cache_id or identity(target) != cache_id:
             raise BulkCacheError('Bulk source/cache identity changed during staging.')
-        self.counts['cache_hardlinks'] += 1
+        self._count('cache_hardlinks')
         if expected_bytes >= 16 * 1024 * 1024:
             self.emit('BULK_STAGE|cache_link|bytes=' + str(expected_bytes))
         return 'hardlink'
@@ -236,5 +246,6 @@ class BulkStageCache:
             self.emit('BULK_STAGE|' + purpose + '_complete|bytes=' + str(size))
 
     def snapshot(self):
-        return dict(self.counts, filesystem=self.filesystem, cache_enabled=self.enabled,
-                    cache_root=str(self.root), scope='verified immutable bulk bytes; not native readiness')
+        with self._lock:
+            return dict(self.counts, filesystem=self.filesystem, cache_enabled=self.enabled,
+                        cache_root=str(self.root), scope='verified immutable bulk bytes; not native readiness')

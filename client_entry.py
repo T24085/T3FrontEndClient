@@ -146,6 +146,11 @@ def main():
                 or any('@@' + tag + '@@' not in template for tag in
                        ('SPECTATOR_ROLE', 'SPECTATOR_RUNTIME', 'SPECTATOR_MATERIAL_RUNTIME', 'MATCH_LEASE', 'WATCH_ID'))):
             raise ValueError('The spectator runtime is incomplete. Update the community client.')
+        if '@@DAMNATION_WATER@@' in template:
+            water_runtime = ROOT / 'lua/damnation_water.lua'
+            if not water_runtime.is_file():
+                raise ValueError('The Damnation water runtime is incomplete. Update the community client.')
+            template = template.replace('@@DAMNATION_WATER@@', json.dumps(water_runtime.as_posix(), ensure_ascii=False))
         for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=(ROOT/'lua/community_maps.lua').as_posix(), SNOWBLIND_WEATHER=(ROOT/'lua/snowblind_weather.lua').as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
             template = template.replace('@@' + key + '@@', json.dumps(value, ensure_ascii=False))
         if '@@' in template:

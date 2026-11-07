@@ -150,10 +150,10 @@ class CommunityGame:
             self.preparation_descriptor=None;self.preparation_status='spent'
             return result
 
-    def start(self):
-        return self._start()
+    def start(self, *, expected_map=None):
+        return self._start(expected_map=expected_map)
 
-    def _start(self, *, watch_id=None):
+    def _start(self, *, watch_id=None, expected_map=None):
         self._release_watch()
         # Desktop calls this on a worker. Reserve the session briefly, then keep
         # expensive verification outside the snapshot lock used by the Tk loop.
@@ -171,6 +171,8 @@ class CommunityGame:
         try:
             target_loader = (lambda: self.lobby.spectator_target(watch_id)) if watch_id is not None else self.lobby.match_target
             target = target_loader()
+            if expected_map is not None and target.get('map') != expected_map:
+                raise CommunityError('The selected map changed. Refresh the lobby before joining.')
             if watch_id is not None:
                 if (target.get('role') != 'spectator' or target.get('watchId') != watch_id
                         or not re.fullmatch('[0-9a-f]{32}', target.get('matchId', ''))):
@@ -304,10 +306,14 @@ class CommunityGame:
                     raise CommunityError('Game client status evidence is unavailable.')
             if self.status == 'stopping' and self.current_artifacts is not None and not self.cancellation_written:
                 self._request_cancel()
+            preparation=self.preparation_snapshot()
+            progress=PHASES.get(self.startup_phase) if self.status=='starting' else None
+            if self.status=='starting' and self.startup_phase=='preparing_client' and preparation['status']=='preparing':
+                progress=preparation['progress']
             return {'status':self.status, 'error':self.error, 'run':str(self.run) if self.run else None,
                     'role':self.role, 'watchId':self.watch_id,
-                    'progress':PHASES.get(self.startup_phase) if self.status == 'starting' else None,
-                    'preparation':self.preparation_snapshot()}
+                    'progress':progress,
+                    'preparation':preparation}
 
     def preparation_snapshot(self):
         with self.lock:
@@ -316,7 +322,15 @@ class CommunityGame:
                 log=self.preparation_artifacts/'owner/stdout.log'
                 if log.is_file():
                     if log.stat().st_size>1048576:raise CommunityError('Preparation output exceeded its bound.')
-                    progress=PHASES.get(observed_phase(log.read_text(errors='replace').splitlines()))
+                    lines=log.read_text(errors='replace').splitlines()
+                    progress=PHASES.get(observed_phase(lines))
+                    for line in reversed(lines):
+                        match=re.fullmatch(r'CLIENT_PREPARATION_PROGRESS\|([0-9]{1,5})/([0-9]{1,5})',line)
+                        if match:
+                            done,total=map(int,match.groups())
+                            if 0<=done<=total<=10000 and total>0:
+                                progress=f'Preparing game files: {done:,} / {total:,} files…'
+                                break
             return {'status':self.preparation_status,'error':self.preparation_error,
                     'progress':progress or ('Game files ready.' if self.preparation_status=='ready' else 'Preparing game files in the background…')}
 
