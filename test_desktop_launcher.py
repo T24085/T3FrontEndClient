@@ -163,16 +163,21 @@ class DesktopTest(unittest.TestCase):
             app.close()
 
     def test_controls_fit_at_declared_minimum_window_size(self):
-        root=tk.Tk();root.attributes('-alpha',0);root.geometry('850x650')
+        root=tk.Tk();root.attributes('-alpha',0)
         lobby,game=FakeLobby(),FakeGame()
         app=Desktop(root,lobby,lambda _:game)
         try:
+            root.geometry('%dx%d' % root.minsize())
             app.render(lobby.room)
+            app.status.set('Community service connected.')
             root.update_idletasks();root.update()
             width,height=root.winfo_width(),root.winfo_height()
+            status=next(child for child in app.lobby_panel.pack_slaves()
+                        if isinstance(child,tk.Label) and str(child.cget('textvariable'))==str(app.status))
             widgets=(app.name_entry,app.code_entry,app.create_button,app.join_button,app.map_combo,
                      app.roster,app.blue_button,app.red_button,app.move_blue,app.move_red,
-                     app.start_button,app.game_button,app.stop_button,app.reset_button,app.leave_button)
+                     app.start_button,app.game_button,app.stop_button,app.reset_button,app.leave_button,status)
+            self.assertGreaterEqual(status.winfo_height(),status.winfo_reqheight())
             for widget in widgets:
                 self.assertTrue(widget.winfo_ismapped(), str(widget))
                 right=widget.winfo_rootx()-root.winfo_rootx()+widget.winfo_width()
