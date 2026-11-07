@@ -1,3 +1,7 @@
+# Light / Medium / Heavy Chaingun server extension - 2026-11-06
+
+The paired private server candidate now covers the original Light Chaingun, Medium Chaingun and Heavy Chain Cannon main abilities with the same ownership guards. This requires no player runtime or download change. The user will test sustained damage and opposing-view tracers; no additional native game was launched for this follow-up. Backend source validation passes 127 tests and paired contracts are unchanged.
+
 # Paired private server candidate ready for user testing - 2026-11-06
 
 The paired laptop server now runs private candidate `turret-damage-chain-candidate-20261106-r1`, preserving its latest repair-capture and onboarding fixes. The current installed client passed the pinned-TLS readiness check against the restarted service; no client Lua or release was replaced by this task. All 134 client tests and 126 paired backend tests pass. The user will perform the turret gameplay tests. Incoming damage and opposing Medium Chaingun tracer appearance remain unverified candidates; see the paired backend deployment record. Original game assets, keys, populated settings and native logs remain outside Git.
