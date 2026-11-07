@@ -1,3 +1,7 @@
+# Incoming turret damage and tracer diagnostics - 2026-11-06
+
+`fix/turret-damage-chain-visuals` preserves current server-access onboarding and personal-turret diagnostics, adding a private original-input fixture for the paired incoming-damage investigation. It requests original loadout items, verifies the selected native weapon, and records original projectile/trail events. It does not change player Lua runtime, replay effects, grant weapons or establish rendered enemy tracer visibility. All 129 client tests and paired source checks pass. Native incoming-damage results are unresolved; two flight runs stopped at the existing live memory reserve with original Job cleanup confirmed. No installed client or public release was updated. The paired backend's `docs/TURRET_RECEIVE_INVESTIGATION.md` records the candidate, negative evidence and remaining qualification.
+
 # Automatic server-access setup - 2026-11-06
 
 `feat/tailscale-server-access` adds an optional **Set up server access** window: install/sign into Tailscale, obtain and accept a server-sharing invitation through a public HTTPS bootstrap, then check the existing pinned-TLS lobby connection. Setup work has its own queue and does not clear foreground lobby operations. The paired broker automates device-sharing invitations without adding tailnet members. Only a three-field player bootstrap enters client packages; API tokens and operator/cache files are excluded. New runtime modules are included by the dynamic, desktop and complete-release builders; configured builds accept `--server-access`.
