@@ -1,10 +1,12 @@
-# Heavy Bolt whiteout follow-up - 2026-11-06
+# Heavy Bolt whiteout fixed on the installed client - 2026-11-06
 
 The user's recording shows a large cyan effect covering the view after firing Heavy Bolt and switching weapons. The running client's Lua and event markers confirm the previous stowed-trail correction was loaded; the earlier component-state qualification did not establish that the visible whiteout was fixed.
 
-The private `fix/heavy-bolt-whiteout-r2` candidate excludes stopped/unknown-state projectiles, resets inherited first-person Niagara override parameters when selecting the original world-space trail, and changes each observed live projectile only once. It retains the existing exact local-player, weapon, world and component-owner guards and does not change projectile physics, damage or ammo. These are plausible unguarded cases identified from the clip and original Blueprint inspection, not a confirmed visible root cause.
+The r2 client skips stopped projectiles and projectiles whose state it cannot read. It resets inherited first-person Niagara overrides when selecting the original world-space trail and changes the trail once per live projectile. The guard remains specific to the local player's Heavy Bolt effects. Firing, physics, damage and ammo still use the original game logic.
 
-Validation: all 125 client tests and paired source checks pass, including stopped-effect exclusion, override reset, native asset revisit, new-flight state cleanup, input-release isolation and canonical embedded Lua checks. No native game was launched or stopped for this follow-up. Visual confirmation, installed activation and public release updates remain separate and pending; r7 still contains the previous candidate.
+In one isolated Rollercoaster (2026) match, the r7 runtime reproduced the cyan whiteout after an open-air shot and a switch to the Fusion Mortar. The r2 runtime kept the view clear in two comparable mortar switches and one pistol switch. The bolt remained visible in flight, and native logs recorded both projectile copies using the reset world-space trail. Six scripted shots also retained the original 11500 cm/s initial speed. All 125 client tests, 91 backend tests and paired source checks passed. The original client Jobs ended with zero active processes, and the runner released its test lobby.
+
+The desktop Community Starter now uses the tested r2 Lua from `5a235e5f648209136b5cf9ec5c3b7dbfd6229b41`. The install readback matched the tested hash and preserved all 22 map fingerprints. The comparison record and rollback copy are outside Git under `verification/bolt-whiteout-finish-20261106/resume-comparison-r1`. The separately published r7 ZIP predates this fix.
 
 # Complete client r7 published
 
