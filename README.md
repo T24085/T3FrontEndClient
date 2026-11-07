@@ -2,15 +2,18 @@
 
 ## Download and play
 
-**[Download the complete Windows playtest client — r8](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.07-r8/TRIBES3-Community-Starter-Windows-20261107-r8.zip)** · [Release notes and checksums](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.07-r8)
+**[Download the complete Windows playtest client — r9](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.07-r9/TRIBES3-Community-Starter-Windows-20261107-r9.zip)** · [Release notes and checksums](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.07-r9)
 
 The download includes the Community Starter, portable runtime and all custom map content for the 22-map catalog. No separate map-update ZIPs are needed. You still need your own matching Steam installation of TRIBES 3 Rivals and an approved account on the community's Tailscale network.
 
-r8 adds animated waves and water-contact splash effects to **Damnation (2026)**. The shared server's 22 map fingerprints match this release. Player-triggered splashes still need in-game verification. First-time game file verification can take several minutes.
+r9 restores **Set up server access** in Starter and includes the later Heavy Bolt trail fix and the final-scoreboard Escape fallback. It keeps the animated water in **Damnation (2026)**. All 22 map fingerprints match the shared server. First-time game file verification can take several minutes.
+
+Already on r8? Close Starter, extract the updater inside your existing `TRIBES3-Community-Starter` folder, and run `Apply r9 Update.bat` from the extracted updater folder. [Download the r8-to-r9 updater](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.07-r9/TRIBES3-Windows-r8-to-r9-Update.zip)
 
 1. Download and extract the entire ZIP into a fresh folder.
 2. Start Steam and connect to the approved Tailscale network.
 3. Open `Start Community Starter.vbs` in the extracted folder.
+4. If this device needs access, choose **Set up server access** and use the shared playtest code from your organizer. [Browser setup](https://bigedlaptop.tail5d09b2.ts.net:8443/)
 
 This is a playtest release. The server-side staging-team correction has been deployed; native loopback checks now show both players spawning and populated weapon menus. Off-site confirmation remains open. The double-shot issue is recorded as fixed based on user confirmation. The repository's **Code → Download ZIP** contains development source; use the complete release download above to play.
 
