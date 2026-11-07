@@ -1,4 +1,4 @@
-"""Install the Damnation 2026 shoreline update into a complete Windows r9 Starter."""
+"""Install the shoreline and window updates into a complete Windows r9 Starter."""
 
 import argparse
 import json
@@ -9,12 +9,13 @@ import time
 from apply_r9_update import replace, sha
 
 
-REVISION = 'Damnation2026-Shoreline-20261107-r1'
+REVISION = 'Windows-20261107-r9-refresh'
 STARTER = 'Windows-20261107-r9'
 MANIFEST = 'package-manifest.json'
 MAP_LEVEL = 'content/Maps/Community/Damnation/Arena_Damnation_2026_P'
 SHORELINE = 'content/Community/Damnation2026Shoreline/'
-REPLACED = frozenset({'RELEASE-INFO.json', MAP_LEVEL+'.umap', MAP_LEVEL+'.uexp'})
+REPLACED = frozenset({'RELEASE-INFO.json', 'SOURCE-INFO.json', 'desktop_launcher.py',
+                      MAP_LEVEL+'.umap', MAP_LEVEL+'.uexp'})
 
 
 def shoreline_file(name):
@@ -42,8 +43,10 @@ def apply(package, update):
     before_manifest = (package / MANIFEST).read_bytes()
     current = sha(before_manifest)
     installed = current == plan['manifest_after']
-    if not installed and (current != plan['manifest_before'] or json.loads(before_manifest)['revision_id'] != STARTER):
-        raise ValueError('Select the original complete Windows r9 Starter folder.')
+    has_shoreline = current == plan['manifest_with_shoreline']
+    if not installed and (current not in {plan['manifest_before'], plan['manifest_with_shoreline']}
+                          or json.loads(before_manifest)['revision_id'] != STARTER):
+        raise ValueError('Select a complete Windows r9 Starter folder.')
     before = {MANIFEST: before_manifest}
     after = {MANIFEST: (payload / MANIFEST).read_bytes()}
     if sha(after[MANIFEST]) != plan['manifest_after']:
@@ -52,20 +55,22 @@ def apply(package, update):
         target = package / name
         old = target.read_bytes() if target.is_file() else None
         new = (payload / name).read_bytes()
-        expected = row['after'] if installed else row['before']
+        expected = row['after'] if installed else row['shoreline_before' if has_shoreline else 'before']
         if (sha(old) if old is not None else None) != expected or sha(new) != row['after']:
             raise ValueError('Starter or update file differs from the verified release: ' + name)
         before[name], after[name] = old, new
     if installed:
-        return 'This r9 Starter already has the shoreline update.'
+        return 'This r9 Starter already has the shoreline and window updates.'
 
+    changed = [name for name in paths if before[name] != after[name]]
     backup = Path(tempfile.mkdtemp(prefix='Starter-before-shoreline-' + time.strftime('%Y%m%d') + '-', dir=package.parent))
-    for name, data in before.items():
+    for name in changed:
+        data = before[name]
         if data is not None:
             replace(backup / name, data)
     written = []
     try:
-        for name in paths:
+        for name in changed:
             replace(package / name, after[name])
             written.append(name)
         if any((package / name).read_bytes() != data for name, data in after.items()):
@@ -77,7 +82,7 @@ def apply(package, update):
             else:
                 replace(package / name, before[name])
         raise
-    return 'r9 shoreline update installed. Reopen Community Starter. Backup: ' + str(backup)
+    return 'r9 shoreline and window updates installed. Reopen Community Starter. Backup: ' + str(backup)
 
 
 if __name__ == '__main__':
