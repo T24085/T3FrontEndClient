@@ -504,7 +504,8 @@ local postMatchEscapeBound=false
 local function bind_post_match_escape()
  if postMatchEscapeBound then return end
  local path='/Game/UI/RallyHereUpdates/UI_Scene_Result_Frontier_RH_v2.UI_Scene_Result_Frontier_RH_v2_C'
- local menuHide='/Game/UI/RallyHereUpdates/Shared/Scenes/UI_Scene_Menu_RH_v2.UI_Scene_Menu_RH_v2_C:OnHide'
+ local menuClass='WidgetBlueprintGeneratedClass /Game/UI/RallyHereUpdates/Shared/Scenes/UI_Scene_Menu_RH_v2.UI_Scene_Menu_RH_v2_C'
+ local menuHide='/Script/RallyHereStart.RHWidget:OnHide'
  if not valid(StaticFindObject(menuHide)) then return end
  postMatchEscapeBound=true
  local pending,checked,failed,reported=false,false,false,false
@@ -575,7 +576,9 @@ local function bind_post_match_escape()
   RegisterHook(menuHide,function(context)
    local observed,err=pcall(function()
     local world=results_world()
-    if not valid(world) or not owns_widget(context:get(),world) then return end
+    local widget=context:get()
+    if not valid(world) or not valid(widget) or widget:GetClass():GetFullName()~=menuClass
+     or not owns_widget(widget,world) then return end
     -- A native Back can close StartMenu before the queued Escape callback.
     local token={}
     closing=token

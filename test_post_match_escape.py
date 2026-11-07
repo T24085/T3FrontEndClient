@@ -17,7 +17,7 @@ class PostMatchEscapeTests(unittest.TestCase):
         setup = '''
 local resultPhase='GamePhase.GameplayEndedPhase'
 local phase,route,remote,visible=resultPhase,'Result',true,true
-local world,foreign,gs,pc,result,class,manager={},{},{},{},{},{},{}
+local world,foreign,gs,pc,result,class,manager,menu,menuClass={},{},{},{},{},{},{},{},{}
 local calls,bindings,reports=0,0,0
 local key,hide
 local deferred={}
@@ -49,6 +49,11 @@ function class:GetFullName()
  return 'WidgetBlueprintGeneratedClass /Game/UI/RallyHereUpdates/UI_Scene_Result_Frontier_RH_v2.UI_Scene_Result_Frontier_RH_v2_C'
 end
 function result:IsVisible()return visible end
+function menu:GetClass()return menuClass end
+function menuClass:GetFullName()
+ return 'WidgetBlueprintGeneratedClass /Game/UI/RallyHereUpdates/Shared/Scenes/UI_Scene_Menu_RH_v2.UI_Scene_Menu_RH_v2_C'
+end
+menu.GetWorld=result.GetWorld;menu.GetOwningPlayer=result.GetOwningPlayer
 function result:IsTopViewRoute()return route=='Result' end
 function result:GetViewManager()return manager end
 function result:OnNavigateMenu()calls=calls+1;route='StartMenu' end
@@ -76,7 +81,7 @@ remote=true;visible=false;key();assert(#deferred==0 and calls==0)
 visible=true;key();assert(#deferred==1);route='StartMenu';tick();assert(calls==0)
 key();assert(#deferred==0 and calls==0)
 route='Result';key();key();tick();assert(calls==1 and reports==1 and route=='StartMenu')
-hide({get=function()return result end});route='Result'
+hide({get=function()return menu end});route='Result'
 key();assert(#deferred==1);tick();assert(calls==1)
 route='Result';key();phase='GamePhase.GameplayStartPhase';tick();assert(calls==1)
 '''
