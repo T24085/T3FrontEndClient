@@ -5,6 +5,7 @@ return function(env)
  local function pulse()
   env.scope();ticks=ticks+1;assert(ticks<1400,'repair_input_deadline')
   assert(same(pc.Pawn,pawn)and same(pawn.AbilitySystemComponent,asc),'repair_input_owner_changed')
+  if input~=nil and point.r_TeamId==pawn:GetTeamId()then asc:ReleaseInputID(input);report('REPAIR_CAPTURE_INPUT_COMPLETE|input='..input..'|reason=native_capture_replicated');return end
   local p=pawn:K2_GetActorLocation();local target=point.Collision:K2_GetComponentLocation()
   local dx,dy,dz=target.X-p.X,target.Y-p.Y,target.Z-(p.Z+pawn.BaseEyeHeight)
   pc:SetControlRotation({Pitch=math.deg(math.atan(dz,math.sqrt(dx*dx+dy*dy))),Yaw=math.deg(math.atan(dy,dx)),Roll=0})

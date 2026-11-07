@@ -1,3 +1,7 @@
+# Observation turret capture diagnostic follow-up - 2026-11-06
+
+The test-only repair fixture releases its original input as soon as captured ownership replicates. The paired native Katabatic baseline completed capture and release while both observation turrets still had zero grants. The server's host-only correction verified both original guns equipped; enemy-player fire remains unverified. No client runtime or public release changes. All 134 client tests and paired source checks pass.
+
 # Light / Medium / Heavy Chaingun server extension - 2026-11-06
 
 The paired private server candidate now covers the original Light Chaingun, Medium Chaingun and Heavy Chain Cannon main abilities with the same ownership guards. This requires no player runtime or download change. The user will test sustained damage and opposing-view tracers; no additional native game was launched for this follow-up. Backend source validation passes 127 tests and paired contracts are unchanged.
