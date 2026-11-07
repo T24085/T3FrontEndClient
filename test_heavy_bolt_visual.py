@@ -1,4 +1,4 @@
-"""Candidate trail scope tests; rendered native confirmation remains separate."""
+"""Heavy Bolt trail selection scope and weapon input isolation."""
 from pathlib import Path
 import unittest
 from lupa.lua54 import LuaRuntime
@@ -26,14 +26,29 @@ function f.asc.ActivatableAbilities.Items:ForEach(cb)cb(1,{get=function()return{
 local base='/Game/VFX/Weapons/BoltLauncher/Heavy/Projectile/NS_BoltLauncher_Heavy_Projectile_'
 f.one=o('NiagaraSystem '..base..'1P.NS_BoltLauncher_Heavy_Projectile_1P')
 f.three=o('NiagaraSystem '..base..'3P.NS_BoltLauncher_Heavy_Projectile_3P')
-f.projectile=o('Projectile');f.projectile.Instigator=f.pawn;f.projectile.bStopped=false
-function f.projectile:GetClass()return o('BlueprintGeneratedClass /Game/Topaz/Abilities/Weapons/HeavyBoltLauncher/BP_Projectile_Topaz_HeavyBoltLauncher.BP_Projectile_Topaz_HeavyBoltLauncher_C')end
-function f.projectile:GetAudioVisual()return{IsValid=function()return true end,ProjectileTrail1P=f.one,ProjectileTrail3P=f.three}end
-f.trail=o('Trail');f.trail.Asset=f.one;f.staleOverrides=true
-function f.trail:GetOwner()return f.projectile end
-function f.trail:SetAsset(asset,reset)assert(asset==f.three and reset==true);self.Asset=asset;f.staleOverrides=false;f.changes=f.changes+1 end
-f.projectile.NS_Projectile_Trail=f.trail
-function FindAllOf(name)assert(name=='BP_Projectile_Topaz_HeavyBoltLauncher_C');return{f.projectile}end
+local visualPath='/Game/Topaz/Abilities/Weapons/HeavyBoltLauncher/AV_Topaz_HeavyBoltLauncher.AV_Topaz_HeavyBoltLauncher'
+local reloadPath='NiagaraSystem /Game/VFX/Weapons/BoltLauncher/Heavy/Reload/'
+local function effect(name,socket)
+ return {ParticleSystem=o(reloadPath..name..'.'..name),SocketName={ToString=function()return socket end}}
+end
+function f.newVisual()
+ local visual=o('ValDeviceAudioVisual '..visualPath)
+ visual.ProjectileTrail3P=f.three
+ f.orb=effect('NS_BoltLauncher_Heavy_Bolt_Reload','EnergyBullet_Socket')
+ f.tether=effect('NS_BoltLauncher_Heavy_EnergyTether_Reload','MuzzleSocket')
+ f.other=effect('Other','MuzzleSocket')
+ visual.ReloadActions={ForEach=function(_,callback)
+  for i,action in ipairs({f.orb,f.tether,f.other})do callback(i,{get=function()return action end})end
+ end}
+ local first=f.one
+ return setmetatable(visual,{
+  __index=function(_,key)if key=='ProjectileTrail1P'then return first end end,
+  __newindex=function(self,key,value)
+   if key=='ProjectileTrail1P'then first=value;f.changes=f.changes+1 else rawset(self,key,value)end
+  end})
+end
+f.visual=f.newVisual()
+function StaticFindObject(path)assert(path==visualPath);if not f.unloaded then return f.visual end end
 f.env={valid=function(a)return a~=nil and a:IsValid()end,scope=function()end,signature=function()end,report=function(s)f.events[#f.events+1]=s end}
 return f
 """
@@ -47,36 +62,30 @@ class HeavyBoltTests(unittest.TestCase):
   lua=LuaRuntime(unpack_returned_tuples=True,max_memory=8*1024*1024);f=lua.execute(FIXTURE)
   f.service=lua.execute((ROOT/'runtime-fixes/heavy_bolt_visual.lua').read_text())(f.env)
   return f
- def test_stowing_uses_original_world_trail_once(self):
-  f=self.fixture();f.service(f.pc,f.pawn,f.asc,20);f.service(f.pc,f.pawn,f.asc,20)
+ def test_equipped_bolt_uses_world_trail_before_a_projectile_exists(self):
+  f=self.fixture();f.service(f.pc,f.pawn,f.asc,16);f.service(f.pc,f.pawn,f.asc,20)
+  self.assertEqual(f.visual.ProjectileTrail1P.GetAddress(f.visual.ProjectileTrail1P),f.three.GetAddress(f.three))
+  self.assertIsNone(f.orb.ParticleSystem)
+  self.assertIsNone(f.tether.ParticleSystem)
+  self.assertIsNotNone(f.other.ParticleSystem)
   self.assertEqual(f.changes,1)
-  self.assertFalse(f.staleOverrides)
- def test_stopped_or_unknown_projectile_does_not_restart_its_impact_effect(self):
-  for stopped in (True,None):
-   f=self.fixture();f.projectile.bStopped=stopped;f.service(f.pc,f.pawn,f.asc,20)
-   self.assertEqual(f.changes,0);self.assertTrue(f.staleOverrides)
- def test_native_asset_revisit_does_not_replay_the_same_live_effect(self):
-  f=self.fixture();f.service(f.pc,f.pawn,f.asc,20)
-  f.trail.Asset=f.one;f.service(f.pc,f.pawn,f.asc,20)
-  self.assertEqual(f.changes,1)
- def test_an_observed_stop_allows_a_new_flight_without_retaining_old_state(self):
-  f=self.fixture();f.service(f.pc,f.pawn,f.asc,20)
-  f.projectile.bStopped=True;f.service(f.pc,f.pawn,f.asc,20)
-  f.projectile.bStopped=False;f.trail.Asset=f.one;f.service(f.pc,f.pawn,f.asc,20)
-  self.assertEqual(f.changes,2)
- def test_client_predicted_projectile_with_local_authority_also_changes(self):
-  f=self.fixture();f.projectile.authority=True;f.service(f.pc,f.pawn,f.asc,20)
-  self.assertEqual(f.changes,1)
- def test_equipped_bolt_and_unrelated_weapon_never_change(self):
-  f=self.fixture();f.service(f.pc,f.pawn,f.asc,16);self.assertEqual(f.changes,0)
-  f.otherGun=True;f.service(f.pc,f.pawn,f.asc,20);self.assertEqual(f.changes,0)
- def test_remote_authority_other_instigator_and_unknown_trail_excluded(self):
-  for field in ('remote','authority','instigator','asset'):
+ def test_unknown_reload_action_leaves_visual_data_intact(self):
+  f=self.fixture();f.orb.SocketName=f.tether.SocketName;f.service(f.pc,f.pawn,f.asc,16)
+  self.assertIsNotNone(f.orb.ParticleSystem)
+  self.assertIsNotNone(f.tether.ParticleSystem)
+  self.assertEqual(f.changes,0)
+ def test_late_loaded_and_reloaded_visual_data_is_handled(self):
+  f=self.fixture();f.unloaded=True;f.service(f.pc,f.pawn,f.asc,16);self.assertEqual(f.changes,0)
+  f.unloaded=False;f.service(f.pc,f.pawn,f.asc,16);self.assertEqual(f.changes,1)
+  f.visual.alive=False;f.visual=f.newVisual();f.service(f.pc,f.pawn,f.asc,16);self.assertEqual(f.changes,2)
+ def test_remote_authority_foreign_ability_and_unknown_trail_excluded(self):
+  for field in ('remote','authority','otherGun','asset','visual'):
    f=self.fixture()
    if field=='remote':f.remote=True
    elif field=='authority':f.pc.authority=True
-   elif field=='instigator':f.projectile.Instigator=None
-   else:f.trail.Asset=f.three
+   elif field=='otherGun':f.otherGun=True
+   elif field=='asset':f.one.name='Unrelated Niagara System'
+   else:f.visual.name='Unrelated AudioVisual Data'
    f.service(f.pc,f.pawn,f.asc,20);self.assertEqual(f.changes,0)
 class VisualIsolationTests(unittest.TestCase):
  def test_visual_failure_preserves_native_input_release_and_schedule(self):
