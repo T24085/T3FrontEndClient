@@ -39,9 +39,10 @@ def match_phase_text(room):
 
 
 class Desktop:
-    def __init__(self, root, lobby, game_factory, *, steam_name_loader=None, server_access=None):
+    def __init__(self, root, lobby, game_factory, *, steam_name_loader=None, server_access=None, map_sync=None):
         self.root, self.lobby, self.game_factory = root, lobby, game_factory
         self.steam_name_loader = steam_name_loader
+        self.map_sync = map_sync
         self.game = None
         self.room = None
         self.pending_map = None
@@ -100,6 +101,10 @@ class Desktop:
         self.label(side, 'Private playtest', 10, color=MUTED, bg='#0d1927').pack(side='bottom', anchor='w', padx=26, pady=24)
         tk.Label(side,textvariable=self.preparation,bg='#0d1927',fg=MUTED,font=('Segoe UI',10),
                  anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
+        if self.map_sync is not None:
+            self.map_status = tk.StringVar(value='')
+            tk.Label(side,textvariable=self.map_status,bg='#0d1927',fg=MUTED,font=('Segoe UI',10),
+                     anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
         main = tk.Frame(root, bg=BG)
         self.lobby_panel=main
         main.pack(side='left', fill='both', expand=True, padx=32, pady=28)
@@ -240,6 +245,8 @@ class Desktop:
     def poll(self):
         self.poll_handle=None
         if self.closing: return
+        if self.map_sync is not None:
+            self.map_status.set(self.map_sync.status)
         try:
             while True:
                 self.access_messages.get_nowait()()
@@ -303,6 +310,8 @@ class Desktop:
     def set_capabilities(self, caps):
         self.caps = caps
         self.capabilities_loaded = True
+        if self.map_sync is not None:
+            self.map_sync.start(caps.get('mapFileSync'))
         self.status.set('Community service connected.')
         self.render(self.room)
         self.render_live_controls()
@@ -586,6 +595,8 @@ class Desktop:
     def close(self):
         if self.closing: return
         self.closing = True
+        if self.map_sync is not None:
+            self.map_sync.cancelled.set()
         for name in ('poll_handle','refresh_handle','copy_reset_handle','live_refresh_handle'):
             handle=getattr(self,name,None)
             if handle is not None:
@@ -633,19 +644,21 @@ def main(*, ssl_context=None):
     sys.path.insert(0,str(CLIENT_PACKAGE/'lib'))
     from client_support import discover_game
     from steam_identity import read_steam_name
+    from map_sync import MapSync
+    map_sync = MapSync(lobby, CLIENT_PACKAGE, selected_workspace)
     def steam_name_loader():
         return read_steam_name(discover_game(selected_game_directory),CLIENT_PACKAGE/'base-game-manifest.json')
     def game_factory(current_lobby):
         source = discover_game(selected_game_directory)
         workspace = selected_workspace
-        return CommunityGame(current_lobby,CLIENT_PACKAGE,source,workspace,workspace/'desktop-control')
+        return CommunityGame(current_lobby,CLIENT_PACKAGE,source,workspace,workspace/'desktop-control',map_sync=map_sync)
     root = tk.Tk()
     from server_access import ServerAccess
     try:
         access = ServerAccess.load(CLIENT_PACKAGE)
     except (ValueError, OSError):
         access = None
-    Desktop(root,lobby,game_factory,steam_name_loader=steam_name_loader,server_access=access)
+    Desktop(root,lobby,game_factory,steam_name_loader=steam_name_loader,server_access=access,map_sync=map_sync)
     root.mainloop()
 
 

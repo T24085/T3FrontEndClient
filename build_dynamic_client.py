@@ -11,7 +11,8 @@ SOURCE = Path(r'D:\Tribes3-Research\releases\staging\Tribes3-Community-Windows-W
 SOURCE_MANIFEST_SHA256 = '740081ed79694c486fcff871b4e5ff3329100e5f7407eaf01985d3ed4c44a009'
 OUTPUT = ROOT / 'dynamic-client-development'
 CANONICAL_HELPERS = ('server_access.py', 'server_access_contract.py', 'player_profile.py', 'client_bootstrap.py', 'bulk_verification_receipts.py', 'runtime_health.py', 'startup_progress.py', 'startup_paths.py', 'startup_timing.py',
-                     'client_preparation.py', 'bulk_asset_cache.py', 'verified_file_cache.py')
+                     'client_preparation.py', 'bulk_asset_cache.py', 'verified_file_cache.py',
+                     'map_sync.py', 'map_sync_contract.py')
 SPECTATOR_RUNTIME_FILES = ('lua/spectator_client.lua', 'lua/spectator_materials.lua')
 
 

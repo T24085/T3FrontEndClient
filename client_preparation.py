@@ -64,7 +64,7 @@ def _copy_private(source,destination):
  with destination.open('xb')as output,source.open('rb')as stream:shutil.copyfileobj(stream,output,1024*1024)
 
 def stage(root,source,workspace,package,original,original_identities,verification,*,catalog,
-          emit=print,cache_factory=BulkStageCache,patches=PATCHES):
+          emit=print,cache_factory=BulkStageCache,patches=PATCHES,map_overlay=None):
  """Stage exactly the verified inventories into a fresh private directory."""
  root=Path(root).resolve(strict=True);source=Path(source).resolve(strict=True);workspace=Path(workspace).resolve(strict=True)
  if workspace==source or source in workspace.parents:raise ValueError('Client workspace must be outside the original game.')
@@ -100,8 +100,13 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
    # Never overwrite a destination which might share original immutable bytes.
    _copy_private(src,dst)
    if digest(dst)!=item['sha256']:raise ValueError('Prepared runtime copy differs: '+name)
-  elif name.startswith('content/'):
+  elif name.startswith('content/') and map_overlay is None:
    jobs.append((_member(root,name),game/'Topaz/Content'/_relative(name[len('content/'):]),item['sha256'],item['bytes'],None))
+ if map_overlay is not None:
+  for item,bundled,download in map_overlay:
+   name=item['path']
+   src=_member(root,bundled) if bundled is not None else _member(workspace,download.relative_to(workspace).as_posix())
+   jobs.append((src,game/'Topaz/Content'/_relative(name[len('content/'):]),item['sha256'],item['bytes'],None))
  def stage_bulk(job):
   src,dst,expected,size,source_identity=job
   cache.stage(src,dst,expected_sha256=expected,expected_bytes=size,expected_source_identity=source_identity)

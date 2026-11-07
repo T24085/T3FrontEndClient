@@ -2,40 +2,12 @@
 import argparse,ast,hashlib,json,re,sys,zipfile
 from pathlib import Path,PurePosixPath
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from community_maps import BY_ID,declared_maps,declared_shared_content
+from map_sync_contract import map_catalog
 
 def safe_name(name):
  p=PurePosixPath(name)
  if not name or p.is_absolute()or p.as_posix()!=name or '..'in p.parts or ':'in name or '\\'in name:raise ValueError('Unsafe member: '+name)
  return p
-
-def map_catalog(manifest):
- """Same map grouping/fingerprint format used by map_catalog.verified_catalog."""
- maps=declared_maps(manifest);shared=declared_shared_content(manifest);runtime=manifest['map_runtime']
- if set(runtime)!=set(maps):raise ValueError('Runtime ownership differs from selected maps')
- groups={m:{}for m in maps};base=None
- for row in manifest['files']:
-  name=row['path'];owners=[]
-  for m in maps:
-   d=BY_ID[m];prefixes=('content/Maps/Community/'+d.asset_group+'/'+d.level+'.','content/Community/'+d.asset_group+'/')
-   if name.startswith(prefixes)or(d.shared_group and name.startswith('content/Community/'+d.shared_group+'/'))or name in runtime[m]:owners.append(m)
-  for prefix,names in shared.items():
-   if name.startswith(prefix):owners.extend(m for m in names if m not in owners)
-  if name.startswith('content/')and not owners:raise ValueError('Unowned content: '+name)
-  if name=='base-game-manifest.json':base=row['sha256']
-  for m in owners:groups[m][name]=(row['bytes'],row['sha256'])
- if base is None:raise ValueError('Base-game fingerprint missing')
- result={}
- for m,g in groups.items():
-  d=BY_ID[m]
-  if d.native:
-   if not runtime[m]:raise ValueError('Native runtime missing: '+m)
-  else:
-   prefix='content/Maps/Community/'+d.asset_group+'/'+d.level
-   if any(prefix+ext not in g for ext in ('.umap','.uexp')):raise ValueError('Incomplete custom map: '+m)
-  payload={'format':1,'map':m,'base_manifest_sha256':base,'files':[[n,b,h]for n,(b,h)in sorted(g.items())]}
-  result[m]=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('ascii')).hexdigest()
- return result
 
 def verify(archive,server_catalog,output):
  archive=Path(archive);before=archive.stat();output=Path(output);output.mkdir(parents=True,exist_ok=True)

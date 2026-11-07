@@ -15,6 +15,8 @@ SOURCE_MEMBERS={name:name for name in (
  'lib/owned_native_session.py','lib/dynamic_destination.py',
  'lua/client.lua','lua/spectator_client.lua','lua/spectator_materials.lua')}
 SOURCE_MEMBERS['client.py']='client_entry.py'
+NEW_SOURCE_MEMBERS={'map_sync.py','map_sync_contract.py'}
+SOURCE_MEMBERS.update({name:name for name in NEW_SOURCE_MEMBERS})
 
 def encoded(value):return (json.dumps(value,indent=2)+'\n').encode()
 def sha(raw):return hashlib.sha256(raw).hexdigest()
@@ -43,8 +45,8 @@ def build(base,expected_sha,server_catalog,output,*,source=ROOT,frontend_ref,bac
   available={r['path']for r in original_rows};frozen_runtime={n for names in manifest['map_runtime'].values()for n in names}
   for destination,relative in members.items():
    safe_name(destination);safe_name(relative)
-   if destination not in available:raise ValueError('Source member absent from base: '+destination)
    if destination in frozen_runtime or destination.startswith(('content/','runtime/','python/')):raise ValueError('Map/runtime payload is frozen: '+destination)
+   if destination not in available and destination not in NEW_SOURCE_MEMBERS:raise ValueError('Source member absent from base: '+destination)
    path=source/relative
    if path.resolve(strict=True)!=path or source not in path.parents:raise ValueError('Source member escaped checkout')
    replacements[destination]=path.read_bytes()

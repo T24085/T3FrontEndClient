@@ -152,7 +152,7 @@ def main():
         dest = OUTPUT.joinpath(*PurePosixPath(name).parts)
         dest.parent.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(source,dest)
-    for name in ('server_access.py','server_access_contract.py','desktop_launcher.py','community_transport.py','community_game.py','map_catalog.py','compare_map_packages.py','community_maps.py','steam_identity.py','player_names.py','runtime_health.py','startup_progress.py','community_starter.pyw','verified_file_cache.py','startup_timing.py','startup_paths.py','bulk_asset_cache.py','client_preparation.py','client_bootstrap.py','bulk_verification_receipts.py'):
+    for name in ('server_access.py','server_access_contract.py','desktop_launcher.py','community_transport.py','community_game.py','map_catalog.py','compare_map_packages.py','community_maps.py','steam_identity.py','player_names.py','runtime_health.py','startup_progress.py','community_starter.pyw','verified_file_cache.py','startup_timing.py','startup_paths.py','bulk_asset_cache.py','client_preparation.py','client_bootstrap.py','bulk_verification_receipts.py','map_sync.py','map_sync_contract.py'):
         shutil.copyfile(ROOT/name,OUTPUT/name)
     # The entry has one canonical producer; desktop wrapping must not revive a
     # stale generated CLI from its otherwise verified content source.

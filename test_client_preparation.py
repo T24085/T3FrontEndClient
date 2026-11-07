@@ -59,6 +59,15 @@ class ClientPreparationTest(unittest.TestCase):
   target.write_bytes(b'keep existing owner')
   with self.assertRaises(OSError):client_preparation._copy_private(source,target)
   self.assertEqual(target.read_bytes(),b'keep existing owner')
+ def test_overlay_stages_verified_download_instead_of_original_map_member(self):
+  download=self.workspace/'download.asset';download.write_bytes(b'new-map')
+  row={'path':'content/Maps/map.uasset','bytes':7,'sha256':digest(download)}
+  descriptor=stage(self.package,self.source,self.workspace,self.package_manifest,self.original,self.source_ids,'fixture',
+                   catalog=self.catalog,map_overlay=[(row,None,download)],emit=lambda _:None,patches=((4,'e8621439ff'),),
+                   cache_factory=lambda p:BulkStageCache(p,filesystem_loader=lambda _:None,emit=lambda _:None))
+  record=self.claim(descriptor)
+  self.assertEqual((Path(record['run'])/'game/Topaz/Content/Maps/map.uasset').read_bytes(),b'new-map')
+  self.assertEqual((self.package/row['path']).read_bytes(),b'cooked-map')
  def test_independent_bulk_jobs_overlap_and_publish_only_complete_outputs(self):
   barrier=threading.Barrier(2);entered=[];guard=threading.Lock()
   class ConcurrentCache(BulkStageCache):

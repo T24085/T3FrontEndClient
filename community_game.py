@@ -15,9 +15,10 @@ from startup_progress import PHASES, observed_phase, observed_failure, runtime_p
 
 
 class CommunityGame:
-    def __init__(self, lobby, package, game_source, workspace, artifacts, *, catalog_loader=verified_catalog):
+    def __init__(self, lobby, package, game_source, workspace, artifacts, *, catalog_loader=verified_catalog, map_sync=None):
         self.lobby = lobby
         self.catalog_loader = catalog_loader
+        self.map_sync = map_sync
         self.package = Path(package).resolve(strict=True)
         self.game_source = Path(game_source).resolve(strict=True)
         self.workspace = Path(workspace).resolve()
@@ -46,6 +47,7 @@ class CommunityGame:
         self.preparation_thread = None
         self.preparation_descriptor = None
         self.preparation_stop_requested = False
+        self.preparation_revision = None
         self.role = 'player'
         self.watch_id = None
         self.match_id = None
@@ -88,7 +90,7 @@ class CommunityGame:
         path=self.package/'package-manifest.json'
         return json.loads(path.read_text(encoding='utf-8')).get('startup_contract') if path.is_file() else None
 
-    def prepare(self, *, for_start=False):
+    def prepare(self, *, for_start=False, revision=None):
         """Prepare files only; no match endpoint, profile or native game yet."""
         if self._startup_contract() != 'prepared-client-v1': return False
         with self.lock:
@@ -98,14 +100,19 @@ class CommunityGame:
                 return False
             if self.preparation_status in ('preparing','ready'): return True
             if self.preparation_thread and self.preparation_thread.is_alive(): return False
+            if self.map_sync is not None and not for_start:
+                revision = self.map_sync.current[0]
             artifacts=self.artifacts/('prepare-'+uuid.uuid4().hex)
             artifacts.mkdir(exist_ok=False)
             self.preparation_artifacts=artifacts
             self.preparation_status,self.preparation_error='preparing',None
             self.preparation_descriptor=None
             self.preparation_stop_requested=False
+            self.preparation_revision=revision
             argv=[str(self.package/'python/python.exe'),'-B','-u',str(self.package/'client.py'),
                   '--prepare-only','--game-dir',str(self.game_source),'--workspace',str(self.workspace)]
+            if revision is not None:
+                argv += ['--map-revision', revision]
             self.preparation_thread=threading.Thread(target=self._prepare,args=(argv,artifacts),name='client-preparation',daemon=True)
             self.preparation_thread.start()
             return True
@@ -138,8 +145,21 @@ class CommunityGame:
         except Exception as exc:
             with self.lock:self.preparation_status=failure_status;self.preparation_error=str(exc)
 
-    def _prepared_for_join(self):
-        if not self.prepare(for_start=True): raise CommunityError(self.preparation_error or 'Client preparation is unavailable.')
+    def _prepared_for_join(self, revision=None):
+        with self.lock:
+            stale = self.preparation_revision != revision
+            previous = self.preparation_thread if stale else None
+            if stale:
+                self._cancel_preparation()
+        if previous:
+            previous.join()
+        with self.lock:
+            if self.stop_requested:
+                return None
+            if stale and self.preparation_status != 'quarantined':
+                self.preparation_status = 'idle'
+            if not self.prepare(for_start=True, revision=revision):
+                raise CommunityError(self.preparation_error or 'Client preparation is unavailable.')
         with self.lock:thread=self.preparation_thread
         if thread:thread.join()
         with self.lock:
@@ -193,8 +213,12 @@ class CommunityGame:
                     raise CommunityError('Your map files do not match this match. Update the community client.')
             prepared=None
             if startup_contract=='prepared-client-v1':
+                revision = None
+                if self.map_sync is not None:
+                    with self.lock:self.startup_phase='checking_maps'
+                    revision = self.map_sync.revision_for(target['map'], target['contentHash'])
                 with self.lock:self.startup_phase='preparing_client'
-                prepared=self._prepared_for_join()
+                prepared=self._prepared_for_join(revision)
                 if prepared is None:
                     with self.lock:self.status='stopped'
                     self._release_watch()
@@ -310,6 +334,8 @@ class CommunityGame:
             progress=PHASES.get(self.startup_phase) if self.status=='starting' else None
             if self.status=='starting' and self.startup_phase=='preparing_client' and preparation['status']=='preparing':
                 progress=preparation['progress']
+            if self.status=='starting' and self.startup_phase=='checking_maps':
+                progress=self.map_sync.status or 'Checking map files…'
             return {'status':self.status, 'error':self.error, 'run':str(self.run) if self.run else None,
                     'role':self.role, 'watchId':self.watch_id,
                     'progress':progress,
@@ -336,17 +362,20 @@ class CommunityGame:
 
     def stop(self):
         with self.lock:
-            self.preparation_stop_requested=True
-            if self.preparation_status=='preparing' and self.preparation_artifacts:
-                path=self.preparation_artifacts/'stop.json'
-                temporary=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
-                temporary.write_text(json.dumps({'cancel':True,'reason':'Player closed the client preparation.'}))
-                os.replace(temporary,path)
+            self._cancel_preparation()
             if self.status not in ('starting', 'playing', 'stopping'):
                 return
             self.stop_requested = True
             self.status = 'stopping'
             if self.current_artifacts is not None and not self.cancellation_written: self._request_cancel()
+
+    def _cancel_preparation(self):
+        self.preparation_stop_requested=True
+        if self.preparation_status=='preparing' and self.preparation_artifacts:
+            path=self.preparation_artifacts/'stop.json'
+            temporary=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
+            temporary.write_text(json.dumps({'cancel':True,'reason':'Client preparation cancelled.'}))
+            os.replace(temporary,path)
 
     def _request_cancel(self):
         path = self.current_artifacts / 'stop.json'

@@ -1,3 +1,7 @@
+# Windows r10 map syncing
+
+The Starter checks the connected lobby's map inventory in the background. Existing bundled and cached bytes are reused by SHA-256. A join compares the server's match fingerprint with the available revision and sends the selected revision through the existing owned preparer. A downloaded revision only supplies cooked map files to the isolated game directory. Lua, binaries, the Steam installation and the distributed client files stay outside map syncing. A changed map requiring new runtime or base-game files still needs a client release.
+
 # Post-match Escape candidate - 2026-11-06
 
 The original in-map results widget owns both the final scoreboard and summary tabs. Its original `OnNavigateMenu` action requests the stock `StartMenu` when `Result` is the top route. The private player runtime adds a fallback for Escape only on that owned, visible results widget after the replicated gameplay-ended phase. It defers to the stock handler, skips other routes and ignores the Escape that just closed the original menu. It does not change the desktop launcher.

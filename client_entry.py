@@ -29,6 +29,7 @@ def main():
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--prepared')
     parser.add_argument('--prepared-sha256')
+    parser.add_argument('--map-revision', help=argparse.SUPPRESS)
     parser.add_argument('--expected-map')
     parser.add_argument('--expected-content-hash')
     parser.add_argument('--spectate', action='store_true')
@@ -57,6 +58,8 @@ def main():
         raise ValueError('Prepared client requires its exact descriptor and digest.')
     if args.prepare_only and (args.prepared or args.endpoint or args.check):
         raise ValueError('File preparation cannot join a match.')
+    if args.map_revision is not None and not args.prepare_only:
+        raise ValueError('A map revision must go through owned file preparation.')
     if not args.prepare_only and not args.endpoint:
         raise ValueError('The lobby must provide the selected match endpoint.')
     if args.game_dir is None:
@@ -91,7 +94,13 @@ def main():
         with startup.phase('original-verification'):
             manifest,identities,verification=verify_game(source,workspace,args.rehash)
         from map_catalog import verified_catalog
-        with startup.phase('map-verification'):catalog=verified_catalog(ROOT)
+        map_overlay = None
+        with startup.phase('map-verification'):
+            if args.map_revision is None:
+                catalog = verified_catalog(ROOT)
+            else:
+                from map_sync import load_overlay
+                map_overlay, catalog = load_overlay(workspace, args.map_revision, package)
         if args.expected_map is not None and catalog.get(args.expected_map)!=args.expected_content_hash:
             raise ValueError('Your map files do not match this match. Update the community client.')
         if args.check:
@@ -99,7 +108,7 @@ def main():
             return
         startup_progress('staging_game')
         with startup.phase('client-preparation'):
-            descriptor=stage(ROOT,source,workspace,package,manifest,identities,verification,catalog=catalog,
+            descriptor=stage(ROOT,source,workspace,package,manifest,identities,verification,catalog=catalog,map_overlay=map_overlay,
                              emit=lambda line:print(line,flush=True))
         if args.prepare_only:return
         prepared=consume(ROOT,source,workspace,descriptor['path'],descriptor['sha256'],
