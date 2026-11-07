@@ -1,6 +1,9 @@
 # All-three Chaingun private server candidate active - 2026-11-06
 
 Private server revision `turret-damage-chain-candidate-20261106-r2` is active after the user's authorized restart. It covers original Light, Medium and Heavy Chaingun main abilities. The existing installed client passes the pinned-TLS readiness check against the fresh server; no download/runtime change is required. All 134 client and 127 backend source tests pass. Sustained incoming damage and actual enemy tracer rendering remain for the user's gameplay test.
+# Observation turret capture diagnostic follow-up - 2026-11-06
+
+The test-only repair fixture releases its original input as soon as captured ownership replicates. The paired native Katabatic baseline completed capture and release while both observation turrets still had zero grants. The server's host-only correction verified both original guns equipped; enemy-player fire remains unverified. No client runtime or public release changes. All 134 client tests and paired source checks pass.
 
 # Light / Medium / Heavy Chaingun server extension - 2026-11-06
 
