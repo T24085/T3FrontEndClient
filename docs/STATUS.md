@@ -5,6 +5,9 @@ The private incoming-damage fixture now includes an exact foreign-source native 
 # Incoming turret damage and tracer diagnostics - 2026-11-06
 
 `fix/turret-damage-chain-visuals` preserves current server-access onboarding and personal-turret diagnostics, adding a private original-input fixture for the paired incoming-damage investigation. It requests original loadout items, verifies the selected native weapon, and records original projectile/trail events. It does not change player Lua runtime, replay effects, grant weapons or establish rendered enemy tracer visibility. All 129 client tests and paired source checks pass. Native incoming-damage results are unresolved; two flight runs stopped at the existing live memory reserve with original Job cleanup confirmed. No installed client or public release was updated. The paired backend's `docs/TURRET_RECEIVE_INVESTIGATION.md` records the candidate, negative evidence and remaining qualification.
+# Repair-tool capture diagnostic - 2026-11-06
+
+`diagnostic/retail-center-capture` adds a test-only original repair-tool input fixture for the paired backend Katabatic center fix. It waits for the isolated owned player to be positioned, aims at the original point collision component, selects the original repair slot, discovers the original ability input and presses/releases it. No client runtime, grant, healing or production input behavior changes. A native Heavy-client run observed original InputID 33 and a native four-second neutral-to-blue capture. Its overall harness did not pass: the live-memory reserve stopped it after capture before input-release completion, with all three original Jobs empty. Other teams/maps, recapture and cross-PC behavior remain unqualified. All 129 client tests and paired source checks pass. Public r7 and installed clients are unchanged by this diagnostic source. Additional native tests are paused for the user's Bolt work.
 
 # Automatic server-access setup - 2026-11-06
 
