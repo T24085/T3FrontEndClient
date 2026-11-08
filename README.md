@@ -2,11 +2,11 @@
 
 ## Download and play
 
-**[Download the complete Windows playtest client — r10](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.07-r10/TRIBES3-Community-Starter-Windows-20261107-r10.zip)** · [Release notes and checksums](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.07-r10)
+**[Download the complete Windows playtest client — r11](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.07-r11/TRIBES3-Community-Starter-Windows-20261107-r11.zip)** · [Release notes and checksums](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.07-r11)
 
 The download includes the Community Starter, portable runtime and all custom map content for the 22-map catalog. You still need your own matching Steam installation of TRIBES 3 Rivals and an approved account on the community's Tailscale network.
 
-r10 checks for map updates as soon as Starter connects and downloads changed cooked files in the background. The client reuses downloaded files on later launches and checks the match’s map fingerprint before joining. First-time verification of the original game files can take several minutes.
+r11 reads the host’s map catalog. Compatible new maps show up in the map picker and download in the background. Starter reuses downloaded files and checks the match’s map fingerprint before joining. First-time verification of the original game files can take several minutes.
 
 1. Download and extract the entire ZIP into a fresh folder.
 2. Start Steam and connect to the approved Tailscale network.
