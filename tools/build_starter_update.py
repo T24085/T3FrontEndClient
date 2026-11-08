@@ -59,7 +59,7 @@ def main():
         unsigned = Path(directory) / 'payload.json'
         signature = Path(directory) / 'signature.bin'
         unsigned.write_bytes(payload)
-        subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-File',
+        subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File',
                         str(ROOT / 'tools/sign_starter_update.ps1'), '-Thumbprint', args.certificate,
                         '-Payload', str(unsigned), '-Signature', str(signature)], check=True)
         index = encoded({'payload': b64encode(payload).decode(), 'signature': b64encode(signature.read_bytes()).decode()})
