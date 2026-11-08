@@ -16,7 +16,7 @@ SOURCE_MEMBERS={name:name for name in (
  'lib/owned_native_session.py','lib/dynamic_destination.py',
  'lua/client.lua','lua/spectator_client.lua','lua/spectator_materials.lua')}
 SOURCE_MEMBERS['client.py']='client_entry.py'
-NEW_SOURCE_MEMBERS={'map_sync.py','map_sync_contract.py'}
+NEW_SOURCE_MEMBERS={'map_sync.py','map_sync_contract.py','starter_update.py','starter_update_signing.py'}
 SOURCE_MEMBERS.update({name:name for name in NEW_SOURCE_MEMBERS})
 
 def encoded(value):return (json.dumps(value,indent=2)+'\n').encode()

@@ -12,6 +12,30 @@ def show_error(message):
     ctypes.windll.user32.MessageBoxW(None, message, 'TRIBES 3 Community Starter', 0x10)
 
 
+def launch_startup(root):
+    from starter_update import accept, prepare, recover, startup_lock
+
+    with startup_lock(root) as state:
+        if recover(root, state):
+            print('Restored the previous Starter after an interrupted update.')
+        applied = False
+        try:
+            applied = prepare(root, state)
+        except Exception as exc:
+            print('Starter update skipped:', exc)
+            recover(root, state)
+
+        try:
+            from desktop_launcher import main as launch
+            launch(on_ready=(lambda: accept(state)) if applied else None)
+        except BaseException as exc:
+            if applied and recover(root, state):
+                raise RuntimeError('The previous Starter was restored. Reopen Starter to continue.') from exc
+            raise
+        if applied:
+            recover(root, state)
+
+
 def main():
     root = Path(__file__).resolve().parent
     os.environ['TCL_LIBRARY'] = str(root / 'python/tcl/tcl8.6')
@@ -29,8 +53,7 @@ def main():
         with stream:
             sys.stdout = sys.stderr = stream
             try:
-                from desktop_launcher import main as launch
-                launch()
+                launch_startup(root)
             except BaseException as exc:
                 if isinstance(exc, SystemExit) and exc.code in (None, 0):
                     return 0

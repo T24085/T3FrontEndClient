@@ -1,3 +1,9 @@
+# Windows r12 automatic updates
+
+The Windows Starter checks the signed r12 update channel before loading its desktop modules. The channel can update supported Starter modules and community gameplay Lua. The existing map catalog handles cooked map files, and Steam handles the original game.
+
+The bootstrap verifies an expiry, revision, Windows CNG signature and individual file hashes. It downloads only differing files and holds a folder lock for the lifetime of the desktop app. Interrupted installs and startup failures restore the prior files from the update journal. See [publishing Starter updates](STARTER_UPDATES.md).
+
 # Flag toss release position
 
 The player client seeds the detached flag from its first replicated movement update. The visible flag and its local collision use the same actor root. The handoff applies once after detachment and preserves the server's toss, hit and bounce behavior.

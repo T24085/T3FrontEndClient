@@ -628,7 +628,7 @@ class Desktop:
         self.root.destroy()
 
 
-def main(*, ssl_context=None):
+def main(*, ssl_context=None, on_ready=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--hostname')
     parser.add_argument('--port', type=int)
@@ -664,6 +664,9 @@ def main(*, ssl_context=None):
     except (ValueError, OSError):
         access = None
     Desktop(root,lobby,game_factory,steam_name_loader=steam_name_loader,server_access=access,map_sync=map_sync)
+    if on_ready is not None:
+        root.update_idletasks()
+        on_ready()
     root.mainloop()
 
 
