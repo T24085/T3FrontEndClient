@@ -2,11 +2,11 @@
 
 ## Download and play
 
-**[Download the complete Windows playtest client — r9](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.07-r9/TRIBES3-Community-Starter-Windows-20261107-r9.zip)** · [Release notes and checksums](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.07-r9)
+**[Download the complete Windows playtest client — r10](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.07-r10/TRIBES3-Community-Starter-Windows-20261107-r10.zip)** · [Release notes and checksums](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.07-r10)
 
-The download includes the Community Starter, portable runtime and all custom map content for the 22-map catalog. No separate map-update ZIPs are needed. You still need your own matching Steam installation of TRIBES 3 Rivals and an approved account on the community's Tailscale network.
+The download includes the Community Starter, portable runtime and all custom map content for the 22-map catalog. You still need your own matching Steam installation of TRIBES 3 Rivals and an approved account on the community's Tailscale network.
 
-r9 restores **Set up server access** in Starter and includes the Heavy Bolt trail fix and final-scoreboard Escape fallback. The complete download includes the taller Starter window and **Damnation (2026)** with reshaped shorelines, animated ripples, and stone footings. All 22 map fingerprints match the shared server. First-time game file verification can take several minutes.
+r10 checks for map updates as soon as Starter connects and downloads changed cooked files in the background. The client reuses downloaded files on later launches and checks the match’s map fingerprint before joining. First-time verification of the original game files can take several minutes.
 
 1. Download and extract the entire ZIP into a fresh folder.
 2. Start Steam and connect to the approved Tailscale network.
