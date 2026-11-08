@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
-from community_maps import BY_ID, LEGACY_MAPS, declared_maps, declared_shared_content
+from community_maps import LEGACY_MAPS, declared_definitions, declared_maps, declared_shared_content
 from verified_file_cache import digest as verified_digest
 
 
@@ -39,8 +39,9 @@ def inventory(bundle):
     items=manifest.get('files')
     if not isinstance(items,list) or not 1<=len(items)<=10000: raise CompatibilityError('Invalid manifest inventory.')
     try:
-        maps=declared_maps(manifest)
-        shared_content=declared_shared_content(manifest)
+        definitions=declared_definitions(manifest)
+        maps=tuple(definitions)
+        shared_content=declared_shared_content(manifest,definitions)
     except ValueError as exc: raise CompatibilityError(str(exc)) from exc
     runtime=manifest.get('map_runtime')
     if runtime is None:
@@ -67,7 +68,7 @@ def inventory(bundle):
         listed.add(path)
         owners=[]
         for name in maps:
-            definition=BY_ID[name]
+            definition=definitions[name]
             # Clear/weather levels share one asset family, but retain distinct
             # level identities and include only their own level package files.
             level='content/Maps/Community/'+definition.asset_group+'/'+definition.level+'.'
@@ -115,7 +116,7 @@ def inventory(bundle):
     if base is None: raise CompatibilityError('Base-game manifest is missing.')
     for name in maps:
         paths=groups[name]
-        definition=BY_ID[name]
+        definition=definitions[name]
         if definition.native:
             if not runtime[name]: raise CompatibilityError('Native map runtime is missing: '+name)
             continue

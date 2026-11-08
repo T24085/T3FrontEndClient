@@ -12,7 +12,7 @@ SOURCE_MANIFEST_SHA256 = '740081ed79694c486fcff871b4e5ff3329100e5f7407eaf01985d3
 OUTPUT = ROOT / 'dynamic-client-development'
 CANONICAL_HELPERS = ('server_access.py', 'server_access_contract.py', 'player_profile.py', 'client_bootstrap.py', 'bulk_verification_receipts.py', 'runtime_health.py', 'startup_progress.py', 'startup_paths.py', 'startup_timing.py',
                      'client_preparation.py', 'bulk_asset_cache.py', 'verified_file_cache.py',
-                     'map_sync.py', 'map_sync_contract.py')
+                     'map_sync.py', 'map_sync_contract.py', 'community_maps.py', 'compare_map_packages.py')
 SPECTATOR_RUNTIME_FILES = ('lua/spectator_client.lua', 'lua/spectator_materials.lua')
 
 
@@ -98,6 +98,8 @@ def build_candidate(source, output):
     shutil.copyfile(ROOT / 'dynamic_destination.py', output / 'lib/dynamic_destination.py')
     for name in CANONICAL_HELPERS:
         shutil.copyfile(ROOT / name, output / name)
+    for name in ('community_maps.py', 'compare_map_packages.py'):
+        shutil.copyfile(ROOT / name, output / 'lib' / name)
     provenance = {'source_build_id': manifest['build_id'],
                   'source_manifest_sha256': sha(source / 'package-manifest.json'),
                   'source_client_sha256': sha(source / 'client.py'),

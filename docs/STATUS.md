@@ -1,3 +1,7 @@
+# Windows r11 host map catalog
+
+Starter reads the approved host’s advertised map IDs and labels. The host can add compatible cooked CTF maps with the current client runtime. The downloaded revision binds the new level definition to its verified inventory before the isolated client selects the level. The starter continues to use the r10 download protocol when connected to an older host.
+
 # Windows r10 map syncing
 
 The Starter checks the connected lobby's map inventory in the background. Existing bundled and cached bytes are reused by SHA-256. A join compares the server's match fingerprint with the available revision and sends the selected revision through the existing owned preparer. A downloaded revision only supplies cooked map files to the isolated game directory. Lua, binaries, the Steam installation and the distributed client files stay outside map syncing. A changed map requiring new runtime or base-game files still needs a client release.

@@ -35,7 +35,7 @@ def verify(archive,server_catalog,output):
   if set(names)!={root+n for n in expected.values()}|{candidates[0]}:raise ValueError('ZIP differs from declared inventory')
   for n in names:safe_name(n)
   catalog=map_catalog(manifest)
-  if catalog!=server['verified_map_catalog']:raise ValueError('Client map fingerprints do not match the current server')
+  if not catalog.items() <= server['verified_map_catalog'].items():raise ValueError('Client map fingerprints do not match the current server')
   secret=re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|tskey-api-[A-Za-z0-9_-]{20,}')
   for i,row in enumerate(rows,1):
    name=row['path'];info=z.getinfo(root+name)
@@ -57,6 +57,7 @@ def verify(archive,server_catalog,output):
  if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise ValueError('Archive changed during verification')
  with archive.open('rb')as f:archive_sha=hashlib.file_digest(f,'sha256').hexdigest()
  report={'archive':archive.name,'archive_bytes':before.st_size,'archive_sha256':archive_sha,'verified_members':len(rows),'expanded_bytes':total,'maps':list(catalog),'verified_map_catalog':catalog,'server_manifest_sha256':server['host_manifest_sha256'],'server_map_match':True,'all_archive_members_sha256_verified':True,'original_game_included':False,'private_keys_included':False,'scope':'Distribution integrity and current server map fingerprint match. Gameplay qualification is recorded separately.','passed':True}
+ report['additional_server_maps']=sorted(server['verified_map_catalog'].keys()-catalog.keys())
  (output/'VERIFICATION.json').write_text(json.dumps(report,indent=2)+'\n',newline='\n')
  (output/'MAP-CATALOG.json').write_text(json.dumps({'release':info['release'],'maps':catalog},indent=2)+'\n',newline='\n')
  print(json.dumps({'passed':True,'archive_sha256':archive_sha,'maps':len(catalog),'members':len(rows)}),flush=True)

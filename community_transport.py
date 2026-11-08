@@ -12,7 +12,8 @@ import ssl
 import threading
 
 from dynamic_destination import destination,isolated_source
-from community_maps import BY_ID
+from community_maps import BY_ID, read_options
+from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION
 
 
 class CommunityError(RuntimeError):
@@ -67,10 +68,11 @@ class CommunityClient:
         self.token = None
         self.player_id = None
         self._watch_tokens = {}
+        self.server_maps = None
         self.lock = threading.RLock()
 
     def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True):
-        headers = {'Host': self.authority, 'Accept': 'application/json'}
+        headers = {'Host': self.authority, 'Accept': 'application/json', CATALOG_HEADER: str(CATALOG_VERSION)}
         method, body = 'GET', None
         if data is not None:
             method = 'POST'
@@ -114,7 +116,20 @@ class CommunityClient:
 
     def capabilities(self):
         with self.lock:
-            return self._request('capabilities')
+            caps = self._request('capabilities')
+            try:
+                self.server_maps = (read_options(caps['maps'], dynamic=True)
+                                    if caps.get('mapFileSync') == CATALOG_VERSION else None)
+            except (ValueError, KeyError) as exc:
+                raise CommunityError('Invalid server map catalog.') from exc
+            return caps
+
+    def map_label(self, name):
+        if not isinstance(name, str):
+            return None
+        if self.server_maps is not None:
+            return self.server_maps.get(name)
+        return BY_ID[name].label if name in BY_ID else None
 
     def create(self, name):
         with self.lock:
@@ -200,7 +215,7 @@ class CommunityClient:
         pattern=r'[0-9a-f]{32}' if spectator else r'[A-Za-z0-9_-]{1,64}'
         if not isinstance(match_id,str) or not re.fullmatch(pattern,match_id):
             raise CommunityError('The server did not provide a valid match identity.')
-        if not isinstance(name,str) or name not in BY_ID or not isinstance(fingerprint,str) or not re.fullmatch(r'[0-9a-f]{64}',fingerprint):
+        if self.map_label(name) is None or not isinstance(fingerprint,str) or not re.fullmatch(r'[0-9a-f]{64}',fingerprint):
             raise CommunityError('The server did not provide a valid map version.')
         if spectator and match.get('role')!='spectator':
             raise CommunityError('The server did not provide an observer admission.')
@@ -223,8 +238,8 @@ class CommunityClient:
             for item in matches:
                 if (not isinstance(item,dict) or set(item)!=fields or not isinstance(item['id'],str)
                         or re.fullmatch('[0-9a-f]{32}',item['id'])is None or item['id']in seen
-                        or not isinstance(item['map'],str) or item['map']not in BY_ID
-                        or item['label']!=BY_ID[item['map']].label or type(item['canSpectate'])is not bool
+                        or self.map_label(item['map']) is None or item['label']!=self.map_label(item['map'])
+                        or type(item['canSpectate'])is not bool
                         or any(type(item[k])is not int or item[k]<0 for k in
                                ('playerCount','playerCapacity','spectatorCount','spectatorCapacity'))
                         or item['playerCount']>item['playerCapacity']):

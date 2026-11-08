@@ -64,7 +64,7 @@ def _copy_private(source,destination):
  with destination.open('xb')as output,source.open('rb')as stream:shutil.copyfileobj(stream,output,1024*1024)
 
 def stage(root,source,workspace,package,original,original_identities,verification,*,catalog,
-          emit=print,cache_factory=BulkStageCache,patches=PATCHES,map_overlay=None):
+          emit=print,cache_factory=BulkStageCache,patches=PATCHES,map_overlay=None,custom_maps=None):
  """Stage exactly the verified inventories into a fresh private directory."""
  root=Path(root).resolve(strict=True);source=Path(source).resolve(strict=True);workspace=Path(workspace).resolve(strict=True)
  if workspace==source or source in workspace.parents:raise ValueError('Client workspace must be outside the original game.')
@@ -124,6 +124,7 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
          'run':str(run),'package_manifest_sha256':package_sha,'package_inputs':package_ids,'source_inputs':source_ids,
          'game_outputs':outputs,'catalog':catalog,'verification':verification,'private_executable_sha256':digest(exe),
          'bulk_stage':cache.snapshot(),'native_started':False,'profile_created':False}
+ if custom_maps:record['custom_maps']=custom_maps
  path=run/'prepared.json';sha=_write(path,record)
  emit('BULK_STAGE_SUMMARY|'+json.dumps(cache.snapshot(),separators=(',',':')))
  result={'path':str(path),'sha256':sha}

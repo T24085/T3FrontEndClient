@@ -12,6 +12,7 @@ SOURCE_MEMBERS={name:name for name in (
  'community_maps.py','steam_identity.py','player_names.py','runtime_health.py','startup_progress.py',
  'verified_file_cache.py','startup_timing.py','startup_paths.py','client_bootstrap.py',
  'bulk_verification_receipts.py','player_profile.py','lib/client_support.py',
+ 'lib/community_maps.py','lib/compare_map_packages.py',
  'lib/owned_native_session.py','lib/dynamic_destination.py',
  'lua/client.lua','lua/spectator_client.lua','lua/spectator_materials.lua')}
 SOURCE_MEMBERS['client.py']='client_entry.py'
@@ -40,7 +41,7 @@ def build(base,expected_sha,server_catalog,output,*,source=ROOT,frontend_ref,bac
   for row in original_rows:safe_name(row['path'])
   if set(files)!={prefix+r['path']for r in original_rows}|set(manifests):raise ValueError('Base ZIP differs from its inventory')
   baseline_catalog=map_catalog(manifest)
-  if baseline_catalog!=server['verified_map_catalog']:raise ValueError('Base map fingerprints differ from the verified server')
+  if not baseline_catalog.items() <= server['verified_map_catalog'].items():raise ValueError('Base map fingerprints differ from the verified server')
   replacements={};members=SOURCE_MEMBERS if source_members is None else source_members
   available={r['path']for r in original_rows};frozen_runtime={n for names in manifest['map_runtime'].values()for n in names}
   for destination,relative in members.items():

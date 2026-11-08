@@ -94,13 +94,13 @@ def main():
         with startup.phase('original-verification'):
             manifest,identities,verification=verify_game(source,workspace,args.rehash)
         from map_catalog import verified_catalog
-        map_overlay = None
+        map_overlay, custom_maps = None, None
         with startup.phase('map-verification'):
             if args.map_revision is None:
                 catalog = verified_catalog(ROOT)
             else:
                 from map_sync import load_overlay
-                map_overlay, catalog = load_overlay(workspace, args.map_revision, package)
+                map_overlay, catalog, custom_maps = load_overlay(workspace, args.map_revision, package)
         if args.expected_map is not None and catalog.get(args.expected_map)!=args.expected_content_hash:
             raise ValueError('Your map files do not match this match. Update the community client.')
         if args.check:
@@ -109,6 +109,7 @@ def main():
         startup_progress('staging_game')
         with startup.phase('client-preparation'):
             descriptor=stage(ROOT,source,workspace,package,manifest,identities,verification,catalog=catalog,map_overlay=map_overlay,
+                             custom_maps=custom_maps,
                              emit=lambda line:print(line,flush=True))
         if args.prepare_only:return
         prepared=consume(ROOT,source,workspace,descriptor['path'],descriptor['sha256'],
@@ -130,9 +131,14 @@ def main():
     loopback_http_failure_preflight()
     from player_profile import ProfileSession
     from client_bootstrap import apply as bootstrap_runtime, map_name as bootstrap_map
+    from community_maps import BY_ID, custom_definitions, lua_map_definitions
+    definitions = {**BY_ID, **custom_definitions(package.get('map_definitions', {})),
+                   **custom_definitions(prepared.get('custom_maps', {}))}
     bootstrap_contract = package.get('client_bootstrap_contract')
-    selected_bootstrap = bootstrap_map(bootstrap_contract, args.expected_map)
-    template = bootstrap_runtime((ROOT / 'lua/client.lua').read_text(encoding='utf-8'), bootstrap_contract, args.expected_map)
+    selected_bootstrap = bootstrap_map(bootstrap_contract, args.expected_map, definitions=definitions)
+    template = bootstrap_runtime((ROOT / 'lua/client.lua').read_text(encoding='utf-8'), bootstrap_contract,
+                                 args.expected_map, definitions=definitions)
+    map_definitions = lua_map_definitions(ROOT, run, definitions.get(args.expected_map))
     diagnostic_profile = bool(args.headless or args.test_source or args.seconds is not None)
     with ProfileSession(mode=MODE, workspaces=(workspace, source.parent / 'TRIBES3 Client Sessions'),
                         diagnostic=diagnostic_profile, source_game=source, package_root=ROOT,
@@ -160,7 +166,7 @@ def main():
             if not water_runtime.is_file():
                 raise ValueError('The Damnation water runtime is incomplete. Update the community client.')
             template = template.replace('@@DAMNATION_WATER@@', json.dumps(water_runtime.as_posix(), ensure_ascii=False))
-        for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=(ROOT/'lua/community_maps.lua').as_posix(), SNOWBLIND_WEATHER=(ROOT/'lua/snowblind_weather.lua').as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
+        for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=map_definitions.as_posix(), SNOWBLIND_WEATHER=(ROOT/'lua/snowblind_weather.lua').as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
             template = template.replace('@@' + key + '@@', json.dumps(value, ensure_ascii=False))
         if '@@' in template:
             raise RuntimeError('Incomplete client runtime template.')

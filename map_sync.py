@@ -13,8 +13,9 @@ import zlib
 
 from bulk_asset_cache import DISK_RESERVE_BYTES
 from community_transport import CommunityError, PinnedHTTPSConnection
-from map_sync_contract import (CHUNK, FILE_ROUTE, MANIFEST_ROUTE, MAX_MANIFEST, SHA, VERSION,
+from map_sync_contract import (CATALOG_ROUTE, CATALOG_VERSION, CHUNK, FILE_ROUTE, MANIFEST_ROUTE, MAX_MANIFEST, SHA, VERSION,
                                cooked_rows, encode, map_catalog)
+from community_maps import BY_ID, declared_definitions
 from verified_file_cache import digest
 
 
@@ -34,8 +35,13 @@ def cache_path(workspace, name):
 
 
 def overlay(package, remote):
-    if (not isinstance(remote, dict) or set(remote) != {'format', 'maps', 'files', 'shared_content'}
-            or type(remote['format']) is not int or remote['format'] != VERSION):
+    if not isinstance(remote, dict) or type(remote.get('format')) is not int:
+        raise ValueError('Unsupported map download inventory.')
+    version = remote['format']
+    fields = {'format', 'maps', 'files', 'shared_content'}
+    if version == CATALOG_VERSION:
+        fields.update(('community_maps', 'map_definitions'))
+    if version not in (VERSION, CATALOG_VERSION) or set(remote) != fields:
         raise ValueError('Unsupported map download inventory.')
     rows = cooked_rows(remote['files'])
     bundled = [row for row in package['files'] if row['path'].startswith('content/')]
@@ -47,10 +53,18 @@ def overlay(package, remote):
         sources[name] = name if local_paths.get(name) == row else local_files.get(key)
     effective = dict(package, shared_content=remote['shared_content'],
                      files=[row for row in package['files'] if not row['path'].startswith('content/')] + list(rows.values()))
+    custom = {}
+    if version == CATALOG_VERSION:
+        custom = remote['map_definitions']
+        effective.update(community_maps=remote['community_maps'], map_definitions=custom)
+        selected = declared_definitions(effective)
+        effective['map_runtime'] = {name: package['map_runtime'].get(name, []) for name in selected}
+        if any(name not in package['map_runtime'] and name in BY_ID for name in selected):
+            raise ValueError('Server maps require a newer Starter or matching base game.')
     catalog = map_catalog(effective)
     if catalog != remote['maps']:
         raise ValueError('Server maps require a newer Starter or matching base game.')
-    return rows, sources, catalog
+    return rows, sources, catalog, custom
 
 
 def load_overlay(workspace, revision, package):
@@ -60,9 +74,9 @@ def load_overlay(workspace, revision, package):
         raw = bounded_read(stream)
     if hashlib.sha256(raw).hexdigest() != revision:
         raise ValueError('The cached map revision changed. Reopen Starter to refresh it.')
-    rows, sources, catalog = overlay(package, json.loads(raw))
+    rows, sources, catalog, custom = overlay(package, json.loads(raw))
     return [(row, sources[name], cache_path(workspace, row['sha256'] + '.asset') if sources[name] is None else None)
-            for name, row in rows.items()], catalog
+            for name, row in rows.items()], catalog, custom
 
 
 class MapSync:
@@ -77,9 +91,11 @@ class MapSync:
         self.bundled = None
         self.thread = None
         self.available = False
+        self.version = None
 
     def start(self, version):
-        self.available = type(version) is int and version == VERSION
+        self.available = type(version) is int and version in (VERSION, CATALOG_VERSION)
+        self.version = version if self.available else None
         if self.available and (self.thread is None or not self.thread.is_alive()):
             self.thread = threading.Thread(target=self._background, name='map-downloads', daemon=True)
             self.thread.start()
@@ -98,7 +114,8 @@ class MapSync:
     def _inventory(self):
         try:
             with closing(self._connection()) as connection:
-                connection.request('GET', MANIFEST_ROUTE, headers={'Host': self.lobby.authority})
+                path = CATALOG_ROUTE if self.version == CATALOG_VERSION else MANIFEST_ROUTE
+                connection.request('GET', path, headers={'Host': self.lobby.authority})
                 with connection.getresponse() as response:
                     if response.status != 200 or response.getheader('Content-Type', '').split(';')[0] != 'application/json':
                         raise CommunityError('Server map inventory is unavailable.')
@@ -187,7 +204,7 @@ class MapSync:
     def _refresh(self, required):
         package = json.loads((self.package / 'package-manifest.json').read_bytes())
         remote = self._inventory()
-        rows, sources, catalog = overlay(package, remote)
+        rows, sources, catalog, _ = overlay(package, remote)
         if required and catalog.get(required[0]) != required[1]:
             raise CommunityError('The server map version changed. Refresh the lobby and try again.')
         if catalog == self.bundled_catalog():

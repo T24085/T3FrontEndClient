@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 from map_sync import MapSync, load_overlay, overlay
 from map_sync_contract import map_catalog
+from community_maps import custom_definitions, lua_map_definitions
+from client_bootstrap import CONTRACT, map_name
 
 LEVEL = 'content/Maps/Community/Stonehenge/Arena_Stonehenge_P'
 ASSET = 'content/Community/Stonehenge/Fixture.uasset'
@@ -54,7 +56,8 @@ class MapSyncTest(unittest.TestCase):
         with patch.object(self.sync, '_download', side_effect=fetch) as download:
             revision = self.sync.revision_for('Stonehenge', fingerprint)
             download.assert_called_once()
-        entries, catalog = load_overlay(self.root, revision, self.bundled)
+        entries, catalog, custom = load_overlay(self.root, revision, self.bundled)
+        self.assertEqual(custom, {})
         self.assertEqual(catalog['Stonehenge'], fingerprint)
         paths = {item['path']: (bundled, download) for item, bundled, download in entries}
         self.assertNotIn(OLD, paths)
@@ -88,3 +91,37 @@ class MapSyncTest(unittest.TestCase):
         with patch.object(self.sync, 'refresh') as refresh:
             self.assertIsNone(self.sync.revision_for('Stonehenge', fingerprint))
         refresh.assert_not_called()
+
+    def test_new_host_map_downloads_and_supplies_the_verified_bootstrap(self):
+        custom = {'NewMap': {'label': 'New Map', 'asset_group': 'NewMap', 'level': 'Arena_NewMap_P'}}
+        extra = {'content/Maps/Community/NewMap/Arena_NewMap_P.umap': b'level',
+                 'content/Maps/Community/NewMap/Arena_NewMap_P.uexp': b'export',
+                 'content/Community/NewMap/Decor.uasset': b'decor'}
+        host = dict(self.bundled, community_maps=['Stonehenge', 'NewMap'], map_definitions=custom,
+                    map_runtime={'Stonehenge': [], 'NewMap': []},
+                    files=self.bundled['files'] + [row(name, data) for name, data in extra.items()])
+        self.remote = {'format': 2, 'maps': map_catalog(host), 'community_maps': host['community_maps'],
+                       'map_definitions': custom, 'shared_content': {}, 'files': host['files'][1:]}
+        self.sync.available = True
+        requested = []
+
+        def fetch(entry, target):
+            requested.append(entry['path'])
+            data = extra[entry['path']]
+            self.sync._write_verified(BytesIO(gzip.compress(data)), target, entry['sha256'], len(data))
+
+        with patch.object(self.sync, '_download', side_effect=fetch):
+            revision = self.sync.revision_for('NewMap', self.remote['maps']['NewMap'])
+        self.assertCountEqual(requested, [name for name in extra if not name.endswith('.uexp')])
+        entries, catalog, definitions = load_overlay(self.root, revision, self.bundled)
+        self.assertEqual(catalog, self.remote['maps'])
+        selected = custom_definitions(definitions)['NewMap']
+        self.assertEqual(map_name(CONTRACT, 'NewMap', definitions={selected.id: selected}), selected.package)
+        runtime = lua_map_definitions(self.root, self.root, selected)
+        self.assertIn('/Game/Maps/Community/NewMap/Arena_NewMap_P.Arena_NewMap_P:', runtime.read_text())
+        self.assertEqual(len(entries), len(host['files']) - 1)
+
+    def test_dynamic_definition_rejects_injection_and_builtin_aliases(self):
+        for name, level in (('stonehenge', 'Arena_New_P'), ('NewMap', '../Unsafe'), ('NewMap', 'foo?listen')):
+            with self.subTest(name=name, level=level), self.assertRaises(ValueError):
+                custom_definitions({name: {'label': 'New Map', 'asset_group': 'NewMap', 'level': level}})

@@ -3,11 +3,14 @@ import hashlib
 import json
 import re
 
-from community_maps import BY_ID, declared_maps, declared_shared_content
+from community_maps import declared_definitions, declared_shared_content
 
 VERSION = 1
 MANIFEST_ROUTE = '/api/map-files-v1'
 FILE_ROUTE = MANIFEST_ROUTE + '/'
+CATALOG_VERSION = 2
+CATALOG_HEADER = 'X-T3-Map-Catalog'
+CATALOG_ROUTE = '/api/map-files-v2'
 MAX_MANIFEST = 2 * 1024**2
 MAX_FILE = 256 * 1024**2
 MAX_TOTAL = 8 * 1024**3
@@ -44,10 +47,11 @@ def cooked_rows(rows):
     return result
 
 
-def map_catalog(manifest):
-    """Fingerprint inventory metadata in the same format as verified_catalog."""
-    maps = declared_maps(manifest)
-    shared = declared_shared_content(manifest)
+def map_groups(manifest):
+    """Resolve the files each map needs from its package inventory."""
+    definitions = declared_definitions(manifest)
+    maps = tuple(definitions)
+    shared = declared_shared_content(manifest, definitions)
     runtime = manifest['map_runtime']
     if set(runtime) != set(maps):
         raise ValueError('Runtime ownership differs from selected maps.')
@@ -57,7 +61,7 @@ def map_catalog(manifest):
         name = row['path']
         owners = {owner for prefix, names in shared.items() if name.startswith(prefix) for owner in names}
         for map_id in maps:
-            definition = BY_ID[map_id]
+            definition = definitions[map_id]
             level = f'content/Maps/Community/{definition.asset_group}/{definition.level}.'
             assets = f'content/Community/{definition.asset_group}/'
             common = f'content/Community/{definition.shared_group}/'
@@ -72,9 +76,8 @@ def map_catalog(manifest):
             groups[owner][name] = (row['bytes'], row['sha256'])
     if base is None:
         raise ValueError('Base-game fingerprint missing.')
-    result = {}
     for map_id, files in groups.items():
-        definition = BY_ID[map_id]
+        definition = definitions[map_id]
         if definition.native:
             if not runtime[map_id]:
                 raise ValueError('Native runtime missing: ' + map_id)
@@ -82,6 +85,17 @@ def map_catalog(manifest):
             level = f'content/Maps/Community/{definition.asset_group}/{definition.level}'
             if any(level + suffix not in files for suffix in ('.umap', '.uexp')):
                 raise ValueError('Incomplete custom map: ' + map_id)
+            prefix = f'content/Community/{definition.asset_group}/'
+            if not any(name.startswith(prefix) for name in files):
+                raise ValueError('Map assets are missing: ' + map_id)
+    return base, groups
+
+
+def map_catalog(manifest):
+    """Fingerprint inventory metadata in the same format as verified_catalog."""
+    base, groups = map_groups(manifest)
+    result = {}
+    for map_id, files in groups.items():
         payload = {'format': 1, 'map': map_id, 'base_manifest_sha256': base,
                    'files': [[name, size, sha] for name, (size, sha) in sorted(files.items())]}
         result[map_id] = hashlib.sha256(encode(payload)).hexdigest()

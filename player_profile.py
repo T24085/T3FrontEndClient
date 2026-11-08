@@ -150,7 +150,8 @@ def _valid_bootstrap_map(map_name):
     if map_name == '/Game/Maps/Active/Drydock/Arena_Drydock_P':
         return True
     from community_maps import BY_ID
-    return isinstance(map_name, str) and any(map_name == row.package for row in BY_ID.values())
+    return isinstance(map_name, str) and (any(map_name == row.package for row in BY_ID.values()) or
+           re.fullmatch(r'/Game/Maps/Community/[A-Za-z][A-Za-z0-9_]{0,63}/[A-Za-z][A-Za-z0-9_]{0,63}', map_name) is not None)
 
 
 def update_bootstrap(profile, control, mode, *, map_name='/Game/Maps/Active/Drydock/Arena_Drydock_P'):

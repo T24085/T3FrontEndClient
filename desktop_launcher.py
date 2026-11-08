@@ -12,7 +12,8 @@ from tkinter import ttk
 from community_game import CommunityGame
 from startup_paths import installation_options
 from community_transport import CommunityClient, CommunityError, CommunityConnectionError
-from community_maps import BY_ID, options, LEGACY_MAPS
+from community_maps import options, read_options, LEGACY_MAPS
+from map_sync_contract import CATALOG_VERSION
 
 ROOT = Path(__file__).resolve().parent
 CLIENT_PACKAGE = ROOT if (ROOT / 'connection-policy.json').is_file() else ROOT / 'dynamic-client-development'
@@ -358,7 +359,7 @@ class Desktop:
                 self.pending_map = None
                 self.map_retry_count = 0
                 self.map_retry_at = 0
-                self.status.set('Map selected: ' + BY_ID[selected[1]].label)
+                self.status.set('Map selected: ' + next(item['label'] for item in self.map_options if item['id'] == selected[1]))
             self.render(room)
         self.run_async(apply, applied)
 
@@ -389,20 +390,24 @@ class Desktop:
         self.phase.set(match_phase_text(room))
         available=room.get('availableMaps') if in_room else self.caps.get('maps')
         if available is None: available=options(LEGACY_MAPS)
-        if (not isinstance(available,list) or not available
-                or any(not isinstance(item,dict) or item.get('id') not in BY_ID
-                       or item.get('label')!=BY_ID[item['id']].label for item in available)
-                or len({item['id'] for item in available})!=len(available)
-                or (in_room and room['map'] not in {item['id'] for item in available})):
+        try:
+            dynamic = self.caps.get('mapFileSync') == CATALOG_VERSION
+            labels = read_options(available, dynamic=dynamic)
+            if in_room and room['map'] not in labels:
+                raise ValueError('The selected map is outside the lobby catalog.')
+        except ValueError:
             self.map_combo.configure(state='disabled')
             self.start_button.configure(state='disabled')
             self.game_button.configure(state='disabled')
+            self.leave_button.configure(state='normal' if in_room and not self.controls_busy else 'disabled')
             self.status.set('Unsupported server map catalog. Update the community client.')
             return
         self.map_options=available
         self.map_combo.configure(values=tuple(item['label'] for item in available),height=min(18,len(available)),state='readonly' if setup and leader else 'disabled')
         if in_room:
-            self.map_name.set(BY_ID[self.pending_map[1] if self.pending_map else room['map']].label)
+            if self.pending_map and self.pending_map[1] not in labels:
+                self.pending_map = None
+            self.map_name.set(labels[self.pending_map[1] if self.pending_map else room['map']])
         selected = self.roster.curselection()
         selected_id = self.players[selected[0]]['id'] if selected and selected[0] < len(self.players) else None
         scroll_position = self.roster.yview()[0]

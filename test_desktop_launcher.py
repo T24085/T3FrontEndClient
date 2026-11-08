@@ -119,6 +119,28 @@ class DesktopTest(unittest.TestCase):
             self.assertIn(('map',{'map':'HighOctane'}),lobby.calls)
         finally: app.close()
 
+    def test_host_catalog_adds_an_unknown_map_to_the_picker(self):
+        root = tk.Tk(); root.withdraw()
+        lobby = FakeLobby()
+        maps = options(('Stonehenge',)) + [{'id': 'NewMap', 'label': 'New Map'}]
+        lobby.capabilities = lambda: {'mapFileSync': 2, 'maps': maps, 'matchStartEnabled': True, 'gameClientReady': True}
+        lobby.room['availableMaps'] = maps
+        app = Desktop(root, lobby, lambda _: FakeGame())
+        try:
+            deadline = time.monotonic() + 5
+            while app.busy and time.monotonic() < deadline:
+                root.update(); time.sleep(.02)
+            app.render(lobby.room)
+            self.assertIn('New Map', app.map_combo['values'])
+            app.map_name.set('New Map')
+            app.choose_map()
+            while app.busy and time.monotonic() < deadline:
+                root.update(); time.sleep(.02)
+            self.assertIn(('map', {'map': 'NewMap'}), lobby.calls)
+            self.assertEqual(app.map_name.get(), 'New Map')
+        finally:
+            app.close()
+
     def test_steam_name_is_readonly_and_refreshed_before_lobby_entry(self):
         root=tk.Tk();root.withdraw()
         lobby,game=FakeLobby(),FakeGame()
