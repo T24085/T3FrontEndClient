@@ -1,3 +1,7 @@
+# Linux Proton r12
+
+The Linux package is built from the published Windows r12 archive and bundles the 22 current map fingerprints from the approved host. The Proton bridge gives the shared Starter and signed updater the Linux CA context and keeps the existing Steam command and owned-process preflight. Steam/Proton multiplayer and Steam Deck Gaming Mode require separate gameplay qualification.
+
 # Windows r12 automatic updates
 
 The Windows Starter checks the signed r12 update channel before loading its desktop modules. The channel can update supported Starter modules and community gameplay Lua. The existing map catalog handles cooked map files, and Steam handles the original game.

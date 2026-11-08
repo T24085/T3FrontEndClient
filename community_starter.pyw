@@ -12,22 +12,23 @@ def show_error(message):
     ctypes.windll.user32.MessageBoxW(None, message, 'TRIBES 3 Community Starter', 0x10)
 
 
-def launch_startup(root):
-    from starter_update import accept, prepare, recover, startup_lock
+def launch_startup(root, *, ssl_context=None):
+    from starter_update import accept, fetcher, prepare, recover, startup_lock
 
     with startup_lock(root) as state:
         if recover(root, state):
             print('Restored the previous Starter after an interrupted update.')
         applied = False
         try:
-            applied = prepare(root, state)
+            fetch = fetcher(ssl_context=ssl_context) if ssl_context is not None else None
+            applied = prepare(root, state, fetch=fetch)
         except Exception as exc:
             print('Starter update skipped:', exc)
             recover(root, state)
 
         try:
             from desktop_launcher import main as launch
-            launch(on_ready=(lambda: accept(state)) if applied else None)
+            launch(ssl_context=ssl_context, on_ready=(lambda: accept(state)) if applied else None)
         except BaseException as exc:
             if applied and recover(root, state):
                 raise RuntimeError('The previous Starter was restored. Reopen Starter to continue.') from exc

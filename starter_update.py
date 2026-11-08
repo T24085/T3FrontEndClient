@@ -9,7 +9,7 @@ import re
 import shutil
 import time
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPSHandler, HTTPRedirectHandler, Request, build_opener
 import uuid
 
 from starter_update_signing import verify
@@ -87,8 +87,8 @@ class GitHubRedirect(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def fetcher():
-    opener = build_opener(GitHubRedirect())
+def fetcher(*, ssl_context=None):
+    opener = build_opener(GitHubRedirect(), HTTPSHandler(context=ssl_context))
     deadline = time.monotonic() + 20
 
     def fetch(name, bound):

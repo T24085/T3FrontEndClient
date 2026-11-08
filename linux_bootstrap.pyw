@@ -4,6 +4,7 @@ import ctypes
 import hashlib
 import json
 import os
+import runpy
 from pathlib import Path
 import ssl
 import sys
@@ -62,6 +63,7 @@ def main():
                 raise RuntimeError('The Linux certificate snapshot changed. Reopen Community Starter from Steam.')
             context = ssl.create_default_context(cafile=str(ca))
             assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
+            os.environ['SSL_CERT_FILE'] = str(ca)
             os.environ['TCL_LIBRARY'] = str(ROOT/'python/tcl/tcl8.6')
             os.environ['TK_LIBRARY'] = str(ROOT/'python/tcl/tk8.6')
             ownership = check_owned_jobs(args.launch_dir)
@@ -77,11 +79,10 @@ def main():
             (args.launch_dir/'bridge-ready.json').write_text(json.dumps(proof, indent=2)+'\n', encoding='utf-8')
             if args.probe_only:
                 return 0
-            # The shared desktop receives the verified Linux trust context;
-            # Steam identity still comes from the original game's Steam SDK.
-            from desktop_launcher import main as launch
-            sys.argv = [str(ROOT/'desktop_launcher.py'), '--game-dir', args.game_dir, '--workspace', args.workspace]
-            launch(ssl_context=context)
+            startup = ROOT/'community_starter.pyw'
+            sys.argv = [str(startup), '--game-dir', args.game_dir, '--workspace', args.workspace]
+            launch = runpy.run_path(str(startup))['launch_startup']
+            launch(ROOT, ssl_context=context)
             return 0
         except Exception as exc:
             traceback.print_exc()
