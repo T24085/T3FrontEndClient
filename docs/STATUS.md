@@ -1,3 +1,9 @@
+# Flag toss release position
+
+The player client seeds the detached flag from its first replicated movement update. The visible flag and its local collision use the same actor root. The handoff applies once after detachment and preserves the server's toss, hit and bounce behavior.
+
+In an isolated Katabatic toss, the baseline proxy started 107.83 cm from its first server position. With the correction, the proxy matched that update in the release frame. All 150 client tests and 13 shared contract checks passed, and all three owned native Jobs finished empty. The loopback client received later movement updates in a burst. Rendered flight and bounce shots during a live match still need a player retest. Native evidence is under `verification/flag-flight-snap-20261108` outside Git.
+
 # Windows r11 host map catalog
 
 Starter reads the approved host’s advertised map IDs and labels. The host can add compatible cooked CTF maps with the current client runtime. The downloaded revision binds the new level definition to its verified inventory before the isolated client selects the level. The starter continues to use the r10 download protocol when connected to an older host.
