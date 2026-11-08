@@ -196,7 +196,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--setup', action='store_true')
     parser.add_argument('--steam-launch', nargs=argparse.REMAINDER)
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    if '--steam-launch' in argv:
+        index = argv.index('--steam-launch')
+        args = parser.parse_args(argv[:index + 1])
+        command = argv[index + 1:]
+        # Steam can put one separator before its command. Keep the separators
+        # inside that command opaque to argparse for reaper and the runtime.
+        args.steam_launch = command[1:] if command[:1] == ['--'] else command
+    else:
+        args = parser.parse_args(argv)
     if sys.platform != 'linux' or platform.machine().lower() not in ('x86_64', 'amd64'):
         parser.error('This client requires 64-bit x86 Linux. ARM/Jetson is not supported.')
     if args.steam_launch is None:

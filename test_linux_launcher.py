@@ -56,6 +56,16 @@ class LinuxLauncherTest(unittest.TestCase):
         self.assertEqual((sessions[0]/'ca-bundle.pem').stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads((sessions[0]/'launch.json').read_text())['game_source'], str(self.game))
 
+    def test_steam_outer_separator_keeps_nested_separators(self):
+        command = ['/Steam/reaper', 'SteamLaunch', 'AppId=2687970', '--',
+                   '/Steam Runtime/_v2-entry-point', '--verb=waitforexitandrun', '--', *self.command]
+        argv = ['linux_launcher.py', '--steam-launch', '--', *command]
+        with patch('linux_launcher.ROOT', self.package), patch.object(sys, 'argv', argv), \
+                patch('linux_launcher.prepare_launch', return_value=(command, self.env, self.package)) as prepare, \
+                patch('linux_launcher.run_in_terminal', return_value=0):
+            self.assertEqual(main(), 0)
+        prepare.assert_called_once_with(self.package, command, os.environ)
+
     def test_runtime_prefix_and_selected_proton_are_preserved(self):
         command = ['/Steam Runtime/_v2-entry-point', '--verb=waitforexitandrun', '--', *self.command]
         calls = []
