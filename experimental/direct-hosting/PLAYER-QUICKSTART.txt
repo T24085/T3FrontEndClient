@@ -1,0 +1,18 @@
+TRIBES 3 • Windows Direct Starter • r12
+
+1. Install TRIBES 3 in Steam and keep Steam running and signed in.
+2. Extract the entire Direct Starter ZIP into a fresh folder.
+3. Run Start Direct Starter.bat and choose the player invitation JSON your
+   host sent you. Each device needs its own private invitation.
+4. Join or create a lobby. Pick teams, start the match, then click Join game
+   when the match is ready. The first match can take longer while Starter
+   checks and stages your game files.
+
+Use Change Host Invitation.bat to switch hosts or load a replacement invitation.
+You can keep this Starter alongside your regular Community Starter. This build
+uses the direct host's lobby and map catalog and does not require Tailscale.
+
+If the lobby won't open, ask your host to check TCP forwarding, the TLS
+certificate, and your invitation. If the lobby opens and the game times out,
+ask the host to check the UDP rule. The first connection test should be from
+outside the host's home network.

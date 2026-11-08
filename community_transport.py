@@ -50,8 +50,8 @@ class CommunityClient:
             raise ValueError('Invalid lobby port.')
         address = ipaddress.IPv4Address(server_address)
         if test_source is None:
-            if address not in ipaddress.ip_network('100.64.0.0/10'):
-                raise ValueError('Lobby server must use Tailscale IPv4.')
+            if not self.accepts_server_address(address):
+                raise ValueError(self.address_error)
         elif str(address) != '127.0.0.1':
             raise ValueError('Invalid isolated test connection.')
         self.hostname = hostname.lower()
@@ -71,8 +71,17 @@ class CommunityClient:
         self.server_maps = None
         self.lock = threading.RLock()
 
+    address_error = 'Lobby server must use Tailscale IPv4.'
+
+    @staticmethod
+    def accepts_server_address(address):
+        return address in ipaddress.ip_network('100.64.0.0/10')
+
+    def request_headers(self):
+        return {'Host': self.authority, 'Accept': 'application/json', CATALOG_HEADER: str(CATALOG_VERSION)}
+
     def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True):
-        headers = {'Host': self.authority, 'Accept': 'application/json', CATALOG_HEADER: str(CATALOG_VERSION)}
+        headers = self.request_headers()
         method, body = 'GET', None
         if data is not None:
             method = 'POST'

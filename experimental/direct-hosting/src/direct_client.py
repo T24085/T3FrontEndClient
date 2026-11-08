@@ -1,7 +1,8 @@
 """Separate direct-host Starter entry; credentials stay outside the package."""
-import ipaddress, json, os, pathlib, re, ssl, sys, secrets
+import os, pathlib, re, secrets
 from direct_network import UdpClient,read_json,write_json,valid_public_address
 from community_transport import CommunityClient,CommunityError
+from dynamic_destination import DIRECT_BRIDGE_POLICY
 
 ROOT=pathlib.Path(__file__).resolve().parent
 
@@ -15,17 +16,32 @@ def validate_connection(d,*,local_test=False):
     return dict(d)
 
 class DirectClient(CommunityClient):
+    address_error = 'A direct host must have a public IPv4 address.'
+
+    @staticmethod
+    def accepts_server_address(address):
+        return address.is_global and not address.is_multicast
+
     def __init__(self,connection,*,ssl_context=None,test_source=None):
         d=validate_connection(connection,local_test=test_source is not None)
-        policy={'transport':'authenticated-udp-v1','server_address':'127.0.0.1','first_port':1024,'last_port':65535}
-        super().__init__(d['hostname'],d['https_port'],d['public_address'],policy,ssl_context=ssl_context,test_source=test_source)
+        super().__init__(d['hostname'],d['https_port'],d['public_address'],dict(DIRECT_BRIDGE_POLICY),
+                         ssl_context=ssl_context,test_source=test_source)
         self.connection=d;self.access_token=d['access_token'];self.direct_session=secrets.token_hex(16);self.proxies={}
 
+    def request_headers(self):
+        return dict(super().request_headers(), **{
+            'Authorization': 'Bearer ' + self.access_token,
+            'X-Direct-Session': self.direct_session,
+        })
+
     def _validated_target(self,match,name,*,spectator=False):
-        from community_maps import BY_ID
         if not isinstance(match,dict)or match.get('address')!=self.server_address or type(match.get('port'))is not int or not self.connection['first_udp_port']<=match['port']<=self.connection['last_udp_port']:raise CommunityError('The public match endpoint differs from this invitation.')
         grant=match.get('udpGrant')
-        if name not in BY_ID or re.fullmatch('[0-9a-f]{64}',match.get('contentHash',''))is None or not isinstance(grant,dict)or grant.get('matchId')!=match.get('id')or grant.get('port')!=match['port']:raise CommunityError('The host did not provide this match admission. Wait for Start match, or request a fresh invitation.')
+        native=dict(match,address='127.0.0.1',port=DIRECT_BRIDGE_POLICY['first_port'])
+        target=super()._validated_target(native,name,spectator=spectator)
+        if (not isinstance(grant,dict) or grant.get('matchId')!=target['matchId']
+                or grant.get('port')!=match['port'] or not isinstance(grant.get('id'),str)):
+            raise CommunityError('Match admission is unavailable. Wait for the host to start the match and try again.')
         key=(grant.get('matchId'),grant.get('id'))
         with self.lock:
             proxy=self.proxies.get(key)
@@ -35,23 +51,23 @@ class DirectClient(CommunityClient):
                 for old in self.proxies.values():old.close()
                 self.proxies.clear()
                 try:proxy=UdpClient(self.server_address,grant)
-                except (ValueError,OSError)as exc:raise CommunityError('UDP match admission could not be opened.')from exc
+                except (TypeError,ValueError,OSError)as exc:raise CommunityError('UDP match admission could not be opened.')from exc
                 self.proxies[key]=proxy
-            native=dict(match,address='127.0.0.1',port=proxy.port)
-            return super()._validated_target(native,name,spectator=spectator)
+            return dict(target,endpoint='127.0.0.1:'+str(proxy.port))
 
     def close(self):
         with self.lock:
             for proxy in self.proxies.values():proxy.close()
             self.proxies.clear()
 
-def main():
+def main(root=ROOT):
     import tkinter as tk
     from tkinter import filedialog,messagebox
     from desktop_launcher import Desktop
     from community_game import CommunityGame
     from startup_paths import installation_options
     from client_support import discover_game
+    from map_sync import MapSync
     from steam_identity import read_steam_name
     local=pathlib.Path(os.environ.get('LOCALAPPDATA',pathlib.Path.home()))/'Tribes3DirectStarter'
     local.mkdir(parents=True,exist_ok=True);saved=local/'connection.json'
@@ -66,7 +82,7 @@ def main():
         lobby=DirectClient(connection)
         try:lobby.capabilities()
         except CommunityError:
-            messagebox.showerror('Direct host connection','Cannot contact the host with this invitation. Check the hostname, certificate, public IP, forwarded ports and invitation revocation. To import a different host, use Change Host Invitation.vbs.');return
+            messagebox.showerror('Direct host connection','Could not open the lobby. Ask the host to check the invitation, certificate and TCP forwarding. Use Change Host Invitation.bat to import a replacement.');return
     except Exception as exc:
         messagebox.showerror('Direct Starter setup',str(exc));return
     finally:chooser.destroy()
@@ -74,11 +90,12 @@ def main():
         def close(self):
             try:super().close()
             finally:lobby.close()
-    root=tk.Tk();root.title('TRIBES 3 — Direct Host Starter — private candidate')
-    factory=lambda current:CommunityGame(current,ROOT,source,workspace,workspace/'direct-desktop-control')
-    gui=DirectDesktop(root,lobby,factory,steam_name_loader=lambda:read_steam_name(source,ROOT/'base-game-manifest.json'))
-    root.protocol('WM_DELETE_WINDOW',gui.close)
-    try:root.mainloop()
+    window=tk.Tk();window.title('TRIBES 3 — Direct Host Starter')
+    map_sync=MapSync(lobby,root,workspace)
+    factory=lambda current:CommunityGame(current,root,source,workspace,workspace/'direct-desktop-control',map_sync=map_sync)
+    gui=DirectDesktop(window,lobby,factory,steam_name_loader=lambda:read_steam_name(source,root/'base-game-manifest.json'),map_sync=map_sync)
+    window.protocol('WM_DELETE_WINDOW',gui.close)
+    try:window.mainloop()
     finally:lobby.close()
 
 def change_invitation():
@@ -89,7 +106,6 @@ def change_invitation():
         filename=filedialog.askopenfilename(title='Choose the new player invitation',filetypes=[('Player invitation','*.json')])
         if filename:
             d=validate_connection(read_json(filename,16384));p=pathlib.Path(os.environ.get('LOCALAPPDATA',pathlib.Path.home()))/'Tribes3DirectStarter/connection.json'
-            if p.exists():p.with_suffix('.previous.json').write_bytes(p.read_bytes())
             write_json(p,d);messagebox.showinfo('Invitation saved','Close any other Direct Starter window, then reopen Direct Starter.')
     except Exception as exc:messagebox.showerror('Invitation',str(exc))
     finally:root.destroy()
