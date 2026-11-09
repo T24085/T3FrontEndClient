@@ -245,6 +245,105 @@ end)()
 local heavyBoltVisual=heavyBoltVisualFactory({valid=valid,scope=scope,signature=signature,report=report})
 local weaponInput=weaponInputFactory({valid=valid,scope=scope,signature=signature,report=report,observeVisuals=heavyBoltVisual})
 -- END_WEAPON_INPUT_RECOVERY_V1
+
+-- BEGIN_DIRECT_PLAYTEST_PRESENTATION
+local shockLanceVisual
+local function configure_shock_lance()
+    if valid(shockLanceVisual) then return end
+    local path='/Game/Topaz/Abilities/Weapons/Shocklance/AV_Topaz_Shocklance.AV_Topaz_Shocklance'
+    local visual=StaticFindObject(path)
+    if not valid(visual) or visual:GetFullName()~='ValDeviceAudioVisual '..path then return end
+
+    local prefix='NiagaraSystem /Game/VFX/Weapons/ShockLance/'
+    local targets={}
+    local function select_action(actions,expected)
+        local count=0
+        actions:ForEach(function(_,param)
+            local action=param:get()
+            local system=action.ParticleSystem
+            if valid(system) and system:GetFullName()==prefix..expected and action.SocketName:ToString()=='MuzzleSocket' then
+                count=count+1
+                targets[#targets+1]=action
+            end
+        end)
+        return count==1
+    end
+    if not select_action(visual.RemainingAmmoActions,'Ammo/NS_ShockLance_Standard_Ammo_1P.NS_ShockLance_Standard_Ammo_1P') then return end
+    if not select_action(visual.ReloadActions,'Reload/NS_ShockLance_Standard_Reload_1P.NS_ShockLance_Standard_Reload_1P') then return end
+
+    -- These attached effects contain local-space lightning ribbons. The
+    -- muzzle flash, world-space tracers and impacts use separate slots.
+    for _,action in ipairs(targets) do
+        action.ParticleSystem=nil
+        assert(not valid(action.ParticleSystem),'shock_lance_camera_effect_readback_failed')
+    end
+    shockLanceVisual=visual
+    report('SHOCK_LANCE_CAMERA_EFFECTS_READY|charge=false|reload=false')
+end
+
+local scoreBarClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_ScoreBar_CTF.WBP_Game_ScoreBar_CTF_C'
+local scoreBars={}
+local scoreBarWorld,scoreBarController,scoreBarReported
+local scoreBarScanDelay=0
+local function same_object(a,b)
+    return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
+end
+
+local function refresh_ctf_score_bar(pc,ps,gs)
+    local team=ps.r_TeamId
+    if team~=1 and team~=2 then return end
+    local world=pc:GetWorld()
+    if not same_object(world,gs:GetWorld()) then return end
+    if not same_object(scoreBarWorld,world) or not same_object(scoreBarController,pc) then
+        scoreBarWorld,scoreBarController=world,pc
+        scoreBarScanDelay=0
+        scoreBarReported=false
+    end
+    if scoreBarScanDelay==0 then
+        scoreBars={}
+        for _,widget in ipairs(FindAllOf('WBP_Game_ScoreBar_CTF_C') or {}) do
+            if valid(widget) and widget:GetClass():GetFullName()==scoreBarClass
+                and same_object(widget:GetWorld(),world) and same_object(widget:GetOwningPlayer(),pc) then
+                scoreBars[#scoreBars+1]=widget
+            end
+        end
+        scoreBarScanDelay=3
+    end
+    scoreBarScanDelay=scoreBarScanDelay-1
+    if #scoreBars==0 then return end
+
+    local rows=gs.r_CurrentTeamScores
+    local count=rows:GetArrayNum()
+    if count==0 or count>4 then return end
+    local scores,malformed={},false
+    rows:ForEach(function(_,param)
+        local row=param:get()
+        local id,score=row.TeamNum,row.Score
+        if id~=1 and id~=2 then return end
+        if scores[id]~=nil or type(score)~='number' or score<0 or score%1~=0 then malformed=true;return end
+        scores[id]=score
+    end)
+    if malformed then return end
+    local friendly,enemy=scores[team],scores[3-team]
+    for _,widget in ipairs(scoreBars) do
+        if valid(widget) and widget:IsVisible() then
+            local left,right=widget.UI_Game_Scorebar_ScoreCount,widget.UI_Game_Scorebar_ScoreCount_1
+            if valid(left) and valid(right) and
+                ((friendly~=nil and left.CachedScore~=friendly) or (enemy~=nil and right.CachedScore~=enemy)) then
+                -- This is the original handler for OnCurrentTeamScoresUpdated.
+                -- It reads replicated totals and owns both the counters and fills.
+                widget:UpdateTeamScores()
+                if not scoreBarReported then
+                    scoreBarReported=true
+                    report('CTF_SCORE_BAR_REFRESHED|team='..team..'|friendly='..tostring(left.CachedScore)..'|enemy='..tostring(right.CachedScore))
+                end
+            end
+        end
+    end
+end
+-- END_DIRECT_PLAYTEST_PRESENTATION
+
+local scoreBarFailed,shockLanceVisualFailed
 local function observe_markers(pc,ps,gs)
  weaponInput(pc,ps)
  if not inputService then inputService=assert(loadfile(@@JETPACK_INPUT@@))()({valid=valid,report=report,signature=signature,scope=scope}) end
@@ -740,6 +839,14 @@ local function client_tick(sys)
         spectatorRuntime.tick(pc,ps,gs);return
     end
     assert(SPECTATOR_ROLE=="player","unknown_client_role")
+    if not scoreBarFailed then
+        local ok,why=pcall(refresh_ctf_score_bar,pc,ps,gs)
+        if not ok then scoreBarFailed=true;report('CTF_SCORE_BAR_ERROR|'..tostring(why):sub(1,300)) end
+    end
+    if not shockLanceVisualFailed then
+        local ok,why=pcall(configure_shock_lance)
+        if not ok then shockLanceVisualFailed=true;report('SHOCK_LANCE_CAMERA_EFFECTS_ERROR|'..tostring(why):sub(1,300)) end
+    end
     ensure_flag_release_handoff(gs)
     bind_post_match_escape()
     local plc=pc.PlayerLoadoutComponent;if not valid(plc) then return end
