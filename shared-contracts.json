@@ -14,6 +14,7 @@
     "experimental/direct-hosting/src/direct_network.py": "9310044b7318c913241b7703c7b18c7e7520e4cfae368ff793393187a6384a61",
     "tools/apply_lobby_recovery_update.py": "7b1acd94cc25c80948b66789befc289df3ff880c69dcb7abfcdcb08b1fe76068",
     "server_access_contract.py": "62155a3c7e5d8a314c4e7928e0ddee92cb0d6417d72253d305dd996deec84e1a",
-    "map_sync_contract.py": "0c52e5395a0e44c46cb203e1954d4d66ddf9a2f5043a1e6df7d422b948c162f4"
+    "map_sync_contract.py": "0c52e5395a0e44c46cb203e1954d4d66ddf9a2f5043a1e6df7d422b948c162f4",
+    "direct_update_contract.py": "3609373a057a05a9988cf695d04d7eba8e776087f4bc2e7c79493af7521ca683"
   }
 }

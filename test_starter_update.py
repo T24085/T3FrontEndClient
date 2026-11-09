@@ -173,7 +173,7 @@ class StarterUpdateTest(unittest.TestCase):
             self.assertEqual(json.loads(self.inventory.read_bytes()), self.manifest)
             self.requested_revision = 2
             run_startup(self.root, accept_after_ready, channel=DIRECT_CHANNEL)
-        downloader.assert_called_with(channel=DIRECT_CHANNEL, ssl_context=None)
+        downloader.assert_called_with(channel=DIRECT_CHANNEL, ssl_context=None, root=self.root)
         self.assertEqual(self.direct.read_bytes(), new)
         self.assertEqual(self.invitation.read_bytes(), b'local invitation')
         self.assertEqual((self.state / 'previous/direct_client.py').read_bytes(), self.original)

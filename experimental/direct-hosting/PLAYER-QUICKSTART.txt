@@ -4,7 +4,7 @@ TRIBES 3 • Windows Direct Starter • r12
 2. Extract the entire Direct Starter ZIP into a fresh folder.
 3. Run Start Direct Starter.bat. The player ZIP your host prepares registers
    your device on the first launch and saves access for later launches.
-   Reopen the same launcher to receive future signed Direct Starter updates.
+   Reopen the same launcher to receive signed updates from your game host.
 4. Join or create a lobby. Pick teams, start the match, then click Join game
    when the match is ready. The first match can take longer while Starter
    checks and stages your game files.

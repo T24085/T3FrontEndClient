@@ -18,7 +18,6 @@ from starter_update_signing import verify
 CHANNEL = 'windows-r12-v1'
 DIRECT_CHANNEL = 'windows-direct-r12-v1'
 BASE_URL = 'https://github.com/T24085/T3FrontEndClient/releases/download/starter-updates-v1/'
-DIRECT_BASE_URL = 'https://github.com/T24085/T3FrontEndClient/releases/download/direct-starter-updates-v1/'
 INDEX = 'starter-update.json'
 ALLOWED = frozenset({
     'bulk_asset_cache.py', 'bulk_verification_receipts.py', 'client.py', 'client_bootstrap.py',
@@ -30,7 +29,7 @@ ALLOWED = frozenset({
 })
 UPDATE_CHANNELS = {
     CHANNEL: (BASE_URL, ALLOWED),
-    DIRECT_CHANNEL: (DIRECT_BASE_URL, ALLOWED | {'direct_client.py', 'direct_network.py'}),
+    DIRECT_CHANNEL: (None, ALLOWED | {'direct_client.py', 'direct_network.py'}),
 }
 MAX_INDEX = 32768
 MAX_FILE = 1024 * 1024
@@ -93,16 +92,45 @@ class GitHubRedirect(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def fetcher(*, channel=CHANNEL, ssl_context=None):
-    base_url = UPDATE_CHANNELS[channel][0]
-    opener = build_opener(GitHubRedirect(), HTTPSHandler(context=ssl_context))
+class DirectRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError('Unexpected Direct Starter download redirect.')
+
+
+def direct_update_authority(root):
+    group = root / 'group-invitation.json'
+    saved = Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'Tribes3DirectStarter/connection.json'
+    with (group if group.exists() else saved).open('rb') as stream:
+        raw = stream.read(16385)
+    if len(raw) > 16384:
+        raise ValueError('Direct Starter invitation exceeds its size limit.')
+    endpoint = json.loads(raw)
+    hostname, port = endpoint['hostname'], endpoint['https_port']
+    if (not isinstance(hostname, str) or re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?', hostname) is None
+            or type(port) is not int or not 1 <= port <= 65535):
+        raise ValueError('Invalid Direct Starter update endpoint.')
+    return f'{hostname.lower()}:{port}'
+
+
+def fetcher(*, channel=CHANNEL, ssl_context=None, root=None):
+    headers = {'User-Agent': 'TRIBES3-Community-Starter-r12', 'Cache-Control': 'no-cache'}
+    if channel == DIRECT_CHANNEL:
+        from direct_update_contract import ROUTE
+        authority = direct_update_authority(root)
+        base_url = 'https://' + authority + ROUTE
+        headers['Host'] = authority
+        redirect = DirectRedirect()
+    else:
+        base_url = UPDATE_CHANNELS[channel][0]
+        redirect = GitHubRedirect()
+    opener = build_opener(redirect, HTTPSHandler(context=ssl_context))
     deadline = time.monotonic() + 20
 
     def fetch(name, bound):
         left = deadline - time.monotonic()
         if left <= 0:
             raise TimeoutError('The Community Starter update check timed out.')
-        request = Request(base_url + name, headers={'User-Agent': 'TRIBES3-Community-Starter-r12', 'Cache-Control': 'no-cache'})
+        request = Request(base_url + name, headers=headers)
         with opener.open(request, timeout=min(4, left)) as response:
             if response.status != 200:
                 raise OSError('Update download did not complete.')
@@ -188,7 +216,7 @@ def accept(state):
 
 
 def prepare(root, state, *, channel=CHANNEL, fetch=None, verifier=verify):
-    fetch = fetch or fetcher(channel=channel)
+    fetch = fetch or fetcher(channel=channel, root=root)
     inventory = inside(root, INVENTORY)
     original = inventory.read_bytes()
     manifest = json.loads(original)
@@ -257,7 +285,7 @@ def run_startup(root, launch, *, channel=CHANNEL, ssl_context=None):
             print('Restored the previous Starter after an interrupted update.')
         applied = False
         try:
-            fetch = fetcher(channel=channel, ssl_context=ssl_context)
+            fetch = fetcher(channel=channel, ssl_context=ssl_context, root=root)
             applied = prepare(root, state, channel=channel, fetch=fetch)
         except Exception as exc:
             print('Starter update skipped:', exc)

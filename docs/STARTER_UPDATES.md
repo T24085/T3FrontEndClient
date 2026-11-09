@@ -10,6 +10,8 @@ The r12 channel covers the allowlisted Python and Lua paths in `starter_update.p
 
 ## Windows Direct Starter
 
-The Direct package builder installs the signed updater. Existing Direct r12 folders need the bootstrap update once. After that, players open `Start Direct Starter.bat` as usual. The update feed uses the same signing key with its own channel and release tag. Host invitations stay in the player ZIP, and the friend host continues to serve compatible maps.
+The Direct package builder installs the signed updater. Players switch once to a group ZIP with the host-backed updater. After that, they open `Start Direct Starter.bat` as usual. The launcher downloads updates over HTTPS from the host in its invitation. It verifies them with the same release signing key as the regular Starter. The friend host also serves compatible maps.
 
-Build Direct updates with `--channel windows-direct-r12-v1` and publish them on the GitHub release tagged `direct-starter-updates-v1`. When supplying `--previous`, use the last signed Direct index. The Direct channel also accepts `direct_client.py` and `direct_network.py` from `experimental/direct-hosting/src`. Coordinate any direct protocol changes with the host release.
+Build Direct updates with `--channel windows-direct-r12-v1`. When supplying `--previous`, use the last signed Direct index. The Direct channel also accepts `direct_client.py` and `direct_network.py` from `experimental/direct-hosting/src`. Coordinate any direct protocol changes with the host release.
+
+Publish the signed artifacts to `operator/direct-local/starter-updates` on the friend host. Upload and verify the content files first, then replace `starter-update.json` atomically using a temporary file in that directory. Keep the previous index and its content files available during the change. The running host serves the new index on the next request. Keep the private signing key on the release operator's machine.
