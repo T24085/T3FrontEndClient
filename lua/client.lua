@@ -837,6 +837,21 @@ local function apply_saved_sound_settings(pc)
     end)
     if not ok then report('SAVED_SOUND_SETTINGS_UNAVAILABLE|'..tostring(why):sub(1,300)) end
 end
+local shieldWallPreviewChecked=false
+local function configure_shield_wall_preview()
+ if shieldWallPreviewChecked then return end
+ shieldWallPreviewChecked=true
+ local ok,why=pcall(function()
+  local asset='/Game/Topaz/Abilities/Packs/ForceField/GA_Pack_ForceField'
+  local class=LoadAsset(asset..'.GA_Pack_ForceField_C')
+  local defaults=StaticFindObject(asset..'.Default__GA_Pack_ForceField_C')
+  assert(valid(class) and class:GetFullName()=='BlueprintGeneratedClass '..asset..'.GA_Pack_ForceField_C'
+   and valid(defaults) and defaults:IsA(class) and type(defaults.AlwaysUsePreview)=='boolean','shield_wall_preview_defaults_required')
+  defaults.AlwaysUsePreview=true
+  assert(defaults.AlwaysUsePreview==true,'shield_wall_preview_defaults_readback_failed')
+ end)
+ if not ok then report('SHIELD_WALL_PREVIEW_ERROR|'..tostring(why)) end
+end
 local function client_tick(sys)
     if joined and os.time()-lastJoin>=30 then
         local modes=FindAllOf('TopGameMode_Topaz') or {}
@@ -867,6 +882,7 @@ local function client_tick(sys)
         spectatorRuntime.tick(pc,ps,gs);return
     end
     assert(SPECTATOR_ROLE=="player","unknown_client_role")
+    configure_shield_wall_preview()
     if not scoreBarFailed then
         local ok,why=pcall(refresh_ctf_score_bar,pc,ps,gs)
         if not ok then scoreBarFailed=true;report('CTF_SCORE_BAR_ERROR|'..tostring(why):sub(1,300)) end
