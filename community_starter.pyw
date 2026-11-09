@@ -13,28 +13,13 @@ def show_error(message):
 
 
 def launch_startup(root, *, ssl_context=None):
-    from starter_update import accept, fetcher, prepare, recover, startup_lock
+    from starter_update import run_startup
 
-    with startup_lock(root) as state:
-        if recover(root, state):
-            print('Restored the previous Starter after an interrupted update.')
-        applied = False
-        try:
-            fetch = fetcher(ssl_context=ssl_context) if ssl_context is not None else None
-            applied = prepare(root, state, fetch=fetch)
-        except Exception as exc:
-            print('Starter update skipped:', exc)
-            recover(root, state)
+    def launch(on_ready):
+        from desktop_launcher import main
+        main(ssl_context=ssl_context, on_ready=on_ready)
 
-        try:
-            from desktop_launcher import main as launch
-            launch(ssl_context=ssl_context, on_ready=(lambda: accept(state)) if applied else None)
-        except BaseException as exc:
-            if applied and recover(root, state):
-                raise RuntimeError('The previous Starter was restored. Reopen Starter to continue.') from exc
-            raise
-        if applied:
-            recover(root, state)
+    run_startup(root, launch, ssl_context=ssl_context)
 
 
 def main():

@@ -16,7 +16,9 @@ from starter_update_signing import verify
 
 
 CHANNEL = 'windows-r12-v1'
+DIRECT_CHANNEL = 'windows-direct-r12-v1'
 BASE_URL = 'https://github.com/T24085/T3FrontEndClient/releases/download/starter-updates-v1/'
+DIRECT_BASE_URL = 'https://github.com/T24085/T3FrontEndClient/releases/download/direct-starter-updates-v1/'
 INDEX = 'starter-update.json'
 ALLOWED = frozenset({
     'bulk_asset_cache.py', 'bulk_verification_receipts.py', 'client.py', 'client_bootstrap.py',
@@ -26,6 +28,10 @@ ALLOWED = frozenset({
     'startup_progress.py', 'startup_timing.py', 'steam_identity.py', 'verified_file_cache.py',
     'lua/client.lua', 'lua/damnation_water.lua', 'lua/spectator_client.lua', 'lua/spectator_materials.lua',
 })
+UPDATE_CHANNELS = {
+    CHANNEL: (BASE_URL, ALLOWED),
+    DIRECT_CHANNEL: (DIRECT_BASE_URL, ALLOWED | {'direct_client.py', 'direct_network.py'}),
+}
 MAX_INDEX = 32768
 MAX_FILE = 1024 * 1024
 MAX_TOTAL = 8 * MAX_FILE
@@ -42,7 +48,7 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def decode_index(raw, *, verifier=verify, now=None):
+def decode_index(raw, *, channel=CHANNEL, verifier=verify, now=None):
     if len(raw) > MAX_INDEX:
         raise ValueError('Update index exceeds its size limit.')
     envelope = json.loads(raw)
@@ -55,7 +61,7 @@ def decode_index(raw, *, verifier=verify, now=None):
     index = json.loads(payload)
     if not isinstance(index, dict) or index.keys() != {'channel', 'revision', 'issued', 'expires', 'files'}:
         raise ValueError('Unsupported update index.')
-    if payload != encoded(index) or index['channel'] != CHANNEL:
+    if payload != encoded(index) or index['channel'] != channel:
         raise ValueError('Unsupported update channel or metadata encoding.')
     current = int(time.time() if now is None else now)
     revision, issued, expires = (index[key] for key in ('revision', 'issued', 'expires'))
@@ -64,7 +70,7 @@ def decode_index(raw, *, verifier=verify, now=None):
             or not 0 < expires - issued <= MAX_LIFETIME or not issued <= current + 300 or expires <= current):
         raise ValueError('Update revision or validity period is invalid.')
     files = index['files']
-    if not isinstance(files, dict) or not files.keys() <= ALLOWED:
+    if not isinstance(files, dict) or not files.keys() <= UPDATE_CHANNELS[channel][1]:
         raise ValueError('Update contains an unsupported file path.')
     for row in files.values():
         if (not isinstance(row, dict) or row.keys() != {'bytes', 'sha256'}
@@ -87,7 +93,8 @@ class GitHubRedirect(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def fetcher(*, ssl_context=None):
+def fetcher(*, channel=CHANNEL, ssl_context=None):
+    base_url = UPDATE_CHANNELS[channel][0]
     opener = build_opener(GitHubRedirect(), HTTPSHandler(context=ssl_context))
     deadline = time.monotonic() + 20
 
@@ -95,7 +102,7 @@ def fetcher(*, ssl_context=None):
         left = deadline - time.monotonic()
         if left <= 0:
             raise TimeoutError('The Community Starter update check timed out.')
-        request = Request(BASE_URL + name, headers={'User-Agent': 'TRIBES3-Community-Starter-r12', 'Cache-Control': 'no-cache'})
+        request = Request(base_url + name, headers={'User-Agent': 'TRIBES3-Community-Starter-r12', 'Cache-Control': 'no-cache'})
         with opener.open(request, timeout=min(4, left)) as response:
             if response.status != 200:
                 raise OSError('Update download did not complete.')
@@ -151,13 +158,14 @@ def startup_lock(root):
         yield state
 
 
-def recover(root, state):
+def recover(root, state, *, channel=CHANNEL):
     pending = inside(state, 'pending')
     if not pending.exists():
         return False
     journal = json.loads(inside(pending, 'journal.json').read_bytes())
     files, revision = journal['files'], journal['revision']
-    if not files.keys() <= ALLOWED | {INVENTORY} or INVENTORY not in files or type(revision) is not int:
+    if (not files.keys() <= UPDATE_CHANNELS[channel][1] | {INVENTORY}
+            or INVENTORY not in files or type(revision) is not int):
         raise ValueError('Invalid Starter update recovery journal.')
     originals = {name: inside(pending, name).read_bytes() for name in files}
     if any(sha(raw) != files[name] for name, raw in originals.items()):
@@ -179,15 +187,17 @@ def accept(state):
     os.replace(pending, previous)
 
 
-def prepare(root, state, *, fetch=None, verifier=verify):
-    fetch = fetch or fetcher()
+def prepare(root, state, *, channel=CHANNEL, fetch=None, verifier=verify):
+    fetch = fetch or fetcher(channel=channel)
     inventory = inside(root, INVENTORY)
     original = inventory.read_bytes()
     manifest = json.loads(original)
+    if ('direct_host_contract' in manifest) != (channel == DIRECT_CHANNEL):
+        raise ValueError('Update channel does not match this Starter package.')
     revision = manifest.get('starter_update_revision', 0)
     rejected = inside(state, 'rejected.json')
     rejected_revision = json.loads(rejected.read_bytes()) if rejected.exists() else 0
-    index = decode_index(fetch(INDEX, MAX_INDEX), verifier=verifier)
+    index = decode_index(fetch(INDEX, MAX_INDEX), channel=channel, verifier=verifier)
     if index['revision'] <= max(revision, rejected_revision):
         return False
     rows = {row['path']: row for row in manifest['files']}
@@ -232,9 +242,32 @@ def prepare(root, state, *, fetch=None, verifier=verify):
                     raise ValueError('Starter files changed during update preparation.')
                 atomic_write(target, raw)
         except BaseException:
-            recover(root, state)
+            recover(root, state, channel=channel)
             raise
     finally:
         if stage.exists():
             shutil.rmtree(stage, ignore_errors=True)
     return True
+
+
+def run_startup(root, launch, *, channel=CHANNEL, ssl_context=None):
+    """Update and launch under the same per-package lock."""
+    with startup_lock(root) as state:
+        if recover(root, state, channel=channel):
+            print('Restored the previous Starter after an interrupted update.')
+        applied = False
+        try:
+            fetch = fetcher(channel=channel, ssl_context=ssl_context)
+            applied = prepare(root, state, channel=channel, fetch=fetch)
+        except Exception as exc:
+            print('Starter update skipped:', exc)
+            recover(root, state, channel=channel)
+
+        try:
+            launch(on_ready=(lambda: accept(state)) if applied else None)
+        except BaseException as exc:
+            if applied and recover(root, state, channel=channel):
+                raise RuntimeError('The previous Starter was restored. Reopen Starter to continue.') from exc
+            raise
+        if applied:
+            recover(root, state, channel=channel)

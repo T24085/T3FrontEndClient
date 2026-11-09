@@ -95,7 +95,7 @@ def group_connection(root, local, *, ssl_context=None, test_source=None):
             write_json(path,state)
         return connection
 
-def main(root=ROOT):
+def main(root=ROOT, *, on_ready=None):
     import tkinter as tk
     from tkinter import filedialog,messagebox
     from desktop_launcher import Desktop
@@ -107,34 +107,55 @@ def main(root=ROOT):
     local=pathlib.Path(os.environ.get('LOCALAPPDATA',pathlib.Path.home()))/'Tribes3DirectStarter'
     local.mkdir(parents=True,exist_ok=True);saved=local/'connection.json'
     chooser=tk.Tk();chooser.withdraw()
+    lobby=None
     try:
-        game,workspace=installation_options();source=discover_game(game)
+        try:
+            game,workspace=installation_options();source=discover_game(game)
+        except RuntimeError as exc:
+            # Steam discovery reports a missing or ambiguous game as RuntimeError.
+            raise ValueError(str(exc)) from exc
         if (root/GROUP_FILE).exists():
             connection=group_connection(root,local)
         else:
             if not saved.exists():
                 filename=filedialog.askopenfilename(title='Choose the player invitation JSON sent by your host',filetypes=[('Player invitation','*.json')])
-                if not filename:return
-                write_json(saved,validate_connection(read_json(filename,16384)))
-            connection=validate_connection(read_json(saved,16384))
-        lobby=DirectClient(connection)
-        try:lobby.capabilities()
-        except CommunityError:
-            messagebox.showerror('Direct host connection','Could not open the lobby. Ask the host to check your access, certificate and TCP forwarding.');return
-    except Exception as exc:
-        messagebox.showerror('Direct Starter setup',str(exc));return
+                if filename:
+                    write_json(saved,validate_connection(read_json(filename,16384)))
+            connection=validate_connection(read_json(saved,16384)) if saved.exists() else None
+        if connection is not None:
+            lobby=DirectClient(connection)
+            try:lobby.capabilities()
+            except CommunityError:
+                lobby.close()
+                lobby=None
+                messagebox.showerror('Direct host connection','Could not open the lobby. Ask the host to check your access, certificate and TCP forwarding.')
+    except (OSError, ValueError, CommunityError) as exc:
+        if lobby is not None:
+            lobby.close()
+        lobby=None
+        messagebox.showerror('Direct Starter setup',str(exc))
     finally:chooser.destroy()
+    if lobby is None:
+        # A canceled invitation or unreachable host does not invalidate the update.
+        if on_ready is not None:
+            on_ready()
+        return
     class DirectDesktop(Desktop):
         def close(self):
             try:super().close()
             finally:lobby.close()
-    window=tk.Tk();window.title('TRIBES 3 — Direct Host Starter')
-    map_sync=MapSync(lobby,root,workspace)
-    factory=lambda current:CommunityGame(current,root,source,workspace,workspace/'direct-desktop-control',map_sync=map_sync)
-    gui=DirectDesktop(window,lobby,factory,steam_name_loader=lambda:read_steam_name(source,root/'base-game-manifest.json'),map_sync=map_sync)
-    window.protocol('WM_DELETE_WINDOW',gui.close)
-    try:window.mainloop()
-    finally:lobby.close()
+    try:
+        window=tk.Tk();window.title('TRIBES 3 — Direct Host Starter')
+        map_sync=MapSync(lobby,root,workspace)
+        factory=lambda current:CommunityGame(current,root,source,workspace,workspace/'direct-desktop-control',map_sync=map_sync)
+        gui=DirectDesktop(window,lobby,factory,steam_name_loader=lambda:read_steam_name(source,root/'base-game-manifest.json'),map_sync=map_sync)
+        window.protocol('WM_DELETE_WINDOW',gui.close)
+        if on_ready is not None:
+            window.update_idletasks()
+            on_ready()
+        window.mainloop()
+    finally:
+        lobby.close()
 
 def change_invitation():
     import tkinter as tk

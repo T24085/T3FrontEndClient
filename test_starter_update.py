@@ -1,17 +1,19 @@
 from base64 import b64encode
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
-from starter_update import CHANNEL, INDEX, INVENTORY, accept, decode_index, encoded, prepare, recover, sha
+from starter_update import (CHANNEL, DIRECT_CHANNEL, INDEX, INVENTORY, accept, decode_index,
+                            encoded, prepare, recover, run_startup, sha)
 
 
-def envelope(files, revision=1, issued=None):
+def envelope(files, revision=1, issued=None, channel=CHANNEL):
     issued = int(time.time()) if issued is None else issued
-    payload = encoded({'channel': CHANNEL, 'revision': revision, 'issued': issued, 'expires': issued + 86400,
+    payload = encoded({'channel': channel, 'revision': revision, 'issued': issued, 'expires': issued + 86400,
                        'files': {name: {'bytes': len(raw), 'sha256': sha(raw)} for name, raw in files.items()}})
     return encoded({'payload': b64encode(payload).decode(), 'signature': b64encode(payload).decode()})
 
@@ -106,6 +108,76 @@ class StarterUpdateTest(unittest.TestCase):
         accept(self.state)
         with self.assertRaisesRegex(ValueError, 'previous revision'):
             self.stage({'desktop_launcher.py': b'print("second")\n'}, revision=2)
+
+    def configure_direct(self):
+        self.invitation = self.root / 'group-invitation.json'
+        self.invitation.write_bytes(b'local invitation')
+        self.direct = self.root / 'direct_client.py'
+        self.original = b'print("original direct client")\n'
+        self.direct.write_bytes(self.original)
+        self.manifest['direct_host_contract'] = 'authenticated-udp-v1'
+        self.manifest['files'].append({'path': self.direct.name, 'bytes': len(self.original),
+                                       'sha256': sha(self.original)})
+        self.inventory.write_bytes(encoded(self.manifest))
+
+    def test_signed_indexes_are_bound_to_their_channel(self):
+        raw = b'# update\n'
+        regular = envelope({'lua/client.lua': raw})
+        direct = envelope({'lua/client.lua': raw}, channel=DIRECT_CHANNEL)
+        for index, channel in ((regular, DIRECT_CHANNEL), (direct, CHANNEL)):
+            with self.assertRaisesRegex(ValueError, 'update channel'):
+                decode_index(index, channel=channel, verifier=verify_fixture)
+        for path in ('group-invitation.json', 'connection-policy.json', 'direct_starter.pyw'):
+            with self.assertRaisesRegex(ValueError, 'unsupported file path'):
+                decode_index(envelope({path: raw}, channel=DIRECT_CHANNEL),
+                             channel=DIRECT_CHANNEL, verifier=verify_fixture)
+        self.configure_direct()
+        with self.assertRaisesRegex(ValueError, 'does not match this Starter package'):
+            self.stage({'lua/client.lua': raw})
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows package lock required')
+    def test_direct_launch_applies_before_import_and_recovers_a_failed_start(self):
+        self.configure_direct()
+        new = b'print("updated direct client")\n'
+        signed = envelope({self.direct.name: new}, channel=DIRECT_CHANNEL)
+        self.requested_revision = 1
+
+        def fetch(name, _limit):
+            self.requests.append(name)
+            if name == INDEX:
+                if self.requested_revision == 1:
+                    return signed
+                return envelope({self.direct.name: new}, revision=2, channel=DIRECT_CHANNEL)
+            self.assertEqual(name, 'starter-file-' + sha(new) + '.bin')
+            return new
+
+        def decode(raw, *, channel, verifier):
+            return decode_index(raw, channel=channel, verifier=verify_fixture)
+
+        def fail_before_ready(on_ready):
+            self.assertIsNotNone(on_ready)
+            self.assertEqual(self.direct.read_bytes(), new)
+            self.assertTrue((self.state / 'pending').is_dir())
+            raise ImportError('simulated Direct startup failure')
+
+        def accept_after_ready(on_ready):
+            self.assertIsNotNone(on_ready)
+            self.assertEqual(self.direct.read_bytes(), new)
+            on_ready()
+
+        with (patch('starter_update.fetcher', return_value=fetch) as downloader,
+              patch('starter_update.decode_index', side_effect=decode)):
+            with self.assertRaisesRegex(RuntimeError, 'previous Starter was restored'):
+                run_startup(self.root, fail_before_ready, channel=DIRECT_CHANNEL)
+            self.assertEqual(self.direct.read_bytes(), self.original)
+            self.assertEqual(json.loads(self.inventory.read_bytes()), self.manifest)
+            self.requested_revision = 2
+            run_startup(self.root, accept_after_ready, channel=DIRECT_CHANNEL)
+        downloader.assert_called_with(channel=DIRECT_CHANNEL, ssl_context=None)
+        self.assertEqual(self.direct.read_bytes(), new)
+        self.assertEqual(self.invitation.read_bytes(), b'local invitation')
+        self.assertEqual((self.state / 'previous/direct_client.py').read_bytes(), self.original)
+        self.assertFalse((self.state / 'pending').exists())
 
 
 if __name__ == '__main__':
