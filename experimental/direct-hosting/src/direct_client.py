@@ -1,18 +1,18 @@
-"""Separate direct-host Starter entry; credentials stay outside the package."""
-import os, pathlib, re, secrets
-from direct_network import UdpClient,read_json,write_json,valid_public_address
+"""Separate direct-host Starter entry with local per-device credentials."""
+import os, pathlib, secrets
+from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MAX_DEVICES, TOKEN, UdpClient,
+                            locked_state, read_json, validate_endpoint, validate_group, write_json)
 from community_transport import CommunityClient,CommunityError
 from dynamic_destination import DIRECT_BRIDGE_POLICY
 
 ROOT=pathlib.Path(__file__).resolve().parent
 
 def validate_connection(d,*,local_test=False):
-    if not isinstance(d,dict)or set(d)!={'format','hostname','public_address','https_port','first_udp_port','last_udp_port','access_token'}or d['format']!=1:raise ValueError('Choose an invitation exported by the direct host.')
-    valid_public_address(d['public_address'],local_test=local_test)
-    if not isinstance(d['hostname'],str)or not re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?',d['hostname']):raise ValueError('Invalid public lobby hostname.')
-    if type(d['https_port'])is not int or not 1<=d['https_port']<=65535:raise ValueError('Invalid HTTPS port.')
-    if any(type(d[k])is not int for k in ('first_udp_port','last_udp_port'))or not 1024<=d['first_udp_port']<=d['last_udp_port']<=65535:raise ValueError('Invalid UDP range.')
-    if not isinstance(d['access_token'],str)or re.fullmatch(r'[A-Za-z0-9_-]{43}',d['access_token'])is None:raise ValueError('Invalid invitation credential.')
+    if not isinstance(d,dict)or set(d)!=ENDPOINT_FIELDS|{'format','access_token'}or d['format']!=1:
+        raise ValueError('Choose an invitation exported by the direct host.')
+    validate_endpoint(d,local_test=local_test)
+    if not isinstance(d['access_token'],str)or not TOKEN.fullmatch(d['access_token']):
+        raise ValueError('Invalid invitation credential.')
     return dict(d)
 
 class DirectClient(CommunityClient):
@@ -33,6 +33,17 @@ class DirectClient(CommunityClient):
             'Authorization': 'Bearer ' + self.access_token,
             'X-Direct-Session': self.direct_session,
         })
+
+    def enroll(self, group):
+        response=self._request(ENROLL_ROUTE.removeprefix('/api/'),{
+            'host_id':group['host_id'], 'enrollment_token':group['enrollment_token'],
+            'device_token':self.access_token,
+        },use_lobby_token=False)
+        identity=response.get('device_id')
+        if (set(response)!={'registered','device_id'} or response['registered'] is not True
+                or type(identity) is not int or not 1<=identity<=MAX_DEVICES):
+            raise CommunityError('The host returned an invalid registration receipt.')
+        return identity
 
     def _validated_target(self,match,name,*,spectator=False):
         if not isinstance(match,dict)or match.get('address')!=self.server_address or type(match.get('port'))is not int or not self.connection['first_udp_port']<=match['port']<=self.connection['last_udp_port']:raise CommunityError('The public match endpoint differs from this invitation.')
@@ -60,6 +71,30 @@ class DirectClient(CommunityClient):
             for proxy in self.proxies.values():proxy.close()
             self.proxies.clear()
 
+def group_connection(root, local, *, ssl_context=None, test_source=None):
+    test=test_source is not None
+    group=validate_group(read_json(root/GROUP_FILE,16384),local_test=test)
+    path=local/'hosts'/(group['host_id']+'.json')
+    with locked_state(path):
+        if path.exists():
+            state=read_json(path,16384)
+        else:
+            # Commit the token before the first network call so retries reuse it.
+            state={'access_token':secrets.token_urlsafe(32),'device_id':None}
+            write_json(path,state)
+        if not isinstance(state,dict) or set(state)!={'access_token','device_id'}:
+            raise ValueError('Invalid saved Direct Starter registration.')
+        identity=state['device_id']
+        if identity is not None and (type(identity) is not int or not 1<=identity<=MAX_DEVICES):
+            raise ValueError('Invalid saved Direct Starter device ID.')
+        connection=validate_connection(dict(validate_endpoint(group,local_test=test),format=1,
+                                             access_token=state['access_token']),local_test=test)
+        if identity is None:
+            client=DirectClient(connection,ssl_context=ssl_context,test_source=test_source)
+            state['device_id']=client.enroll(group)
+            write_json(path,state)
+        return connection
+
 def main(root=ROOT):
     import tkinter as tk
     from tkinter import filedialog,messagebox
@@ -73,16 +108,19 @@ def main(root=ROOT):
     local.mkdir(parents=True,exist_ok=True);saved=local/'connection.json'
     chooser=tk.Tk();chooser.withdraw()
     try:
-        if not saved.exists():
-            filename=filedialog.askopenfilename(title='Choose the player invitation JSON sent by your host',filetypes=[('Player invitation','*.json')])
-            if not filename:return
-            write_json(saved,validate_connection(read_json(filename,16384)))
-        connection=validate_connection(read_json(saved,16384))
         game,workspace=installation_options();source=discover_game(game)
+        if (root/GROUP_FILE).exists():
+            connection=group_connection(root,local)
+        else:
+            if not saved.exists():
+                filename=filedialog.askopenfilename(title='Choose the player invitation JSON sent by your host',filetypes=[('Player invitation','*.json')])
+                if not filename:return
+                write_json(saved,validate_connection(read_json(filename,16384)))
+            connection=validate_connection(read_json(saved,16384))
         lobby=DirectClient(connection)
         try:lobby.capabilities()
         except CommunityError:
-            messagebox.showerror('Direct host connection','Could not open the lobby. Ask the host to check the invitation, certificate and TCP forwarding. Use Change Host Invitation.bat to import a replacement.');return
+            messagebox.showerror('Direct host connection','Could not open the lobby. Ask the host to check your access, certificate and TCP forwarding.');return
     except Exception as exc:
         messagebox.showerror('Direct Starter setup',str(exc));return
     finally:chooser.destroy()
@@ -103,6 +141,9 @@ def change_invitation():
     from tkinter import filedialog,messagebox
     root=tk.Tk();root.withdraw()
     try:
+        if (ROOT/GROUP_FILE).exists():
+            messagebox.showinfo('Group Starter','This Starter uses its bundled host. To switch hosts, open the Starter ZIP prepared by the other host.')
+            return
         filename=filedialog.askopenfilename(title='Choose the new player invitation',filetypes=[('Player invitation','*.json')])
         if filename:
             d=validate_connection(read_json(filename,16384));p=pathlib.Path(os.environ.get('LOCALAPPDATA',pathlib.Path.home()))/'Tribes3DirectStarter/connection.json'

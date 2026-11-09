@@ -3,31 +3,85 @@
 No network listener starts on import. Native Unreal sockets remain loopback-only.
 UDP payloads are authenticated, not encrypted; TLS protects credential delivery.
 """
-import hashlib, hmac, ipaddress, json, os, pathlib, secrets, select, socket, struct, threading, time
+from contextlib import contextmanager
+import hashlib, hmac, ipaddress, json, os, pathlib, re, secrets, select, socket, struct, threading, time
 
 MAGIC=b'T3D1'
 MAX_PAYLOAD=65000
+MAX_DEVICES=2048
+GROUP_FILE='group-invitation.json'
+ENROLL_ROUTE='/api/direct-enroll'
+TOKEN=re.compile(r'[A-Za-z0-9_-]{43}')
+ENDPOINT_FIELDS={'hostname','public_address','https_port','first_udp_port','last_udp_port'}
 
 def write_json(path, value):
     path=pathlib.Path(path);path.parent.mkdir(parents=True,exist_ok=True)
     temp=path.with_name(path.name+'.'+secrets.token_hex(6)+'.tmp')
-    temp.write_text(json.dumps(value,indent=2)+'\n',encoding='utf-8');os.replace(temp,path)
+    try:
+        temp.write_text(json.dumps(value,indent=2)+'\n',encoding='utf-8')
+        for attempt in range(10):
+            try:
+                os.replace(temp,path)
+                break
+            except PermissionError:
+                if os.name!='nt' or attempt==9:raise
+                time.sleep(.02)
+    finally:
+        temp.unlink(missing_ok=True)
 
-def read_json(path, limit=1024*1024):
+def read_json(path, limit=4*1024*1024):
     with pathlib.Path(path).open('rb') as f: data=f.read(limit+1)
     if len(data)>limit:raise ValueError('Configuration exceeds its size limit.')
     return json.loads(data)
 
+@contextmanager
+def locked_state(path):
+    path=pathlib.Path(path)
+    path.parent.mkdir(parents=True,exist_ok=True)
+    with path.with_name(path.name+'.lock').open('a+b') as stream:
+        if os.name=='nt':
+            import msvcrt
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(),msvcrt.LK_LOCK,1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(),fcntl.LOCK_EX)
+        yield
+
 def valid_public_address(value, *, local_test=False):
     address=ipaddress.IPv4Address(value)
-    if not address.is_global and not (local_test and address.is_loopback):
-        raise ValueError('Enter the public IPv4 address, not the VM LAN address.')
+    if (not address.is_global or address.is_multicast) and not (local_test and address.is_loopback):
+        raise ValueError('Enter a public IPv4 address.')
     return str(address)
+
+def validate_endpoint(data, *, local_test=False):
+    valid_public_address(data['public_address'],local_test=local_test)
+    name=data['hostname']
+    if not isinstance(name,str) or not re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?',name):
+        raise ValueError('Invalid public lobby hostname.')
+    port=data['https_port']
+    if type(port) is not int or not 1<=port<=65535:
+        raise ValueError('Invalid HTTPS port.')
+    first,last=data['first_udp_port'],data['last_udp_port']
+    if type(first) is not int or type(last) is not int or not 1024<=first<=last<=65535:
+        raise ValueError('Invalid UDP range.')
+    return {field:data[field] for field in ENDPOINT_FIELDS}
+
+def validate_group(data, *, local_test=False):
+    if (not isinstance(data,dict) or set(data)!=ENDPOINT_FIELDS|{'format','host_id','enrollment_token'}
+            or type(data['format']) is not int or data['format']!=1
+            or not isinstance(data['host_id'],str) or not re.fullmatch(r'[0-9a-f]{32}',data['host_id'])
+            or not isinstance(data['enrollment_token'],str) or not TOKEN.fullmatch(data['enrollment_token'])):
+        raise ValueError('This Starter has an invalid group invitation.')
+    validate_endpoint(data,local_test=local_test)
+    return data
 
 class InviteStore:
     def __init__(self,path):
         self.path=pathlib.Path(path);self.lock=threading.RLock();self.last_read=0;self.records=[]
-        if not self.path.exists():write_json(self.path,{'format':1,'players':[]})
+        if not self.path.exists():
+            with locked_state(self.path):
+                if not self.path.exists():write_json(self.path,{'format':1,'players':[]})
         self.reload(force=True)
 
     def reload(self,force=False):
@@ -35,50 +89,66 @@ class InviteStore:
             if not force and time.monotonic()-self.last_read<1:return
             try:
                 d=read_json(self.path)
-                if set(d)!={'format','players'} or d['format']!=1 or not isinstance(d['players'],list) or len(d['players'])>256:raise ValueError('Invalid invitation registry.')
-                seen=set()
+                if set(d)!={'format','players'} or d['format']!=1 or not isinstance(d['players'],list) or len(d['players'])>MAX_DEVICES:raise ValueError('Invalid invitation registry.')
+                by_id={}
+                by_token={}
                 for r in d['players']:
-                    if set(r)!={'id','label','token_hash','enabled'} or type(r['id'])is not int or not 1<=r['id']<=256 or r['id']in seen or type(r['enabled'])is not bool:raise ValueError('Invalid invitation registry.')
-                    if not isinstance(r['token_hash'],str) or len(bytes.fromhex(r['token_hash']))!=32 or not isinstance(r['label'],str) or not 1<=len(r['label'])<=80:raise ValueError('Invalid invitation registry.')
-                    seen.add(r['id'])
-                self.records=d['players'];self.last_read=time.monotonic()
+                    if set(r)!={'id','label','token_hash','enabled'} or type(r['id'])is not int or not 1<=r['id']<=MAX_DEVICES or r['id']in by_id or type(r['enabled'])is not bool:raise ValueError('Invalid invitation registry.')
+                    digest=r['token_hash']
+                    if not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest) or digest in by_token or not isinstance(r['label'],str) or not 1<=len(r['label'])<=80:raise ValueError('Invalid invitation registry.')
+                    by_id[r['id']]=r
+                    by_token[digest]=r
+                self.records=d['players'];self.by_id=by_id;self.by_token=by_token;self.last_read=time.monotonic()
             except Exception:
-                self.records=[];self.last_read=0;raise
+                self.records=[];self.by_id={};self.by_token={};self.last_read=0;raise
 
     @staticmethod
     def address(identity):return '127.90.'+str(identity//250)+'.'+str(identity%250+2)
 
     def issue(self,label):
-        with self.lock:
+        token=secrets.token_urlsafe(32)
+        return self.register(token,label),token
+
+    def register(self,token,label):
+        if not isinstance(token,str) or not TOKEN.fullmatch(token):
+            raise ValueError('Invalid device credential.')
+        if not isinstance(label,str) or not 1<=len(label.strip())<=80:
+            raise ValueError('Choose a player label.')
+        digest=hashlib.sha256(token.encode('ascii')).hexdigest()
+        with self.lock, locked_state(self.path):
             self.reload(force=True)
-            if not isinstance(label,str) or not 1<=len(label.strip())<=80:raise ValueError('Choose a player label.')
-            used={r['id'] for r in self.records};identity=next((i for i in range(1,257)if i not in used),None)
-            if identity is None:raise ValueError('Invitation registry is full; IDs are never reused.')
-            token=secrets.token_urlsafe(32)
-            self.records.append({'id':identity,'label':label.strip(),'token_hash':hashlib.sha256(token.encode()).hexdigest(),'enabled':True})
-            write_json(self.path,{'format':1,'players':self.records});return identity,token
+            existing=self.by_token.get(digest)
+            if existing is not None:
+                if not existing['enabled']:raise PermissionError('This device was revoked.')
+                return existing['id']
+            identity=next((i for i in range(1,MAX_DEVICES+1) if i not in self.by_id),None)
+            if identity is None:raise OverflowError('The host device registry is full.')
+            row={'id':identity,'label':label.strip(),'token_hash':digest,'enabled':True}
+            write_json(self.path,{'format':1,'players':self.records+[row]})
+            self.records.append(row)
+            self.by_id[identity]=self.by_token[digest]=row
+            return identity
 
     def revoke(self,identity):
-        with self.lock:
+        with self.lock, locked_state(self.path):
             self.reload(force=True)
-            found=False
-            for r in self.records:
-                if r['id']==identity:r['enabled']=False;found=True
-            if not found:raise ValueError('Invitation ID not found.')
-            write_json(self.path,{'format':1,'players':self.records})
+            if identity not in self.by_id:raise ValueError('Invitation ID not found.')
+            updated=[dict(row,enabled=False) if row['id']==identity else row for row in self.records]
+            write_json(self.path,{'format':1,'players':updated})
+            self.reload(force=True)
 
     def active(self,identity):
         try:
             self.reload()
-            with self.lock:return any(r['id']==identity and r['enabled'] for r in self.records)
+            with self.lock:return self.by_id.get(identity,{}).get('enabled',False)
         except Exception:return False
 
     def authenticate(self,token):
         if not isinstance(token,str) or not 32<=len(token)<=128:raise ValueError('An invitation is required.')
         self.reload();actual=hashlib.sha256(token.encode('ascii')).hexdigest()
         with self.lock:
-            for r in self.records:
-                if hmac.compare_digest(actual,r['token_hash']) and r['enabled']:return r['id']
+            row=self.by_token.get(actual)
+            if row is not None and row['enabled']:return row['id']
         raise ValueError('Invitation is invalid or revoked.')
 
     def peer(self,identity):
