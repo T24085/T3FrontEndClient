@@ -375,8 +375,8 @@ end
 
 end)()
 local releaseRadarHelperFactory=(function()
--- Local minimap capture/view binding only. Native radars, teams, power and
--- authored ValWorldSettings remain owners. No radar-online or map-scale patches.
+-- Local minimap capture and display. Native radars, teams, power and authored
+-- ValWorldSettings remain owners.
 return function(env)
  local valid,report,scope,signature=assert(env.valid),assert(env.report),assert(env.scope),assert(env.signature)
  local contracts=assert(env.blueprint_contracts);local prefix=assert(env.world_prefix)
@@ -500,6 +500,15 @@ return function(env)
      widget:UpdateSublevel() -- normal original settings/scale/zoom/texture initialization
      assert(finite(widget.CachedMapScale) and math.abs(widget.CachedMapScale-1024/state.map_size)<1e-8,'radar_client_native_widget_scale_mismatch')
      assert(same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_native_material_binding_mismatch')
+     if env.zoom_2026_radar and widget.DefaultRadar==true then
+      local zoom,defaultZoom=widget.TargetZoom,widget.DefaultZoom
+      if finite(zoom) and finite(defaultZoom) and defaultZoom>0 then
+       -- Native GetZoomedRenderScale is 2^(DefaultZoom*CachedZoom-1).
+       -- Let the widget's tick zoom the texture and counter-scale its markers.
+       widget.TargetZoom=zoom+math.log(1.75,2)/defaultZoom
+       report('BASE_RADAR_CLIENT_2026_ZOOM|renderScaleMultiplier=1.75')
+      end
+     end
      report('BASE_RADAR_CLIENT_WIDGET_BOUND|widget='..widget:GetFullName()..'|cachedScale='..widget.CachedMapScale..'|mapScale='..widget.MapScale)
     end
     if state.widgets[key] then
@@ -597,9 +606,9 @@ return function(env)
  function runtime.tick(pc,gs)
   scope();guard(pc,gs)
   assert(not pc:HasAuthority() and not gs:HasAuthority(),'radar_runtime_network_client_required')
-  local selected=nil;local count=0
-  for _,descriptor in pairs(descriptors) do
-   if gs:GetFullName():find(descriptor.world,1,true) then selected=descriptor;count=count+1 end
+  local selected,mapId;local count=0
+  for id,descriptor in pairs(descriptors) do
+   if gs:GetFullName():find(descriptor.world,1,true) then selected,mapId=descriptor,id;count=count+1 end
   end
   assert(count==1,'radar_runtime_exactly_one_actual_remote_map_required')
   if selected.native then return true end
@@ -609,6 +618,7 @@ return function(env)
    if service then service.retire('remote_world_changed');retired[#retired+1]=service end
    local e={};for k,v in pairs(env) do e[k]=v end
    e.world_prefix=selected.world;e.client_context_guard=guard;e.descriptor=selected;e.world_settings_guard=nativeSettings
+   e.zoom_2026_radar=mapId:sub(-4)=='2026'
    e.projection={orthographic_width_per_map_size=1,source_reference='Original UI_Game_Map MapScale1024/MapSize and authored native ValWorldSettings; shared release source provenance'}
    e.find_assembly=function(context,state) return selectAssembly(state,selected) end
    service=assert(env.helper_factory)(e);identity=key
