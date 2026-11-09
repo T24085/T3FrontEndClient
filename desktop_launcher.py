@@ -52,6 +52,7 @@ class Desktop:
         self.map_retry_at = 0
         self.watch_id = None
         self.game_status = 'idle'
+        self.join_attempted_match = None
         self.current_panel = 'lobbies'
         self.live_targets = {}
         self.caps = {'matchStartEnabled': False, 'gameClientReady': False}
@@ -305,6 +306,7 @@ class Desktop:
                 if isinstance(preparation,dict):
                     self.preparation.set(preparation.get('error') or preparation.get('progress') or '')
             except Exception as exc: self.status.set(str(exc))
+        self.maybe_auto_join()
         self.render_live_controls()
         if not self.closing: self.poll_handle=self.root.after(150,self.poll)
 
@@ -477,6 +479,20 @@ class Desktop:
         if not selection: self.status.set('Select a player first.');return
         self.call_action('team',team=team,playerId=self.players[selection[0]]['id'])
 
+    def maybe_auto_join(self):
+        if (self.busy or self.watch_id is not None or self.game_status not in ('idle', 'stopped', 'finished', 'failed')
+                or self.game_button.cget('state') != 'normal'):
+            return
+        room = self.room
+        match = room.get('match') if room else None
+        if not isinstance(match, dict) or match.get('status') != 'ready':
+            return
+        match_id = match.get('id')
+        if not match_id or match_id == self.join_attempted_match:
+            return
+        if any(p['id'] == room['playerId'] and p['team'] in ('blue', 'red') for p in room['players']):
+            self.join_game()
+
     def join_game(self):
         if self.controls_busy or self.closing: return
         if self.room is None or self.pending_map is not None:
@@ -485,10 +501,15 @@ class Desktop:
             self.status.set('Stop watching the current match first.');return
         self.status.set('Checking the selected match…')
         selected_map = self.room['map']
+        match = self.room.get('match')
+        match_id = match.get('id') if isinstance(match, dict) else None
         def begin():
             if not self.game: self.game = self.game_factory(self.lobby)
+            if match_id:
+                return self.game.start(expected_map=selected_map, expected_match_id=match_id)
             return self.game.start(expected_map=selected_map)
-        self.run_async(begin,lambda _:self.status.set('Opening game…'))
+        if self.run_async(begin,lambda _:self.status.set('Opening game…')):
+            self.join_attempted_match = match_id
 
     def toggle_spectators(self):
         if self.room is not None and self.caps.get('spectateEnabled')is True:

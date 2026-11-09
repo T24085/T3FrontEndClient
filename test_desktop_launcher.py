@@ -32,7 +32,7 @@ class FakeLobby:
 
 class FakeGame:
     def __init__(self): self.started=False;self.stopped=False
-    def start(self, *, expected_map=None): self.started=True;return 'starting'
+    def start(self, *, expected_map=None, expected_match_id=None): self.started=True;return 'starting'
     def snapshot(self): return {'status':'playing' if self.started else 'idle','error':None,'run':None}
     def stop(self): self.stopped=True
 
@@ -40,6 +40,55 @@ class FakeGame:
 class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
+
+    def test_auto_join_waits_for_a_ready_assigned_match_and_attempts_once(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby, game = FakeLobby(), FakeGame()
+        attempts = []
+
+        def start(*, expected_map, expected_match_id):
+            attempts.append((expected_map, expected_match_id))
+            raise CommunityError('Manual retry is available.')
+
+        game.start = start
+        app = Desktop(root, lobby, lambda _: game)
+        try:
+            deadline = time.monotonic() + 4
+
+            def wait_until(predicate):
+                while not predicate() and time.monotonic() < deadline:
+                    root.update()
+                    time.sleep(.01)
+                self.assertTrue(predicate())
+
+            wait_until(lambda: app.capabilities_loaded and not app.busy)
+            match = {'id': 'a'*32, 'status': 'ready'}
+            lobby.room.update(phase='ready', match=match)
+            app.render(lobby.room)
+            app.maybe_auto_join()
+            self.assertEqual(attempts, [])
+
+            lobby.room['players'][0]['team'] = 'blue'
+            app.watch_id = 'watch'
+            app.maybe_auto_join()
+            self.assertEqual(attempts, [])
+            app.watch_id = None
+            wait_until(lambda: len(attempts) == 1 and not app.busy)
+            app.maybe_auto_join()
+            self.assertEqual(attempts, [('Stonehenge', match['id'])])
+
+            self.assertEqual(app.game_button.cget('state'), 'normal')
+            app.game_button.invoke()
+            wait_until(lambda: len(attempts) == 2 and not app.busy)
+            self.assertEqual(attempts[1], attempts[0])
+            lobby.room['match'] = {'id': 'b'*32, 'status': 'ready'}
+            app.render(lobby.room)
+            wait_until(lambda: len(attempts) == 3 and not app.busy)
+            self.assertEqual(attempts[2], ('Stonehenge', 'b'*32))
+        finally:
+            app.close()
+            root.update()
 
     def test_prepares_before_lobby_entry_only_after_service_confirms_support(self):
         class UnreadyLobby(FakeLobby):
