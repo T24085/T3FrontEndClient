@@ -809,6 +809,24 @@ local function ensure_flag_release_handoff(gs)
  if ok then flagReleaseService=service
  else report('FLAG_RELEASE_HANDOFF_UNAVAILABLE|'..tostring(service)) end
 end
+local soundSettingsWorld
+local function apply_saved_sound_settings(pc)
+    local world = pc:GetWorld()
+    if not valid(world) or same_object(soundSettingsWorld, world) then return end
+    soundSettingsWorld = world
+    local ok, why = pcall(function()
+        signature('/Script/Engine.GameUserSettings:GetGameUserSettings',{{'ReturnValue','ObjectProperty',0}})
+        signature('/Script/Valhalla.ValGameUserSettings:ApplySoundSettings',{})
+        local defaults = loaded('/Script/Engine.Default__GameUserSettings',
+                                'GameUserSettings /Script/Engine.Default__GameUserSettings')
+        local settings = defaults:GetGameUserSettings()
+        local class = loaded('/Script/Valhalla.ValGameUserSettings','Class /Script/Valhalla.ValGameUserSettings')
+        assert(valid(settings) and settings:IsA(class),'native_sound_settings_required')
+        settings:ApplySoundSettings()
+        report('SAVED_SOUND_SETTINGS_APPLIED')
+    end)
+    if not ok then report('SAVED_SOUND_SETTINGS_UNAVAILABLE|'..tostring(why):sub(1,300)) end
+end
 local function client_tick(sys)
     if joined and os.time()-lastJoin>=30 then
         local modes=FindAllOf('TopGameMode_Topaz') or {}
@@ -851,7 +869,13 @@ local function client_tick(sys)
     bind_post_match_escape()
     local plc=pc.PlayerLoadoutComponent;if not valid(plc) then return end
     local r=player_record(pc,ps)
-    if valid(pc.Pawn) and pc.Pawn.bInitialized==true then observe_markers(pc,ps,gs);releaseRadarRuntime.tick(pc,gs);if not r.ready then r.ready=true;report("REMOTE_PAWN_READY|role=client") end;return end
+    if valid(pc.Pawn) and pc.Pawn.bInitialized==true then
+        apply_saved_sound_settings(pc)
+        observe_markers(pc,ps,gs)
+        releaseRadarRuntime.tick(pc,gs)
+        if not r.ready then r.ready=true;report("REMOTE_PAWN_READY|role=client") end
+        return
+    end
     if r.selectionAttempted or valid(pc.Pawn) or (ps.r_TeamId~=1 and ps.r_TeamId~=2) or not plc:IsComponentReady() then return end
     local choices=plc.r_PlayerLoadouts;if choices:GetArrayNum()==0 then return end;assert(choices:GetArrayNum()<=64)
     local chosen=nil
