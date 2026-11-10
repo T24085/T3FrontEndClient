@@ -48,3 +48,21 @@ class RadarProjectionTest(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "native projection failed"):
             f.initialize(155000)
         self.assertEqual(f.settings.MapSize, 1075200)
+
+    def test_katabatic_t2_uses_community_radar_with_authored_settings(self):
+        start = SOURCE.index("local function radar_descriptor(selected)")
+        end = SOURCE.index("\nreturn function(env)", start)
+        lua = LuaRuntime()
+        descriptor_for = lua.execute(SOURCE[start:end] + "\nreturn radar_descriptor")
+        selected = lua.table_from({
+            "native": True,
+            "name": "KatabaticT22026",
+            "package": "/Game/Maps/Community/KatabaticT2/Arena_KatabaticT2_2026_P",
+        })
+        descriptor = descriptor_for(selected)
+        self.assertTrue(descriptor.native)
+        self.assertEqual(descriptor.assembly_asset,
+                         "/Game/Community/KatabaticT2/Edition2026/SM_Structures2026.SM_Structures2026")
+        self.assertIsNone(selected.assembly_asset)
+        selected.package = "/Game/Maps/Active/Katabatic/Arena_Katabatic_P"
+        self.assertIsNone(descriptor_for(selected))

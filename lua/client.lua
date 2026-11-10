@@ -854,6 +854,15 @@ end
 end)()
 local releaseRadarRuntimeFactory=(function()
 -- Normal network clients only. Actual remote world owns map selection.
+local function radar_descriptor(selected)
+ if not selected.native then return selected end
+ if selected.name~='KatabaticT22026' or selected.package~='/Game/Maps/Community/KatabaticT2/Arena_KatabaticT2_2026_P' then return nil end
+ -- This catalog map uses authored world settings and has its own structures mesh.
+ local descriptor={}
+ for key,value in pairs(selected) do descriptor[key]=value end
+ descriptor.assembly_asset='/Game/Community/KatabaticT2/Edition2026/SM_Structures2026.SM_Structures2026'
+ return descriptor
+end
 return function(env)
  local valid,report,scope=assert(env.valid),assert(env.report),assert(env.scope)
  local descriptors=assert(env.map_descriptors);local service=nil;local identity=nil;local retired={}
@@ -869,7 +878,8 @@ return function(env)
    if gs:GetFullName():find(descriptor.world,1,true) then selected=descriptor;count=count+1 end
   end
   assert(count==1,'radar_runtime_exactly_one_actual_remote_map_required')
-  if selected.native then return true end
+  selected=radar_descriptor(selected)
+  if not selected then return true end
   assert(selected.native_world_settings_class=='/Script/Valhalla.ValWorldSettings','radar_runtime_original_authored_settings_contract_required')
   local world=pc:GetWorld();local key=gs:GetFullName()..'|'..gs:GetAddress()..'|'..world:GetAddress()
   if identity~=key then
