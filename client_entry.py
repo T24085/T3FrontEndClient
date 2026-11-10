@@ -27,6 +27,16 @@ STOCK_CLOUD_MAPS = frozenset({
 })
 
 
+def stock_cloud_arguments(map_id):
+    if map_id not in STOCK_CLOUD_MAPS:
+        return []
+    if map_id == 'Stonehenge2026':
+        return ['-ini:Engine:[SystemSettings]:r.VolumetricRenderTarget=0']
+    # Reconstruct the cloud buffer at view resolution using temporal history.
+    return ['-ini:Engine:[SystemSettings]:r.VolumetricRenderTarget=1',
+            '-ini:Engine:[SystemSettings]:r.VolumetricRenderTarget.Mode=2']
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--endpoint')
@@ -165,8 +175,7 @@ def main():
         cloud_map = ''
         if not args.headless and args.expected_map in STOCK_CLOUD_MAPS:
             cloud_map = args.expected_map
-            # Match the original stock-cloud preview's per-pixel rendering path.
-            argv.append('-ini:Engine:[SystemSettings]:r.VolumetricRenderTarget=0')
+            argv.extend(stock_cloud_arguments(cloud_map))
         if args.spectate and (any(not (ROOT/name).is_file()for name in ('lua/spectator_client.lua','lua/spectator_materials.lua'))
                 or any('@@' + tag + '@@' not in template for tag in
                        ('SPECTATOR_ROLE', 'SPECTATOR_RUNTIME', 'SPECTATOR_MATERIAL_RUNTIME', 'MATCH_LEASE', 'WATCH_ID'))):

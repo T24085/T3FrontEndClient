@@ -33,8 +33,10 @@ local function widget(address, owner)
  return w
 end
 local miniClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/UI_Game_MiniMap.UI_Game_MiniMap_C'
+f.frame={clipping=0, GetClipping=function(self)return self.clipping end,
+         SetClipping=function(self,value)self.clipping=value end}
 local function minimap(ownerWorld,map)
- return {Map=map,GetWorld=function()return ownerWorld end,GetClass=function()
+ return {Map=map,Content=f.frame,GetWorld=function()return ownerWorld end,GetClass=function()
   return {GetFullName=function()return miniClass end}
  end}
 end
@@ -83,6 +85,7 @@ class CustomRadarZoomTest(unittest.TestCase):
         self.assertAlmostEqual(f.renderScale() / original, 2.25)
         self.assertEqual(f.calls, 1)
         self.assertEqual(f.helperTicks, 0)
+        self.assertEqual(f.frame.clipping, 3)
         self.assertEqual(f.fullscreen.Content.RenderTransform.Scale.X, original)
         self.assertEqual(f.foreign.Content.RenderTransform.Scale.X, original)
 
@@ -120,3 +123,4 @@ class CustomRadarZoomTest(unittest.TestCase):
         f = self.fixture()
         f.tick('Katabatic')
         self.assertEqual((f.lookup, f.calls, f.helperTicks), (0, 0, 0))
+        self.assertEqual(f.frame.clipping, 0)

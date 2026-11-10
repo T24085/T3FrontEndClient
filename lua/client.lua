@@ -812,6 +812,7 @@ local function custom_radar_zoom(env)
  local valid,report=env.valid,env.report
  local minimapClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/UI_Game_MiniMap.UI_Game_MiniMap_C'
  local retailScale=1024/125000 -- Drydock's authored world-to-map scale.
+ local clipToBoundsAlways=3 -- EWidgetClipping, on the unscaled HUD container.
  local world,records,failed
  local function finite(n) return type(n)=='number' and n==n and math.abs(n)<math.huge end
  local function apply(pc,descriptor)
@@ -821,7 +822,8 @@ local function custom_radar_zoom(env)
   for _,minimap in ipairs(FindAllOf('UI_Game_MiniMap_C') or {}) do
    if valid(minimap) and same_object(minimap:GetWorld(),world) and minimap:GetClass():GetFullName()==minimapClass then
     local widget=minimap.Map
-    if valid(widget) and same_object(widget:GetOwningPlayer(),pc) and valid(widget.Content)
+    local frame=minimap.Content
+    if valid(widget) and same_object(widget:GetOwningPlayer(),pc) and valid(widget.Content) and valid(frame)
         and finite(widget.CachedMapScale) and widget.CachedMapScale>0 then
      local base,default=widget.CachedZoom,widget.DefaultZoom
      if finite(base) and finite(default) and default>0 then
@@ -832,6 +834,10 @@ local function custom_radar_zoom(env)
        -- Native GetZoomedRenderScale is 2^(DefaultZoom*CachedZoom-1).
        record={widget=widget,name=name,base=base}
        records[key]=record
+      end
+      if frame:GetClipping()~=clipToBoundsAlways then
+       frame:SetClipping(clipToBoundsAlways)
+       assert(frame:GetClipping()==clipToBoundsAlways,'radar_hud_clip_readback_failed')
       end
       -- Compensate for the full authored capture width while keeping native
       -- map and marker projection on the same HUD transform.
@@ -1225,6 +1231,10 @@ local configure_stock_clouds=(function()
             assert(valid(component),'volumetric_cloud_component_required')
             component:SetMaterial(material)
             assert(same_object(component.Material,material),'stock_cloud_material_readback_failed')
+            if descriptor.name~='Stonehenge2026' and component.ViewSampleCountScale<1 then
+                component:SetViewSampleCountScale(1.0)
+                assert(component.ViewSampleCountScale==1.0,'stock_cloud_sample_count_readback_failed')
+            end
             if spawned or descriptor.name=='Stonehenge2026' then
                 component:SetLayerBottomAltitude(3.5)
                 component:SetLayerHeight(4.0)

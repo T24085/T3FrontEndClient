@@ -5,7 +5,7 @@ import unittest
 
 from lupa.lua54 import LuaRuntime
 
-from client_entry import STOCK_CLOUD_MAPS
+from client_entry import STOCK_CLOUD_MAPS, stock_cloud_arguments
 from community_maps import BY_ID
 
 
@@ -37,10 +37,11 @@ local function cloud(owner)
     return {
         GetWorld=function() return owner end,
         VolumetricCloudComponent={
-            LayerBottomAltitude=2,LayerHeight=6,
+            LayerBottomAltitude=2,LayerHeight=6,ViewSampleCountScale=0.58,
             SetMaterial=function(self,value) f.writes=f.writes+1;self.Material=value end,
             SetLayerBottomAltitude=function(self,value) self.LayerBottomAltitude=value end,
             SetLayerHeight=function(self,value) self.LayerHeight=value end,
+            SetViewSampleCountScale=function(self,value) self.ViewSampleCountScale=value end,
         },
     }
 end
@@ -64,6 +65,15 @@ def runtime(map_id):
 
 
 class StockCloudProfileTest(unittest.TestCase):
+    def test_temporal_reconstruction_targets_only_affected_community_maps(self):
+        prefix = '-ini:Engine:[SystemSettings]:r.VolumetricRenderTarget'
+        for map_id in STOCK_CLOUD_MAPS - {'Stonehenge2026'}:
+            with self.subTest(map_id=map_id):
+                self.assertEqual(stock_cloud_arguments(map_id), [prefix + '=1', prefix + '.Mode=2'])
+        self.assertEqual(stock_cloud_arguments('Stonehenge2026'), [prefix + '=0'])
+        self.assertEqual(stock_cloud_arguments('KatabaticT2'), [])
+        self.assertEqual(stock_cloud_arguments('Drydock'), [])
+
     def test_scope_excludes_katabatic_t2_and_retail(self):
         self.assertEqual(STOCK_CLOUD_MAPS, {'KatabaticMyrkwood'} | {key for key in BY_ID if key.endswith('2026')})
         _, (fixture, tick) = runtime('')
@@ -78,6 +88,7 @@ class StockCloudProfileTest(unittest.TestCase):
         tick(fixture.state('Stonehenge2026'))
         component = fixture.own.VolumetricCloudComponent
         self.assertEqual((component.LayerBottomAltitude, component.LayerHeight), (3.5, 4.0))
+        self.assertEqual(component.ViewSampleCountScale, 0.58)
         self.assertEqual((fixture.writes, fixture.spawned), (1, 0))
         self.assertIsNone(fixture.foreign.VolumetricCloudComponent.Material)
 
@@ -89,6 +100,7 @@ class StockCloudProfileTest(unittest.TestCase):
         tick(fixture.state('SnowblindBlizzard2026'))
         component = fixture.own.VolumetricCloudComponent
         self.assertEqual((component.LayerBottomAltitude, component.LayerHeight), (2, 6))
+        self.assertEqual(component.ViewSampleCountScale, 1.0)
         self.assertEqual((fixture.writes, fixture.spawned), (1, 0))
 
     def test_myrkwood_creates_one_layer_only_with_a_valid_material(self):
