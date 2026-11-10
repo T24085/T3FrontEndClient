@@ -12,6 +12,12 @@ Damnation 2026 uses 155,000 cm. The native zoom, sensor power, and spotting
 behavior remain under the original game. Maps without surveyed bounds use
 the authored width.
 
+An isolated rendered Damnation 2026 client projected both flag widgets,
+bound both radar sensors, and reported a 155,000 cm projection width at
+native zoom 1.0. A pickup and toss regression test covers the stale holder.
+The signed Direct Starter update is revision 16. The live update index and
+Lua payload passed HTTPS verification.
+
 # Linux Proton r12
 
 The Linux package is built from the published Windows r12 archive and bundles the 22 current map fingerprints from the approved host. The Proton bridge gives the shared Starter and signed updater the Linux CA context and keeps the existing Steam command and owned-process preflight. Steam/Proton multiplayer and Steam Deck Gaming Mode require separate gameplay qualification.
