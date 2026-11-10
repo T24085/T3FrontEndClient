@@ -15,8 +15,19 @@ the authored width.
 An isolated rendered Damnation 2026 client projected both flag widgets,
 bound both radar sensors, and reported a 155,000 cm projection width at
 native zoom 1.0. A pickup and toss regression test covers the stale holder.
-The signed Direct Starter update is revision 16. The live update index and
-Lua payload passed HTTPS verification.
+The signed Direct Starter update is revision 17. It adds radar capture and
+sensor binding for the catalog entry for Katabatic T2 2026. A rendered match
+used the map's authored 190,000 cm width at native zoom 1.0, projected both
+flags, and received one classified bot on each team. The live update index
+and Lua payload passed HTTPS verification.
+
+Connected client checks covered all eight 2026 entries in the live catalog.
+Each projected both flag markers and used its map-specific radar width at
+native zoom 1.0. Damnation and Katabatic T2 ran with rendering enabled.
+The remaining maps ran headlessly. Seven maps replicated one bot per team
+to the connected client. Rollercoaster lost its live connection after the
+HUD checks, then an isolated host using the deployed bot rules confirmed
+one classified bot per team.
 
 # Linux Proton r12
 
