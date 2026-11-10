@@ -38,6 +38,21 @@ local function scope()
     return sys
 end
 local mapDefinitions=assert(loadfile(@@MAP_DEFINITIONS@@))()
+-- The sand release changes only this tile's authored mesh identity.
+do
+    local center='/Game/Community/RollercoasterSand2026/SM_RollercoasterCenter'
+    local session=assert(OUTPUT:match('^(.*/)'))
+    local asset=io.open(session..'game/Topaz/Content'..center:sub(6)..'.uasset','rb')
+    if asset then
+        asset:close()
+        for _,row in ipairs(mapDefinitions.Rollercoaster2026.geometry) do
+            if row.actor=='StaticMeshActor_47' then
+                row.asset=center..'.SM_RollercoasterCenter'
+                break
+            end
+        end
+    end
+end
 local configure_geometry=assert(loadfile(@@GEOMETRY@@))()({valid=valid,report=report,signature=signature,settings=assert(loadfile(@@LEVEL_SETTINGS@@))(),descriptors=mapDefinitions})
 local configure_weather=assert(loadfile(@@SNOWBLIND_WEATHER@@))()({valid=valid,report=report,scope=scope,descriptors=mapDefinitions})
 local configure_water=assert(loadfile(@@DAMNATION_WATER@@))()({valid=valid,report=report})
