@@ -6,6 +6,8 @@ from community_transport import CommunityClient,CommunityError
 from dynamic_destination import DIRECT_BRIDGE_POLICY
 
 ROOT=pathlib.Path(__file__).resolve().parent
+FIRST_HOST_MATCH_PORT = 18000
+LAST_HOST_MATCH_PORT = 18009
 
 def validate_connection(d,*,local_test=False):
     if not isinstance(d,dict)or set(d)!=ENDPOINT_FIELDS|{'format','access_token'}or d['format']!=1:
@@ -53,7 +55,14 @@ class DirectClient(CommunityClient):
         return identity
 
     def _validated_target(self,match,name,*,spectator=False):
-        if not isinstance(match,dict)or match.get('address')!=self.server_address or type(match.get('port'))is not int or not self.connection['first_udp_port']<=match['port']<=self.connection['last_udp_port']:raise CommunityError('The public match endpoint differs from this invitation.')
+        first, last = self.connection['first_udp_port'], self.connection['last_udp_port']
+        # Friend Host can increase its match capacity after exporting an invitation.
+        # Its TLS response still has to name the pinned address and grant this port.
+        if first == FIRST_HOST_MATCH_PORT and last <= LAST_HOST_MATCH_PORT:
+            last = LAST_HOST_MATCH_PORT
+        if (not isinstance(match, dict) or match.get('address') != self.server_address
+                or type(match.get('port')) is not int or not first <= match['port'] <= last):
+            raise CommunityError('The public match endpoint differs from this invitation.')
         grant=match.get('udpGrant')
         native=dict(match,address='127.0.0.1',port=DIRECT_BRIDGE_POLICY['first_port'])
         target=super()._validated_target(native,name,spectator=spectator)
