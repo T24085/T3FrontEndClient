@@ -1201,7 +1201,7 @@ end
 local configure_stock_clouds=(function()
     local descriptor=mapDefinitions[@@STOCK_CLOUD_MAP@@]
     local attemptedWorld
-    return function(gs)
+    return function(gs,sys)
         if not descriptor or not gs:GetFullName():find(descriptor.world,1,true) then return end
         local world=gs:GetWorld()
         if not valid(world) or same_object(world,attemptedWorld) then return end
@@ -1240,6 +1240,15 @@ local configure_stock_clouds=(function()
                 component:SetLayerHeight(4.0)
                 assert(component.LayerBottomAltitude==3.5 and component.LayerHeight==4.0,'stock_cloud_layer_readback_failed')
             end
+            if descriptor.name~='Stonehenge2026' then
+                -- Shipping clients ignore -ini overrides. Configure the
+                -- native temporal reconstruction path in the selected world.
+                sys:ExecuteConsoleCommand(gs,'r.VolumetricRenderTarget.Mode 2',nil)
+                sys:ExecuteConsoleCommand(gs,'r.VolumetricRenderTarget 1',nil)
+                assert(sys:GetConsoleVariableIntValue('r.VolumetricRenderTarget.Mode')==2 and
+                       sys:GetConsoleVariableIntValue('r.VolumetricRenderTarget')==1,'stock_cloud_temporal_mode_readback_failed')
+                report('STOCK_CLOUD_TEMPORAL_RECONSTRUCTION|map='..descriptor.name..'|mode=2')
+            end
             report('STOCK_CLOUD_PROFILE_APPLIED|map='..descriptor.name)
         end)
         if not ok then
@@ -1269,7 +1278,7 @@ local function client_tick(sys)
     end
     local gs=state();if not gs or gs:HasAuthority() then return end
     configure_geometry(gs)
-    configure_stock_clouds(gs)
+    configure_stock_clouds(gs,sys)
     if clientWorld~=gs:GetFullName() then clientWorld=gs:GetFullName();report("CLIENT_WORLD|"..clientWorld) end
     local pcs=FindAllOf("ValPlayerController") or {};if #pcs~=1 or not valid(pcs[1]) then return end
     local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() or not valid(pc.PlayerState) then return end

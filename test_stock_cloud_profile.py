@@ -5,14 +5,20 @@ import unittest
 
 from lupa.lua54 import LuaRuntime
 
-from client_entry import STOCK_CLOUD_MAPS, stock_cloud_arguments
+from client_entry import STOCK_CLOUD_MAPS
 from community_maps import BY_ID
 
 
 SOURCE = (Path(__file__).with_name('lua') / 'client.lua').read_text(encoding='utf-8')
 PROFILE = SOURCE[SOURCE.index('local configure_stock_clouds='):SOURCE.index('local function client_tick(')]
 FIXTURE = r"""
-local f={scans=0, writes=0, spawned=0, reports={}}
+local f={scans=0, writes=0, spawned=0, reports={},cvars={}}
+local sys={}
+function sys:ExecuteConsoleCommand(_,command,_)
+    local key,value=command:match('^(%S+) (%d+)$')
+    f.cvars[key]=tonumber(value)
+end
+function sys:GetConsoleVariableIntValue(name)return f.cvars[name]end
 local mapDefinitions={}
 for _,name in ipairs({'Stonehenge2026','SnowblindBlizzard2026','KatabaticMyrkwood','KatabaticT2'}) do
     mapDefinitions[name]={name=name,world='/Game/'..name..':'}
@@ -61,19 +67,10 @@ end
 def runtime(map_id):
     lua = LuaRuntime()
     code = PROFILE.replace('@@STOCK_CLOUD_MAP@@', f'"{map_id}"')
-    return lua, lua.execute(FIXTURE + code + '\nreturn f,configure_stock_clouds')
+    return lua, lua.execute(FIXTURE + code + '\nreturn f,function(gs)configure_stock_clouds(gs,sys)end')
 
 
 class StockCloudProfileTest(unittest.TestCase):
-    def test_temporal_reconstruction_targets_only_affected_community_maps(self):
-        prefix = '-ini:Engine:[SystemSettings]:r.VolumetricRenderTarget'
-        for map_id in STOCK_CLOUD_MAPS - {'Stonehenge2026'}:
-            with self.subTest(map_id=map_id):
-                self.assertEqual(stock_cloud_arguments(map_id), [prefix + '=1', prefix + '.Mode=2'])
-        self.assertEqual(stock_cloud_arguments('Stonehenge2026'), [prefix + '=0'])
-        self.assertEqual(stock_cloud_arguments('KatabaticT2'), [])
-        self.assertEqual(stock_cloud_arguments('Drydock'), [])
-
     def test_scope_excludes_katabatic_t2_and_retail(self):
         self.assertEqual(STOCK_CLOUD_MAPS, {'KatabaticMyrkwood'} | {key for key in BY_ID if key.endswith('2026')})
         _, (fixture, tick) = runtime('')
@@ -91,6 +88,7 @@ class StockCloudProfileTest(unittest.TestCase):
         self.assertEqual(component.ViewSampleCountScale, 0.58)
         self.assertEqual((fixture.writes, fixture.spawned), (1, 0))
         self.assertIsNone(fixture.foreign.VolumetricCloudComponent.Material)
+        self.assertIsNone(fixture.cvars['r.VolumetricRenderTarget'])
 
     def test_snowblind_keeps_layer_and_waits_for_the_authored_actor(self):
         lua, (fixture, tick) = runtime('SnowblindBlizzard2026')
@@ -102,6 +100,8 @@ class StockCloudProfileTest(unittest.TestCase):
         self.assertEqual((component.LayerBottomAltitude, component.LayerHeight), (2, 6))
         self.assertEqual(component.ViewSampleCountScale, 1.0)
         self.assertEqual((fixture.writes, fixture.spawned), (1, 0))
+        self.assertEqual(fixture.cvars['r.VolumetricRenderTarget.Mode'], 2)
+        self.assertEqual(fixture.cvars['r.VolumetricRenderTarget'], 1)
 
     def test_myrkwood_creates_one_layer_only_with_a_valid_material(self):
         for missing in (False, True):
@@ -111,5 +111,5 @@ class StockCloudProfileTest(unittest.TestCase):
             tick(fixture.state('KatabaticMyrkwood'))
             tick(fixture.state('KatabaticMyrkwood'))
             self.assertEqual((fixture.writes, fixture.spawned), (0, 0) if missing else (1, 1))
-            self.assertEqual(len(fixture.reports), 1)
-            self.assertIn('UNAVAILABLE' if missing else 'APPLIED', fixture.reports[1])
+            self.assertEqual(len(fixture.reports), 1 if missing else 2)
+            self.assertIn('UNAVAILABLE' if missing else 'APPLIED', fixture.reports[len(fixture.reports)])
