@@ -397,11 +397,11 @@ local function flag_marker_projection(valid)
   if not valid(slot) or not valid(parent) then return end
   local geometry=parent:GetCachedGeometry()
   local size=slate:GetLocalSize(geometry)
-  if size.X<=0 or size.Y<=0 then return end
 
   local viewport=layout:GetViewportSize(pc)
+  local dpi=layout:GetViewportScale(pc)
   local cx,cy=viewport.X/2,viewport.Y/2
-  if cx<=0 or cy<=0 then return end
+  if cx<=0 or cy<=0 or dpi<=0 then return end
   local out={}
   -- Keep the viewport origin used by Slate, including a constrained view rect.
   local front=pc:ProjectWorldLocationToScreen(target,out,false)
@@ -420,16 +420,22 @@ local function flag_marker_projection(valid)
    if math.abs(x)+math.abs(y)<0.0001 then y=1 end
   end
   if not front or math.abs(x)>cx or math.abs(y)>cy then
-   local dpi=layout:GetViewportScale(pc)
    local desired=widget:GetDesiredSize()
    local edgeX,edgeY=cx-(desired.X/2+8)*dpi,cy-(desired.Y/2+8)*dpi
    if edgeX<=0 or edgeY<=0 then return end
    local scale=math.min(edgeX/math.max(math.abs(x),0.0001),edgeY/math.max(math.abs(y),0.0001))
    x,y=x*scale,y*scale
   end
-  local localPosition={}
-  slate:ScreenToWidgetLocal(pc,geometry,{X=cx+x,Y=cy+y},localPosition,false)
-  local position=localPosition.LocalCoordinate or localPosition
+  local position
+  if size.X>0 and size.Y>0 then
+   local localPosition={}
+   slate:ScreenToWidgetLocal(pc,geometry,{X=cx+x,Y=cy+y},localPosition,false)
+   position=localPosition.LocalCoordinate or localPosition
+  else
+   -- The native full-screen Flags canvas can have zero cached layout size.
+   -- Its top-left anchored slots still use the viewport's Slate units.
+   position={X=(cx+x)/dpi,Y=(cy+y)/dpi}
+  end
   if type(position.X)~='number' or type(position.Y)~='number' or position.X~=position.X
      or position.Y~=position.Y or math.abs(position.X)==math.huge or math.abs(position.Y)==math.huge then return end
   if not same_object(entry.layoutSlot,slot) then
@@ -447,9 +453,7 @@ end
 local function enabled_flag_markers(env)
  local valid,report=env.valid,env.report
  local project=flag_marker_projection(valid)
- local positionPath='/Script/ValhallaUI.ValRHUIGameOverlay:UpdatePosition_Vector'
  env.signature('/Script/Topaz.TopPickup_Flag:GetFlagState',{{'Querier','ObjectProperty',0},{'ReturnValue','EnumProperty',8}})
- env.signature(positionPath,{{'WorldContextObject','ObjectProperty',0},{'ObjectiveLocation','StructProperty',8}})
  local state=nil
  local stopped=false
  local widgetPath='/Game/UI/Components/Game/Overlays/UI_Game_Overlay_FlagObjective.UI_Game_Overlay_FlagObjective_C'
@@ -462,51 +466,56 @@ local function enabled_flag_markers(env)
  local function current(s)
   return valid(s.pc) and valid(s.ps) and valid(s.gs) and same(s.pc.PlayerState,s.ps) and same(s.pc:GetWorld(),s.gs:GetWorld()) and s.gs:GetFullName()==s.gameState and not s.pc:HasAuthority() and s.pc:IsLocalPlayerController()
  end
+ local function flag_holder(flag)
+  local holder=flag.r_HeldBy
+  if not valid(holder) then holder=flag:GetHeldBy().Holder end
+  if not valid(holder) then return nil end
+  -- The replicated holder can still name the thrower after detachment.
+  local root=flag.RootComponent
+  local attached=valid(root) and root:GetAttachParent() or nil
+  if same(flag:GetOwner(),holder) or (valid(attached) and same(attached:GetOwner(),holder)) then return holder end
+ end
  local function pulse()
   local s=state
   if not s then return end
   if not current(s) then clear();return end
   local pawn=s.pc.Pawn
   if not valid(pawn) or not pawn.bInitialized or pawn:GetHealth()<=0 then return end
+  local team=s.ps.r_TeamId
+  if team~=1 and team~=2 then return end
   local carrying=false
-  for _,e in pairs(s.entries) do if valid(e.flag) and e.flag.r_TeamId~=s.ps.r_TeamId and same(e.flag:GetHeldBy().Holder,pawn) then carrying=true end end
+  for _,e in pairs(s.entries) do
+   if valid(e.flag) and e.flag.r_TeamId~=team and same(flag_holder(e.flag),pawn) then carrying=true end
+  end
   for _,e in pairs(s.entries) do
    local flag,w=e.flag,e.widget
    if valid(flag) and valid(w) and same(flag:GetWorld(),s.pc:GetWorld()) then
-    local friendly=flag.r_TeamId==s.ps.r_TeamId
+    local friendly=flag.r_TeamId==team
     local flagState=flag:GetFlagState(pawn)
-    local ownCarried=not friendly and same(flag:GetHeldBy().Holder,pawn)
+    local holder=flag_holder(flag)
+    local ownCarried=not friendly and same(holder,pawn)
     local homeTarget=friendly and carrying and flagState==1
     local text=friendly and (flagState==4 and 'RETURN' or flagState==3 and 'CHASE' or homeTarget and 'GO HERE' or 'DEFEND') or (flagState==2 and 'ESCORT' or 'GRAB')
     w.BackgroundSwitcher:SetActiveWidget(friendly and (homeTarget and w.BlueGoTo or w.BlueDefend) or w.RedGoTo)
     w.ActionLabelGroup:SetVisibility(4)
     w.ActionText:SetText(FText(text))
-    local a,b=pawn:K2_GetActorLocation(),flag:K2_GetActorLocation()
+    local target=valid(holder) and same(holder:GetWorld(),s.pc:GetWorld()) and holder or flag
+    local a,b=pawn:K2_GetActorLocation(),target:K2_GetActorLocation()
     w.DistanceText:SetText(FText(string.format('%dm',math.floor(math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)/100+0.5))))
-    w:ShowOverlay(not ownCarried)
-    w:SetVisibility(ownCarried and 1 or 4)
+    -- Community-created widgets may never receive native overlay Tick.
+    local visible=not ownCarried
+    local projected=visible and project(e,s.pc,b)==true
+    w:ShowOverlay(visible)
+    w:SetVisibility(visible and 4 or 1)
+    if projected and not e.projected then
+     e.projected=true
+     report('FLAG_MARKER_PROJECTED|team='..flag.r_TeamId)
+    end
     local status=tostring(flag.r_TeamId)..'|'..text..'|'..tostring(ownCarried)
     if status~=e.status then e.status=status;report('FLAG_MARKER_STATE|'..status) end
    end
   end
  end
- -- Native Tick supplies the moving flag or carrier position each frame.
- RegisterHook(positionPath,function() end,function(ctx,_,target)
-  if stopped or not state then return end
-  local widget=ctx:get()
-  if not valid(widget) then return end
-  local entry=state.byWidget[widget:GetAddress()]
-  if not entry or widget:GetFullName()~=entry.widgetName then return end
-  local ok,why=pcall(function()
-   env.scope()
-   if not current(state) or not valid(entry.flag) or not same(entry.flag:GetWorld(),state.pc:GetWorld()) or not same(widget.CachedActor,entry.flag) then return end
-   if project(entry,state.pc,target:get()) and not entry.projected then
-    entry.projected=true
-    report('FLAG_MARKER_PROJECTED|team='..entry.flag.r_TeamId)
-   end
-  end)
-  if not ok then stopped=true;report('OPTIONAL_FLAG_MARKER_ERROR|'..tostring(why):sub(1,500)) end
- end)
  local schedule
  schedule=function()
   ExecuteInGameThreadWithDelay(50,function()
@@ -520,13 +529,14 @@ local function enabled_flag_markers(env)
   if not valid(pc) or not valid(ps) or not valid(gs) or pc:HasAuthority() or not pc:IsLocalPlayerController() or (ps.r_TeamId~=1 and ps.r_TeamId~=2) then return end
   if not same(pc:GetWorld(),gs:GetWorld()) then return end
   if state and (state.gameState~=gs:GetFullName() or not same(state.pc,pc) or not same(state.ps,ps)) then clear() end
-  if not state then state={pc=pc,ps=ps,gs=gs,gameState=gs:GetFullName(),entries={},byWidget={}} end
+  if not state then state={pc=pc,ps=ps,gs=gs,gameState=gs:GetFullName(),entries={}} end
   local parent
   for _,o in ipairs(FindAllOf('UI_Game_Overlays_C') or {}) do if valid(o) and o:GetFullName():find('/Engine/Transient.',1,true) and same(o:GetWorld(),pc:GetWorld()) and valid(o.Flags) then assert(not parent,'multiple_runtime_flag_hud_containers');parent=o.Flags end end
   if not parent then return end
+  local visibility=parent:GetVisibility()
+  if visibility==1 or visibility==2 then parent:SetVisibility(4) end
   for key,e in pairs(state.entries) do
    if not valid(e.flag) or not valid(e.widget) or not same(e.flag:GetWorld(),pc:GetWorld()) then
-    state.byWidget[e.widgetAddress]=nil
     if e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
     state.entries[key]=nil
    end
@@ -538,14 +548,12 @@ local function enabled_flag_markers(env)
     local key=flag:GetFullName()..'|'..tostring(flag:GetAddress())
     local e=state.entries[key]
     if not e or not valid(e.widget) or not same(e.widget:GetParent(),parent) then
-     if e then state.byWidget[e.widgetAddress]=nil end
      if e and e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
      local widget
      for i=0,parent:GetChildrenCount()-1 do local child=parent:GetChildAt(i);if valid(child) and child:IsA(cls) and same(child.CachedActor,flag) then assert(not widget,'duplicate_native_flag_marker');widget=child end end
      local owned=not valid(widget)
      if owned then widget=library:Create(pc,cls,pc);assert(valid(widget),'original_flag_marker_creation_failed');parent:AddChildToCanvas(widget);widget:UpdateFlagActor(flag) end
-     local entry={flag=flag,widget=widget,owned=owned,widgetAddress=widget:GetAddress(),widgetName=widget:GetFullName()}
-     state.entries[key]=entry;state.byWidget[entry.widgetAddress]=entry
+     state.entries[key]={flag=flag,widget=widget,owned=owned}
      report('FLAG_MARKER_BOUND|team='..flag.r_TeamId..'|created='..tostring(owned))
     end
    end
@@ -577,7 +585,31 @@ end
 
 local clientWorld=nil
 local lastJoin=0
--- Production network-client radar binding; authored settings stay native.
+-- Widths enclose the authored playable bounds about the native world origin,
+-- with ten percent padding. The same width owns both texture and coordinates.
+local radar_playable_width={
+ Damnation=155000,Damnation2026=155000,
+ HighOctane=109000,HighOctane2026=109000,
+ Rollercoaster=240000,Rollercoaster2026=240000,
+ Scarabrae=207000,Scarabrae2026=207000,
+ Snowblind=159000,Snowblind2026=159000,SnowblindBlizzard=159000,SnowblindBlizzard2026=159000,
+ Stonehenge=188000,Stonehenge2026=188000,
+ KatabaticMyrkwood=99000,
+}
+local function radar_projection_width(map,authored)
+ return math.min(radar_playable_width[map] or authored,authored)
+end
+local function initialize_radar_projection(widget,settings,width)
+ -- The original widget owns scale, map translation, native zoom and texture
+ -- setup. Supply the capture width only during this synchronous call.
+ local authored=settings.MapSize
+ if width==authored then widget:UpdateSublevel();return end
+ settings.MapSize=width
+ local ok,reason=pcall(widget.UpdateSublevel,widget)
+ settings.MapSize=authored
+ assert(ok,reason)
+end
+-- Production network-client radar binding.
 local releaseRadarGuardFactory=(function()
 -- One owner for the network-client/explicit standalone diagnostic distinction.
 return function(env)
@@ -599,7 +631,7 @@ end
 end)()
 local releaseRadarHelperFactory=(function()
 -- Local minimap capture and display. Native radars, teams, power and authored
--- ValWorldSettings remain owners.
+-- authored ValWorldSettings remain owners. The native zoom stays intact.
 return function(env)
  local valid,report,scope,signature=assert(env.valid),assert(env.report),assert(env.scope),assert(env.signature)
  local contracts=assert(env.blueprint_contracts);local prefix=assert(env.world_prefix)
@@ -641,7 +673,8 @@ return function(env)
   local settings=original_settings(pc);local size=settings.MapSize;local world=pc:GetWorld()
   local ratio=projection.orthographic_width_per_map_size
   assert(finite(ratio) and ratio>0 and type(projection.source_reference)=='string' and projection.source_reference~='','radar_client_projection_source_required')
-  local captureWidth=size*ratio;assert(finite(captureWidth),'radar_client_finite_capture_width_required')
+  local captureWidth=radar_projection_width(env.descriptor.name,size)*ratio
+  assert(finite(captureWidth),'radar_client_finite_capture_width_required')
   signature('/Script/Engine.Actor:GetActorBounds',{{'bOnlyCollidingComponents','BoolProperty',0},{'Origin','StructProperty',8},{'BoxExtent','StructProperty',32},{'bIncludeFromChildActors','BoolProperty',56}})
   signature('/Script/UMG.Widget:GetOwningPlayer',{{'ReturnValue','ObjectProperty',0}})
   signature('/Script/UMG.PanelWidget:GetChildrenCount',{{'ReturnValue','IntProperty',0}})
@@ -650,7 +683,9 @@ return function(env)
   local origin,extent={},{};assembly:GetActorBounds(true,origin,extent,false)
   for _,axis in ipairs({'X','Y','Z'}) do assert(finite(origin[axis]) and finite(extent[axis]) and extent[axis]>=0,'radar_client_finite_geometry_bounds_required') end
   local halfWidth=math.max(math.abs(origin.X)+extent.X,math.abs(origin.Y)+extent.Y)
-  assert(captureWidth>=2*halfWidth,'radar_client_authored_capture_does_not_cover_map_bounds')
+  if captureWidth==size then
+   assert(captureWidth>=2*halfWidth,'radar_client_authored_capture_does_not_cover_map_bounds')
+  end
   local captures={};for _,a in ipairs(FindAllOf('BP_MinimapCapture_C') or {}) do if valid(a) and same(a:GetWorld(),world) then captures[#captures+1]=a end end
   assert(#captures==0,'radar_client_existing_capture_requires_map_owner_adoption')
   local class=StaticFindObject(capturePath);if not valid(class) then class=LoadAsset(capturePath) end
@@ -720,10 +755,13 @@ return function(env)
      assert(not valid(prior) or same(prior,state.capture),'radar_client_foreign_widget_capture')
      state.widgets[key]={widget=widget,name=widget:GetFullName(),prior=prior}
      widget.MinimapCapture=state.capture
-     widget:UpdateSublevel() -- normal original settings/scale/zoom/texture initialization
-     assert(finite(widget.CachedMapScale) and math.abs(widget.CachedMapScale-1024/state.map_size)<1e-8,'radar_client_native_widget_scale_mismatch')
+     initialize_radar_projection(widget,state.settings,state.capture_width)
+     assert(finite(widget.CachedMapScale) and math.abs(widget.CachedMapScale-1024/state.capture_width)<1e-8,
+            'radar_client_native_widget_scale_mismatch')
+     assert(finite(widget.MapScale) and math.abs(widget.MapScale-widget.CachedMapScale)<1e-8,
+            'radar_client_marker_scale_mismatch')
      assert(same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_native_material_binding_mismatch')
-     report('BASE_RADAR_CLIENT_WIDGET_BOUND|widget='..widget:GetFullName()..'|cachedScale='..widget.CachedMapScale..'|mapScale='..widget.MapScale)
+     report('BASE_RADAR_CLIENT_WIDGET_BOUND|widget='..widget:GetFullName()..'|cachedScale='..widget.CachedMapScale..'|mapScale='..widget.MapScale..'|projectionWidthCm='..state.capture_width..'|zoom='..tostring(widget.CachedZoom))
     end
     if state.widgets[key] then
      assert(same(widget.MinimapCapture,state.capture) and same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_widget_binding_changed')
@@ -732,6 +770,12 @@ return function(env)
    end
   end
   state.widgets_seen=count;state.widgets_bound=bound
+  if count>0 and bound==count and not state.manual_capture then
+   signature('/Script/Engine.SceneCaptureComponent2D:CaptureScene',{})
+   state.component:CaptureScene()
+   state.manual_capture=true
+   report('BASE_RADAR_CLIENT_CAPTURE_REQUESTED|source=bound_community_map')
+  end
   return count>0 and bound==count
  end
  function service.owned() return state end
@@ -808,78 +852,6 @@ return function(env)
 end
 
 end)()
-local function custom_radar_zoom(env)
- local valid,report=env.valid,env.report
- local minimapClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/UI_Game_MiniMap.UI_Game_MiniMap_C'
- local retailScale=1024/125000 -- Drydock's authored world-to-map scale.
- local clipToBoundsAlways=3 -- EWidgetClipping, on the unscaled HUD container.
- local world,records,failed
- local function finite(n) return type(n)=='number' and n==n and math.abs(n)<math.huge end
- local function apply(pc,descriptor)
-  if type(descriptor.package)~='string' or descriptor.package:find('/Game/Maps/Community/',1,true)~=1 then return end
-  local current=pc:GetWorld()
-  if not same_object(world,current) then world=current;records={} end
-  for _,minimap in ipairs(FindAllOf('UI_Game_MiniMap_C') or {}) do
-   if valid(minimap) and same_object(minimap:GetWorld(),world) and minimap:GetClass():GetFullName()==minimapClass then
-    local widget=minimap.Map
-    local frame=minimap.Content
-    if valid(widget) and same_object(widget:GetOwningPlayer(),pc) and valid(widget.Content) and valid(frame)
-        and finite(widget.CachedMapScale) and widget.CachedMapScale>0 then
-     local base,default=widget.CachedZoom,widget.DefaultZoom
-     if finite(base) and finite(default) and default>0 then
-      local key=widget:GetAddress()
-      local name=widget:GetFullName()
-      local record=records[key]
-      if not record or not valid(record.widget) or record.name~=name then
-       -- Native GetZoomedRenderScale is 2^(DefaultZoom*CachedZoom-1).
-       record={widget=widget,name=name,base=base}
-       records[key]=record
-      end
-      if frame:GetClipping()~=clipToBoundsAlways then
-       frame:SetClipping(clipToBoundsAlways)
-       assert(frame:GetClipping()==clipToBoundsAlways,'radar_hud_clip_readback_failed')
-      end
-      -- Compensate for the full authored capture width while keeping native
-      -- map and marker projection on the same HUD transform.
-      local multiplier=math.max(2.25,retailScale/widget.CachedMapScale)
-      local target=record.base+math.log(multiplier,2)/default
-      local expectedScale=2^(default*target-1)
-      assert(finite(expectedScale) and expectedScale>0,'radar_finite_render_zoom_required')
-      if widget.CachedZoom~=target or widget.TargetZoom~=target then
-       local previousTarget=widget.TargetZoom
-       widget.CachedZoom=target
-       widget.TargetZoom=target
-       -- Radar Tick skips interpolation. Apply the native shared map/icon
-       -- transform immediately with the cached zoom already at its target.
-       local ok,why=pcall(function()
-        widget:UpdateScale(0.0)
-        local scale=widget.Content.RenderTransform.Scale
-        assert(finite(scale.X) and finite(scale.Y) and math.abs(scale.X-expectedScale)<=expectedScale*1e-5
-               and math.abs(scale.Y-expectedScale)<=expectedScale*1e-5,'radar_native_render_zoom_readback_failed')
-       end)
-       if not ok then
-        widget.CachedZoom=base;widget.TargetZoom=previousTarget
-        pcall(function() widget:UpdateScale(0.0) end)
-        error(why)
-       end
-       if not record.reported then
-        record.reported=true
-        report('BASE_RADAR_CLIENT_CUSTOM_ZOOM|map='..descriptor.name..'|renderScaleMultiplier='..multiplier..
-               '|authoredWidthCm='..1024/widget.CachedMapScale..'|renderScale='..expectedScale)
-       end
-      end
-     end
-    end
-   end
-  end
- end
- return function(pc,descriptor)
-  if failed then return end
-  local ok,why=pcall(apply,pc,descriptor)
-  if not ok then failed=true;report('BASE_RADAR_CLIENT_CUSTOM_ZOOM_UNAVAILABLE|'..tostring(why):sub(1,300)) end
- end
-end
-
 local releaseRadarRuntimeFactory=(function()
 -- Normal network clients only. Actual remote world owns map selection.
 return function(env)
@@ -888,7 +860,6 @@ return function(env)
  local selectAssembly=assert(env.primary_assembly_factory)(env)
  local guard=assert(env.guard_factory)(env)
  local nativeSettings=assert(env.world_settings_guard_factory)(env)
- local zoomRadar=custom_radar_zoom(env)
  local runtime={}
  function runtime.tick(pc,gs)
   scope();guard(pc,gs)
@@ -898,7 +869,7 @@ return function(env)
    if gs:GetFullName():find(descriptor.world,1,true) then selected=descriptor;count=count+1 end
   end
   assert(count==1,'radar_runtime_exactly_one_actual_remote_map_required')
-  if selected.native then zoomRadar(pc,selected);return true end
+  if selected.native then return true end
   assert(selected.native_world_settings_class=='/Script/Valhalla.ValWorldSettings','radar_runtime_original_authored_settings_contract_required')
   local world=pc:GetWorld();local key=gs:GetFullName()..'|'..gs:GetAddress()..'|'..world:GetAddress()
   if identity~=key then
@@ -909,9 +880,7 @@ return function(env)
    e.find_assembly=function(context,state) return selectAssembly(state,selected) end
    service=assert(env.helper_factory)(e);identity=key
   end
-  local ready=service.tick(pc,gs)
-  zoomRadar(pc,selected)
-  return ready
+  return service.tick(pc,gs)
  end
  function runtime.owned() return {current=service,identity=identity,retired=retired} end
  return runtime

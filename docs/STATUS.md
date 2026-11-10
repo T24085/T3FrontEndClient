@@ -1,3 +1,17 @@
+# Community flag indicators and radar scale
+
+The enabled flag indicators follow the replicated flag or carrier from the
+client HUD tick. A carried flag uses the native owner or attachment to
+distinguish active possession from the old holder that can remain after a
+toss. A zero-size native flag canvas uses viewport DPI for placement.
+
+The radar uses the same world width for the scene capture and the original
+map widget's projection. Widths come from the playable bounds of 15
+community maps, rounded up with ten percent padding about the map origin.
+Damnation 2026 uses 155,000 cm. The native zoom, sensor power, and spotting
+behavior remain under the original game. Maps without surveyed bounds use
+the authored width.
+
 # Linux Proton r12
 
 The Linux package is built from the published Windows r12 archive and bundles the 22 current map fingerprints from the approved host. The Proton bridge gives the shared Starter and signed updater the Linux CA context and keeps the existing Steam command and owned-process preflight. Steam/Proton multiplayer and Steam Deck Gaming Mode require separate gameplay qualification.

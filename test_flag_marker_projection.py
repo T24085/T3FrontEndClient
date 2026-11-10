@@ -90,8 +90,87 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             self.assertAlmostEqual(geometry.X + slot.X * geometry.scale, 1920 - (40+8)*1.5)
             self.assertAlmostEqual(geometry.Y + slot.Y * geometry.scale, 540)
 
-    def test_unlaid_out_canvas_is_skipped(self):
+    def test_unlaid_out_full_screen_canvas_uses_viewport_dpi(self):
         fixture = self.fixture()
         fixture.geometry.width = 0
-        self.assertIsNone(fixture.project(800, 500))
-        self.assertIsNone(fixture.entry.widget.Slot.position)
+        self.assertTrue(fixture.project(800, 500))
+        self.assertAlmostEqual(fixture.entry.widget.Slot.position.X, 800 / 1.5)
+        self.assertAlmostEqual(fixture.entry.widget.Slot.position.Y, 500 / 1.5)
+
+    def test_hud_pulse_updates_pickup_and_toss_without_a_native_widget_tick(self):
+        start = SOURCE.index('local function enabled_flag_markers(env)')
+        end = SOURCE.index('local scoreBarFailed', start)
+        result = LuaRuntime().execute(r"""
+            local function valid(o) return type(o)=='table' end
+            local world={GetAddress=function(self)return self end}
+            local function actor(x)
+                local a={x=x}
+                function a:GetWorld() return world end
+                function a:GetAddress() return self end
+                function a:GetFullName() return tostring(self) end
+                function a:K2_GetActorLocation() return {X=self.x,Y=0,Z=0} end
+                return a
+            end
+            local pc,ps,gs,pawn=actor(0),actor(0),actor(0),actor(0)
+            ps.r_TeamId=1
+            pc.PlayerState,pc.Pawn=ps,pawn
+            function pc:IsLocalPlayerController() return true end
+            function pc:HasAuthority() return false end
+            pawn.bInitialized=true
+            function pawn:GetHealth() return 1000 end
+            local flags={actor(500),actor(1500)}
+            for i,flag in ipairs(flags) do
+                flag.r_TeamId,flag.mode=i,1
+                function flag:GetHeldBy() return {} end
+                function flag:GetOwner() return self.owner end
+                function flag:GetFlagState() return self.mode end
+            end
+            local parent,widgets={visibility=1},{}
+            function parent:GetWorld() return world end
+            function parent:GetVisibility() return self.visibility end
+            function parent:SetVisibility(value) self.visibility=value end
+            function parent:GetChildrenCount() return #widgets end
+            function parent:GetChildAt(i) return widgets[i+1] end
+            function parent:AddChildToCanvas(widget) table.insert(widgets,widget) end
+            local overlay={Flags=parent,GetWorld=parent.GetWorld,GetFullName=function()return '/Engine/Transient.test' end}
+            local library={}
+            function library:Create()
+                local w=actor(0)
+                function w:GetParent() return parent end
+                function w:UpdateFlagActor(flag) self.CachedActor=flag end
+                function w:SetVisibility(value) self.visibility=value end
+                function w:ShowOverlay(value) self.shown=value end
+                function w:IsA() return true end
+                w.BackgroundSwitcher={SetActiveWidget=function() end}
+                w.ActionLabelGroup={SetVisibility=function() end}
+                w.ActionText={SetText=function(self,v) self.text=v end}
+                w.DistanceText={SetText=function() end}
+                return w
+            end
+            local function StaticFindObject(path) return path:find('Library',1,true) and library or {} end
+            local function FindAllOf(name) return name=='TopPickup_Flag' and flags or {overlay} end
+            local function FText(value) return value end
+            local nextPulse
+            local function ExecuteInGameThreadWithDelay(_,fn) nextPulse=fn end
+            local function flag_marker_projection() return function(entry,_,target)
+                entry.widget.projectedX=target.X
+                return true
+            end end
+        """ + SOURCE[start:end] + r"""
+            local noop=function()end
+            local tick=enabled_flag_markers({valid=valid,signature=noop,report=noop,scope=noop})
+            tick(pc,ps,gs)
+            nextPulse()
+            local home,enemy=widgets[1],widgets[2]
+            assert(parent.visibility==4 and enemy.shown and enemy.projectedX==1500)
+            flags[2].r_HeldBy=pawn
+            flags[2].owner=pawn
+            nextPulse()
+            assert(not enemy.shown and home.ActionText.text=='GO HERE')
+            flags[2].owner=nil
+            flags[2].x=900
+            nextPulse()
+            assert(enemy.shown and enemy.projectedX==900 and home.ActionText.text=='DEFEND')
+            return true
+        """)
+        self.assertTrue(result)
