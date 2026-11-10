@@ -386,13 +386,70 @@ local function refresh_ctf_score_bar(pc,ps,gs)
 end
 -- END_DIRECT_PLAYTEST_PRESENTATION
 
+local function flag_marker_projection(valid)
+ local layout=StaticFindObject('/Script/UMG.Default__WidgetLayoutLibrary')
+ local slate=StaticFindObject('/Script/UMG.Default__SlateBlueprintLibrary')
+ assert(valid(layout) and valid(slate),'flag_marker_projection_libraries_required')
+
+ return function(entry,pc,target)
+  local widget=entry.widget
+  local slot,parent=widget.Slot,widget:GetParent()
+  if not valid(slot) or not valid(parent) then return end
+  local geometry=parent:GetCachedGeometry()
+  local size=slate:GetLocalSize(geometry)
+  if size.X<=0 or size.Y<=0 then return end
+
+  local viewport=layout:GetViewportSize(pc)
+  local cx,cy=viewport.X/2,viewport.Y/2
+  if cx<=0 or cy<=0 then return end
+  local out={}
+  -- Keep the viewport origin used by Slate, including a constrained view rect.
+  local front=pc:ProjectWorldLocationToScreen(target,out,false)
+  local x,y
+  if front then
+   local screen=out.ScreenLocation or out
+   x,y=screen.X-cx,screen.Y-cy
+  else
+   local camera=pc.PlayerCameraManager
+   if not valid(camera) then return end
+   local origin,rotation=camera:GetCameraLocation(),camera:GetCameraRotation()
+   local yaw,pitch=math.rad(rotation.Yaw),math.rad(rotation.Pitch)
+   local dx,dy,dz=target.X-origin.X,target.Y-origin.Y,target.Z-origin.Z
+   x=-math.sin(yaw)*dx+math.cos(yaw)*dy
+   y=math.sin(pitch)*math.cos(yaw)*dx+math.sin(pitch)*math.sin(yaw)*dy-math.cos(pitch)*dz
+   if math.abs(x)+math.abs(y)<0.0001 then y=1 end
+  end
+  if not front or math.abs(x)>cx or math.abs(y)>cy then
+   local dpi=layout:GetViewportScale(pc)
+   local desired=widget:GetDesiredSize()
+   local edgeX,edgeY=cx-(desired.X/2+8)*dpi,cy-(desired.Y/2+8)*dpi
+   if edgeX<=0 or edgeY<=0 then return end
+   local scale=math.min(edgeX/math.max(math.abs(x),0.0001),edgeY/math.max(math.abs(y),0.0001))
+   x,y=x*scale,y*scale
+  end
+  local localPosition={}
+  slate:ScreenToWidgetLocal(pc,geometry,{X=cx+x,Y=cy+y},localPosition,false)
+  local position=localPosition.LocalCoordinate or localPosition
+  if type(position.X)~='number' or type(position.Y)~='number' or position.X~=position.X
+     or position.Y~=position.Y or math.abs(position.X)==math.huge or math.abs(position.Y)==math.huge then return end
+  if not same_object(entry.layoutSlot,slot) then
+   slot:SetAutoSize(true)
+   slot:SetAlignment({X=0.5,Y=0.5})
+   slot:SetAnchors({Minimum={X=0,Y=0},Maximum={X=0,Y=0}})
+   entry.layoutSlot=slot
+  end
+  slot:SetPosition({X=position.X,Y=position.Y})
+  return true
+ end
+end
+
 -- Use the original overlay widgets when the lobby opts in.
 local function enabled_flag_markers(env)
  local valid,report=env.valid,env.report
- local project=assert(loadfile(env.projection))()({valid=valid})
+ local project=flag_marker_projection(valid)
+ local positionPath='/Script/ValhallaUI.ValRHUIGameOverlay:UpdatePosition_Vector'
  env.signature('/Script/Topaz.TopPickup_Flag:GetFlagState',{{'Querier','ObjectProperty',0},{'ReturnValue','EnumProperty',8}})
- env.signature('/Script/ValhallaUI.ValRHUIGameOverlay:UpdatePosition',{{'WorldContextObject','ObjectProperty',0},{'ObjectiveActor','ObjectProperty',8}})
- env.signature('/Script/ValhallaUI.ValRHUIGameOverlay:UpdatePosition_Vector',{{'WorldContextObject','ObjectProperty',0},{'ObjectiveLocation','StructProperty',8}})
+ env.signature(positionPath,{{'WorldContextObject','ObjectProperty',0},{'ObjectiveLocation','StructProperty',8}})
  local state=nil
  local stopped=false
  local widgetPath='/Game/UI/Components/Game/Overlays/UI_Game_Overlay_FlagObjective.UI_Game_Overlay_FlagObjective_C'
@@ -433,7 +490,8 @@ local function enabled_flag_markers(env)
    end
   end
  end
- local function after_position(ctx,target,isVector)
+ -- Native Tick supplies the moving flag or carrier position each frame.
+ RegisterHook(positionPath,function() end,function(ctx,_,target)
   if stopped or not state then return end
   local widget=ctx:get()
   if not valid(widget) then return end
@@ -442,23 +500,13 @@ local function enabled_flag_markers(env)
   local ok,why=pcall(function()
    env.scope()
    if not current(state) or not valid(entry.flag) or not same(entry.flag:GetWorld(),state.pc:GetWorld()) or not same(widget.CachedActor,entry.flag) then return end
-   if isVector then
-    project(entry,state.pc,entry.flag,target:get())
-   elseif same(target:get(),entry.flag) then
-    project(entry,state.pc,entry.flag)
+   if project(entry,state.pc,target:get()) and not entry.projected then
+    entry.projected=true
+    report('FLAG_MARKER_PROJECTED|team='..entry.flag.r_TeamId)
    end
   end)
   if not ok then stopped=true;report('OPTIONAL_FLAG_MARKER_ERROR|'..tostring(why):sub(1,500)) end
- end
- -- Native flag-widget Tick calls the vector overload every frame. Correct its
- -- final position there; the slow label/state pulse must never move the widget.
- local markerHooks={}
- for _,item in ipairs({{'/Script/ValhallaUI.ValRHUIGameOverlay:UpdatePosition',false},
-                      {'/Script/ValhallaUI.ValRHUIGameOverlay:UpdatePosition_Vector',true}}) do
-  local isVector=item[2]
-  local pre,post=RegisterHook(item[1],function() end,function(ctx,world,target) after_position(ctx,target,isVector) end)
-  markerHooks[#markerHooks+1]={pre=pre,post=post}
- end
+ end)
  local schedule
  schedule=function()
   ExecuteInGameThreadWithDelay(50,function()
@@ -510,7 +558,7 @@ local markerFailed
 local function update_flag_markers(pc,ps,gs)
  if not markerService then
   local factory=@@SHOW_FLAG_INDICATORS@@ and enabled_flag_markers or assert(loadfile(@@FLAG_MARKERS@@))()
-  markerService=factory({valid=valid,report=report,signature=signature,scope=scope,projection=@@FLAG_PROJECTION@@})
+  markerService=factory({valid=valid,report=report,signature=signature,scope=scope})
  end
  markerService(pc,ps,gs)
 end
@@ -675,15 +723,6 @@ return function(env)
      widget:UpdateSublevel() -- normal original settings/scale/zoom/texture initialization
      assert(finite(widget.CachedMapScale) and math.abs(widget.CachedMapScale-1024/state.map_size)<1e-8,'radar_client_native_widget_scale_mismatch')
      assert(same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_native_material_binding_mismatch')
-     if env.zoom_2026_radar and widget.DefaultRadar==true then
-      local zoom,defaultZoom=widget.TargetZoom,widget.DefaultZoom
-      if finite(zoom) and finite(defaultZoom) and defaultZoom>0 then
-       -- Native GetZoomedRenderScale is 2^(DefaultZoom*CachedZoom-1).
-       -- Let the widget's tick zoom the texture and counter-scale its markers.
-       widget.TargetZoom=zoom+math.log(1.75,2)/defaultZoom
-       report('BASE_RADAR_CLIENT_2026_ZOOM|renderScaleMultiplier=1.75')
-      end
-     end
      report('BASE_RADAR_CLIENT_WIDGET_BOUND|widget='..widget:GetFullName()..'|cachedScale='..widget.CachedMapScale..'|mapScale='..widget.MapScale)
     end
     if state.widgets[key] then
@@ -769,6 +808,56 @@ return function(env)
 end
 
 end)()
+local function custom_radar_zoom(env)
+ local valid,report=env.valid,env.report
+ local minimapClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/UI_Game_MiniMap.UI_Game_MiniMap_C'
+ local multiplier=2.25
+ local world,records,failed
+ local function finite(n) return type(n)=='number' and n==n and math.abs(n)<math.huge end
+ local function apply(pc,descriptor)
+  if type(descriptor.package)~='string' or descriptor.package:find('/Game/Maps/Community/',1,true)~=1 then return end
+  local current=pc:GetWorld()
+  if not same_object(world,current) then world=current;records={} end
+  for _,minimap in ipairs(FindAllOf('UI_Game_MiniMap_C') or {}) do
+   if valid(minimap) and same_object(minimap:GetWorld(),world) and minimap:GetClass():GetFullName()==minimapClass then
+    local widget=minimap.Map
+    if valid(widget) and same_object(widget:GetOwningPlayer(),pc) and valid(widget.Content)
+        and finite(widget.CachedMapScale) and widget.CachedMapScale>0 then
+     local base,default=widget.CachedZoom,widget.DefaultZoom
+     if finite(base) and finite(default) and default>0 then
+      local key=widget:GetAddress()
+      local name=widget:GetFullName()
+      local record=records[key]
+      if not record or not valid(record.widget) or record.name~=name then
+       -- Native GetZoomedRenderScale is 2^(DefaultZoom*CachedZoom-1).
+       record={widget=widget,name=name,target=base+math.log(multiplier,2)/default}
+       records[key]=record
+      end
+      if widget.CachedZoom~=record.target or widget.TargetZoom~=record.target then
+       local previousTarget=widget.TargetZoom
+       widget.CachedZoom=record.target
+       widget.TargetZoom=record.target
+       -- Radar Tick skips interpolation. Apply the native shared map/icon
+       -- transform immediately with the cached zoom already at its target.
+       local ok,why=pcall(function() widget:UpdateScale(0.0) end)
+       if not ok then widget.CachedZoom=base;widget.TargetZoom=previousTarget;error(why) end
+       if not record.reported then
+        record.reported=true
+        report('BASE_RADAR_CLIENT_CUSTOM_ZOOM|map='..descriptor.name..'|renderScaleMultiplier='..multiplier)
+       end
+      end
+     end
+    end
+   end
+  end
+ end
+ return function(pc,descriptor)
+  if failed then return end
+  local ok,why=pcall(apply,pc,descriptor)
+  if not ok then failed=true;report('BASE_RADAR_CLIENT_CUSTOM_ZOOM_UNAVAILABLE|'..tostring(why):sub(1,300)) end
+ end
+end
+
 local releaseRadarRuntimeFactory=(function()
 -- Normal network clients only. Actual remote world owns map selection.
 return function(env)
@@ -777,28 +866,30 @@ return function(env)
  local selectAssembly=assert(env.primary_assembly_factory)(env)
  local guard=assert(env.guard_factory)(env)
  local nativeSettings=assert(env.world_settings_guard_factory)(env)
+ local zoomRadar=custom_radar_zoom(env)
  local runtime={}
  function runtime.tick(pc,gs)
   scope();guard(pc,gs)
   assert(not pc:HasAuthority() and not gs:HasAuthority(),'radar_runtime_network_client_required')
-  local selected,mapId;local count=0
-  for id,descriptor in pairs(descriptors) do
-   if gs:GetFullName():find(descriptor.world,1,true) then selected,mapId=descriptor,id;count=count+1 end
+  local selected;local count=0
+  for _,descriptor in pairs(descriptors) do
+   if gs:GetFullName():find(descriptor.world,1,true) then selected=descriptor;count=count+1 end
   end
   assert(count==1,'radar_runtime_exactly_one_actual_remote_map_required')
-  if selected.native then return true end
+  if selected.native then zoomRadar(pc,selected);return true end
   assert(selected.native_world_settings_class=='/Script/Valhalla.ValWorldSettings','radar_runtime_original_authored_settings_contract_required')
   local world=pc:GetWorld();local key=gs:GetFullName()..'|'..gs:GetAddress()..'|'..world:GetAddress()
   if identity~=key then
    if service then service.retire('remote_world_changed');retired[#retired+1]=service end
    local e={};for k,v in pairs(env) do e[k]=v end
    e.world_prefix=selected.world;e.client_context_guard=guard;e.descriptor=selected;e.world_settings_guard=nativeSettings
-   e.zoom_2026_radar=mapId:sub(-4)=='2026'
    e.projection={orthographic_width_per_map_size=1,source_reference='Original UI_Game_Map MapScale1024/MapSize and authored native ValWorldSettings; shared release source provenance'}
    e.find_assembly=function(context,state) return selectAssembly(state,selected) end
    service=assert(env.helper_factory)(e);identity=key
   end
-  return service.tick(pc,gs)
+  local ready=service.tick(pc,gs)
+  zoomRadar(pc,selected)
+  return ready
  end
  function runtime.owned() return {current=service,identity=identity,retired=retired} end
  return runtime
