@@ -1176,6 +1176,54 @@ local function configure_shield_wall_preview()
  end)
  if not ok then report('SHIELD_WALL_PREVIEW_ERROR|'..tostring(why)) end
 end
+local configure_stock_clouds=(function()
+    local descriptor=mapDefinitions[@@STOCK_CLOUD_MAP@@]
+    local attemptedWorld
+    return function(gs)
+        if not descriptor or not gs:GetFullName():find(descriptor.world,1,true) then return end
+        local world=gs:GetWorld()
+        if not valid(world) or same_object(world,attemptedWorld) then return end
+        local spawned
+        local ok,why=pcall(function()
+            local cloud
+            for _,actor in ipairs(FindAllOf('VolumetricCloud') or {}) do
+                if valid(actor) and same_object(actor:GetWorld(),world) then
+                    assert(not cloud,'multiple_volumetric_clouds')
+                    cloud=actor
+                end
+            end
+            local myrkwood=descriptor.name=='KatabaticMyrkwood'
+            if not cloud and not myrkwood then return end
+            attemptedWorld=world
+            local path='/Engine/EngineSky/VolumetricClouds/m_SimpleVolumetricCloud_Inst.m_SimpleVolumetricCloud_Inst'
+            local material=StaticFindObject(path)
+            if not valid(material) then material=LoadAsset(path) end
+            assert(valid(material) and material:GetFullName()=='MaterialInstanceConstant '..path,'stock_cloud_material_required')
+            if not cloud then
+                local class=loaded('/Script/Engine.VolumetricCloud','Class /Script/Engine.VolumetricCloud')
+                spawned=world:SpawnActor(class,{X=0,Y=0,Z=0},{Pitch=0,Yaw=0,Roll=0})
+                cloud=spawned
+            end
+            assert(valid(cloud) and same_object(cloud:GetWorld(),world),'volumetric_cloud_actor_required')
+            local component=cloud.VolumetricCloudComponent
+            assert(valid(component),'volumetric_cloud_component_required')
+            component:SetMaterial(material)
+            assert(same_object(component.Material,material),'stock_cloud_material_readback_failed')
+            if spawned or descriptor.name=='Stonehenge2026' then
+                component:SetLayerBottomAltitude(3.5)
+                component:SetLayerHeight(4.0)
+                assert(component.LayerBottomAltitude==3.5 and component.LayerHeight==4.0,'stock_cloud_layer_readback_failed')
+            end
+            report('STOCK_CLOUD_PROFILE_APPLIED|map='..descriptor.name)
+        end)
+        if not ok then
+            attemptedWorld=world
+            if valid(spawned) then pcall(function() spawned:K2_DestroyActor() end) end
+            report('STOCK_CLOUD_PROFILE_UNAVAILABLE|'..tostring(why))
+        end
+    end
+end)()
+
 local function client_tick(sys)
     if joined and os.time()-lastJoin>=30 then
         local modes=FindAllOf('TopGameMode_Topaz') or {}
@@ -1195,6 +1243,7 @@ local function client_tick(sys)
     end
     local gs=state();if not gs or gs:HasAuthority() then return end
     configure_geometry(gs)
+    configure_stock_clouds(gs)
     if clientWorld~=gs:GetFullName() then clientWorld=gs:GetFullName();report("CLIENT_WORLD|"..clientWorld) end
     local pcs=FindAllOf("ValPlayerController") or {};if #pcs~=1 or not valid(pcs[1]) then return end
     local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() or not valid(pc.PlayerState) then return end

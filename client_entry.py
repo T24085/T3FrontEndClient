@@ -21,6 +21,10 @@ from client_support import (ROOT, REL, engine_command_line, save,
 
 MODE = '/Game/Topaz/Game/BP_TopazGameMode_CTF_Persistent_BotBackfill.BP_TopazGameMode_CTF_Persistent_BotBackfill_C'
 SPECTATOR_CONTRACT = 'native-spectator-v1'
+STOCK_CLOUD_MAPS = frozenset({
+    'Damnation2026', 'HighOctane2026', 'KatabaticMyrkwood', 'Rollercoaster2026',
+    'Scarabrae2026', 'Snowblind2026', 'SnowblindBlizzard2026', 'Stonehenge2026',
+})
 
 
 def main():
@@ -158,9 +162,11 @@ def main():
         if args.test_source:
             argv.append('-MULTIHOME=' + args.test_source)
         argv += ['-nullrhi', '-nosound', '-unattended'] if args.headless else ['-d3d11'] + (['-fullscreen'] if player_profile.fullscreen_default else [])
-        if not args.headless and args.expected_map in BY_ID and args.expected_map.endswith('2026'):
-            # Trace clouds at half resolution and reconstruct at full resolution.
-            argv.append('-ini:Engine:[SystemSettings]:r.VolumetricRenderTarget.Mode=1')
+        cloud_map = ''
+        if not args.headless and args.expected_map in STOCK_CLOUD_MAPS:
+            cloud_map = args.expected_map
+            # Match the original stock-cloud preview's per-pixel rendering path.
+            argv.append('-ini:Engine:[SystemSettings]:r.VolumetricRenderTarget=0')
         if args.spectate and (any(not (ROOT/name).is_file()for name in ('lua/spectator_client.lua','lua/spectator_materials.lua'))
                 or any('@@' + tag + '@@' not in template for tag in
                        ('SPECTATOR_ROLE', 'SPECTATOR_RUNTIME', 'SPECTATOR_MATERIAL_RUNTIME', 'MATCH_LEASE', 'WATCH_ID'))):
@@ -171,6 +177,7 @@ def main():
                 raise ValueError('The Damnation water runtime is incomplete. Update the community client.')
             template = template.replace('@@DAMNATION_WATER@@', json.dumps(water_runtime.as_posix(), ensure_ascii=False))
         template = template.replace('@@SHOW_FLAG_INDICATORS@@', 'true' if args.show_flag_indicators else 'false')
+        template = template.replace('@@STOCK_CLOUD_MAP@@', json.dumps(cloud_map))
         settings_path = profile / 'Saved/Config/Windows/GameUserSettings.ini'
         template = template.replace('@@MUSIC_SETTINGS@@', json.dumps(settings_path.as_posix(), ensure_ascii=False))
         for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=map_definitions.as_posix(), SNOWBLIND_WEATHER=(ROOT/'lua/snowblind_weather.lua').as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
