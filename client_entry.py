@@ -157,6 +157,9 @@ def main():
         if args.test_source:
             argv.append('-MULTIHOME=' + args.test_source)
         argv += ['-nullrhi', '-nosound', '-unattended'] if args.headless else ['-d3d11'] + (['-fullscreen'] if player_profile.fullscreen_default else [])
+        if not args.headless and args.expected_map in BY_ID and args.expected_map.endswith('2026'):
+            # Trace clouds at half resolution and reconstruct at full resolution.
+            argv.append('-ini:Engine:[SystemSettings]:r.VolumetricRenderTarget.Mode=1')
         if args.spectate and (any(not (ROOT/name).is_file()for name in ('lua/spectator_client.lua','lua/spectator_materials.lua'))
                 or any('@@' + tag + '@@' not in template for tag in
                        ('SPECTATOR_ROLE', 'SPECTATOR_RUNTIME', 'SPECTATOR_MATERIAL_RUNTIME', 'MATCH_LEASE', 'WATCH_ID'))):

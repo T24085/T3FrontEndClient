@@ -64,6 +64,26 @@ class CommunityGameTest(unittest.TestCase):
         self.assertIn('100.80.168.96:18818', captured['argv'])
         self.assertNotIn('-server', captured['argv'])
 
+    def test_direct_reconnect_retires_only_the_disconnected_game(self):
+        self.lobby.reconnect_requires_new_game = True
+        game = self.game
+        game.status = 'playing'
+        game.current_artifacts = game.artifacts / 'attempt'
+        game.current_artifacts.mkdir()
+        game.run = game.workspace / 'client-attempt'
+        game.run.mkdir()
+        events = game.run / 'events.txt'
+        events.write_text('REMOTE_PAWN_READY|role=client\nRECONNECTING_TO_FIXED_SERVER\n'
+                          'REMOTE_PAWN_READY|role=client\n')
+        self.assertEqual(game.snapshot()['status'], 'playing')
+        with events.open('a') as stream:
+            stream.write('RECONNECTING_TO_FIXED_SERVER\nJOIN_REQUESTED\n')
+        state = game.snapshot()
+        self.assertEqual(state['status'], 'stopping')
+        self.assertIn('Join game', state['error'])
+        self.assertTrue((game.current_artifacts / 'stop.json').is_file())
+        self.assertEqual(self.lobby.calls, 0)
+
     def test_unready_lobby_does_not_start(self):
         self.lobby.endpoint = None
         with self.assertRaises(CommunityError):

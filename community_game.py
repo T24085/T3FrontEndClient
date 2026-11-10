@@ -189,6 +189,9 @@ class CommunityGame:
             self.startup_phase = 'checking_match'
             self.startup_failure = None
         try:
+            begin_attempt = getattr(self.lobby, 'begin_game_attempt', None)
+            if begin_attempt is not None:
+                begin_attempt()
             target_loader = (lambda: self.lobby.spectator_target(watch_id)) if watch_id is not None else self.lobby.match_target
             target = target_loader()
             if expected_match_id is not None and target.get('matchId') != expected_match_id:
@@ -324,6 +327,13 @@ class CommunityGame:
                     if phase is not None: self.startup_phase = phase
                     if runtime_failure(lines):
                         self.failure_reason = self.error = 'The game client runtime reported an error.'
+                        self.status = 'stopping'
+                    elif (self.status == 'playing' and self.role == 'player'
+                          and getattr(self.lobby, 'reconnect_requires_new_game', False)
+                          and next((line for line in reversed(lines) if line in
+                                    ('REMOTE_PAWN_READY|role=client', 'RECONNECTING_TO_FIXED_SERVER')), None)
+                          == 'RECONNECTING_TO_FIXED_SERVER'):
+                        self.failure_reason = self.error = 'Disconnected from the match. Use Join game to reconnect.'
                         self.status = 'stopping'
                     elif self.status == 'starting' and phase == 'playing':
                         self.status = 'playing'

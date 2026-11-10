@@ -17,6 +17,7 @@ def validate_connection(d,*,local_test=False):
 
 class DirectClient(CommunityClient):
     address_error = 'A direct host must have a public IPv4 address.'
+    reconnect_requires_new_game = True
 
     @staticmethod
     def accepts_server_address(address):
@@ -33,6 +34,12 @@ class DirectClient(CommunityClient):
             'Authorization': 'Bearer ' + self.access_token,
             'X-Direct-Session': self.direct_session,
         })
+
+    def begin_game_attempt(self):
+        """Use a new admission and native socket for each owned game process."""
+        with self.lock:
+            self.close()
+            self.direct_session = secrets.token_hex(16)
 
     def enroll(self, group):
         response=self._request(ENROLL_ROUTE.removeprefix('/api/'),{

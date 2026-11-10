@@ -41,6 +41,18 @@ class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
 
+    def test_closing_starter_preserves_active_lobby_membership(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        app = Desktop(root, lobby, lambda _: FakeGame())
+        lobby.room.update(phase='ready', match={'id': 'a'*32, 'status': 'ready'})
+        app.render(lobby.room)
+        app.close()
+        app.close_worker.join(2)
+        self.assertFalse(app.close_worker.is_alive())
+        self.assertNotIn(('leave', {}), lobby.calls)
+
     def test_auto_join_waits_for_a_ready_assigned_match_and_attempts_once(self):
         root = tk.Tk()
         root.withdraw()

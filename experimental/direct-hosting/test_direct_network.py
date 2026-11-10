@@ -1,4 +1,5 @@
 import hashlib,json,pathlib,secrets,socket,sys,tempfile,threading,time,unittest
+from unittest.mock import Mock
 ROOT=pathlib.Path(__file__).resolve().parent
 sys.path[:0]=[str(ROOT/'src')]
 from direct_network import InviteStore,ReplayWindow,UdpServer,UdpClient,frame,unframe,write_json,valid_public_address
@@ -16,6 +17,24 @@ class Echo:
     def close(self):self.done=True;self.thread.join(1);self.sock.close()
 
 class DirectNetworkTests(unittest.TestCase):
+    def test_next_game_process_rotates_admission_without_changing_lobby_membership(self):
+        from direct_client import DirectClient
+
+        client = DirectClient({
+            'format': 1, 'hostname': 'localhost', 'public_address': '127.0.0.1',
+            'https_port': 18443, 'first_udp_port': 18000, 'last_udp_port': 18000,
+            'access_token': 'x'*43,
+        }, test_source='127.0.0.2')
+        client.code, client.token, client.player_id = 'ABC234', 'lobby-token', 'player'
+        first = client.direct_session
+        old_proxy = Mock()
+        client.proxies[('match', 'grant')] = old_proxy
+        client.begin_game_attempt()
+        old_proxy.close.assert_called_once()
+        self.assertEqual(client.proxies, {})
+        self.assertNotEqual(client.direct_session, first)
+        self.assertEqual((client.code, client.token, client.player_id), ('ABC234', 'lobby-token', 'player'))
+
     def test_invites_store_hashes_and_revocation_fails_closed(self):
         with tempfile.TemporaryDirectory(dir=ROOT)as folder:
             store=InviteStore(pathlib.Path(folder)/'invites.json');a,token=store.issue('one');b,other=store.issue('two')

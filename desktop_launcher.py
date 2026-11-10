@@ -629,6 +629,8 @@ class Desktop:
                 self.root.after_cancel(handle)
                 setattr(self,name,None)
         lobby,game,watch_id = self.lobby,self.game,self.watch_id
+        match = self.room.get('match') if self.room is not None else None
+        keep_membership = isinstance(match, dict) and match.get('status') in ('starting', 'ready')
         if game:
             game.stop()
         def release():
@@ -638,12 +640,11 @@ class Desktop:
                     else:lobby.release_spectator(watch_id)
             except Exception:
                 pass
-            try:
-                lobby.action('leave')
-            except Exception:
-                # Network failure must not trap window closure. Authenticated
-                # resume/Create can recover this same membership next launch.
-                pass
+            if not keep_membership:
+                try:
+                    lobby.action('leave')
+                except Exception:
+                    pass
         self.close_worker = threading.Thread(target=release,daemon=False)
         self.close_worker.start()
         self.root.destroy()
