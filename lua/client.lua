@@ -811,7 +811,7 @@ end)()
 local function custom_radar_zoom(env)
  local valid,report=env.valid,env.report
  local minimapClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/UI_Game_MiniMap.UI_Game_MiniMap_C'
- local multiplier=2.25
+ local retailScale=1024/125000 -- Drydock's authored world-to-map scale.
  local world,records,failed
  local function finite(n) return type(n)=='number' and n==n and math.abs(n)<math.huge end
  local function apply(pc,descriptor)
@@ -830,20 +830,36 @@ local function custom_radar_zoom(env)
       local record=records[key]
       if not record or not valid(record.widget) or record.name~=name then
        -- Native GetZoomedRenderScale is 2^(DefaultZoom*CachedZoom-1).
-       record={widget=widget,name=name,target=base+math.log(multiplier,2)/default}
+       record={widget=widget,name=name,base=base}
        records[key]=record
       end
-      if widget.CachedZoom~=record.target or widget.TargetZoom~=record.target then
+      -- Compensate for the full authored capture width while keeping native
+      -- map and marker projection on the same HUD transform.
+      local multiplier=math.max(2.25,retailScale/widget.CachedMapScale)
+      local target=record.base+math.log(multiplier,2)/default
+      local expectedScale=2^(default*target-1)
+      assert(finite(expectedScale) and expectedScale>0,'radar_finite_render_zoom_required')
+      if widget.CachedZoom~=target or widget.TargetZoom~=target then
        local previousTarget=widget.TargetZoom
-       widget.CachedZoom=record.target
-       widget.TargetZoom=record.target
+       widget.CachedZoom=target
+       widget.TargetZoom=target
        -- Radar Tick skips interpolation. Apply the native shared map/icon
        -- transform immediately with the cached zoom already at its target.
-       local ok,why=pcall(function() widget:UpdateScale(0.0) end)
-       if not ok then widget.CachedZoom=base;widget.TargetZoom=previousTarget;error(why) end
+       local ok,why=pcall(function()
+        widget:UpdateScale(0.0)
+        local scale=widget.Content.RenderTransform.Scale
+        assert(finite(scale.X) and finite(scale.Y) and math.abs(scale.X-expectedScale)<=expectedScale*1e-5
+               and math.abs(scale.Y-expectedScale)<=expectedScale*1e-5,'radar_native_render_zoom_readback_failed')
+       end)
+       if not ok then
+        widget.CachedZoom=base;widget.TargetZoom=previousTarget
+        pcall(function() widget:UpdateScale(0.0) end)
+        error(why)
+       end
        if not record.reported then
         record.reported=true
-        report('BASE_RADAR_CLIENT_CUSTOM_ZOOM|map='..descriptor.name..'|renderScaleMultiplier='..multiplier)
+        report('BASE_RADAR_CLIENT_CUSTOM_ZOOM|map='..descriptor.name..'|renderScaleMultiplier='..multiplier..
+               '|authoredWidthCm='..1024/widget.CachedMapScale..'|renderScale='..expectedScale)
        end
       end
      end

@@ -17,16 +17,19 @@ local pc={GetWorld=function()return world end,HasAuthority=function()return fals
 local gs={GetAddress=function()return 2 end,HasAuthority=function()return false end}
 world.GetAddress=function()return 3 end
 local function widget(address, owner)
- local w={CachedZoom=2,TargetZoom=2,DefaultZoom=1.5,CachedMapScale=0.001,Content={}}
+ local w={CachedZoom=2,TargetZoom=2,DefaultZoom=1.5,CachedMapScale=1024/204800,
+          Content={RenderTransform={Scale={X=4,Y=4}}}}
  function w:GetOwningPlayer() return owner end
  function w:GetAddress() return address end
  function w:GetFullName() return 'Map'..address end
  function w:UpdateScale(delta)
   assert(delta==0 and self.CachedZoom==self.TargetZoom)
-  self.Content.scale=2^(self.DefaultZoom*self.CachedZoom-1)
+  if not f.skipRenderUpdate then
+   local scale=2^(self.DefaultZoom*self.CachedZoom-1)
+   self.Content.RenderTransform.Scale={X=scale,Y=scale}
+  end
   f.calls=f.calls+1
  end
- w.Content.scale=2^(w.DefaultZoom*w.CachedZoom-1)
  return w
 end
 local miniClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/UI_Game_MiniMap.UI_Game_MiniMap_C'
@@ -36,6 +39,7 @@ local function minimap(ownerWorld,map)
  end}
 end
 f.hud=widget(1,pc)
+function f.renderScale()return f.hud.Content.RenderTransform.Scale.X end
 f.fullscreen=widget(2,pc)
 f.foreign=widget(3,pc)
 local function FindAllOf(name)
@@ -73,24 +77,44 @@ class CustomRadarZoomTest(unittest.TestCase):
 
     def test_manifest_added_map_updates_only_its_hud_radar(self):
         f = self.fixture()
-        original = f.hud.Content.scale
+        original = f.renderScale()
         f.tick('KatabaticT2')
         f.tick('KatabaticT2')
-        self.assertAlmostEqual(f.hud.Content.scale / original, 2.25)
+        self.assertAlmostEqual(f.renderScale() / original, 2.25)
         self.assertEqual(f.calls, 1)
         self.assertEqual(f.helperTicks, 0)
-        self.assertEqual(f.fullscreen.Content.scale, original)
-        self.assertEqual(f.foreign.Content.scale, original)
+        self.assertEqual(f.fullscreen.Content.RenderTransform.Scale.X, original)
+        self.assertEqual(f.foreign.Content.RenderTransform.Scale.X, original)
 
     def test_bundled_map_reapplies_same_zoom_after_native_reset(self):
         f = self.fixture()
+        f.hud.CachedMapScale = 1024 / 1_075_200
+        original = f.renderScale()
         f.tick('Scarabrae2026')
+        self.assertAlmostEqual(f.renderScale() / original, 1_075_200 / 125_000)
         target = f.hud.TargetZoom
         f.hud.CachedZoom = 2
         f.tick('Scarabrae2026')
         self.assertEqual(f.hud.CachedZoom, target)
         self.assertEqual(f.calls, 2)
         self.assertEqual(f.helperTicks, 2)
+
+    def test_different_wide_maps_match_retail_spacing_for_equal_world_distance(self):
+        for width in (450_000, 1_075_200, 2_000_000):
+            with self.subTest(width=width):
+                f = self.fixture()
+                original = f.renderScale()
+                f.hud.CachedMapScale = 1024 / width
+                f.tick('KatabaticT2')
+                self.assertAlmostEqual(f.hud.CachedMapScale * f.renderScale(), (1024 / 125_000) * original)
+
+    def test_failed_native_render_readback_restores_zoom_and_reports_error(self):
+        f = self.fixture()
+        f.skipRenderUpdate = True
+        f.tick('Scarabrae2026')
+        self.assertEqual((f.hud.CachedZoom, f.hud.TargetZoom), (2, 2))
+        self.assertEqual(len(f.events), 1)
+        self.assertIn('radar_native_render_zoom_readback_failed', f.events[1])
 
     def test_retail_map_skips_custom_radar_entirely(self):
         f = self.fixture()
