@@ -43,17 +43,25 @@ function f.addWidget(world,controller)
     local bar=object('ScoreBar')
     bar.UI_Game_Scorebar_ScoreCount=object('Friendly')
     bar.UI_Game_Scorebar_ScoreCount_1=object('Enemy')
-    bar.UI_Game_Scorebar_ScoreCount.CachedScore=0
-    bar.UI_Game_Scorebar_ScoreCount_1.CachedScore=0
+    bar.FriendlyScoreFill=object('FriendlyFill')
+    bar.EnemyScoreFill=object('EnemyFill')
+    for _,counter in ipairs({bar.UI_Game_Scorebar_ScoreCount,bar.UI_Game_Scorebar_ScoreCount_1}) do
+        counter.CachedScore=0
+        counter.ScoreText=object('ScoreText')
+        counter.ScoreText.value='0'
+        function counter.ScoreText:GetText() return {ToString=function() return self.value end} end
+    end
     bar.calls=0
     function bar:GetClass() return object(class) end
     function bar:GetWorld() return world end
     function bar:GetOwningPlayer() return controller end
     function bar:IsVisible() return not self.hidden end
-    function bar:UpdateTeamScores()
+    function bar:UpdateScore(score,fill,counter)
+        assert((fill==self.FriendlyScoreFill and counter==self.UI_Game_Scorebar_ScoreCount) or
+               (fill==self.EnemyScoreFill and counter==self.UI_Game_Scorebar_ScoreCount_1))
         self.calls=self.calls+1
-        self.UI_Game_Scorebar_ScoreCount.CachedScore=f.ps.r_TeamId==1 and f.team1 or f.team2
-        self.UI_Game_Scorebar_ScoreCount_1.CachedScore=f.ps.r_TeamId==1 and f.team2 or f.team1
+        counter.CachedScore=score
+        counter.ScoreText.value=tostring(score)
     end
     f.widgets[#f.widgets+1]=bar
     return bar
@@ -107,13 +115,23 @@ class DirectPlaytestPresentationTests(unittest.TestCase):
         f.setScores(1, 2)
         f.refresh()
         f.refresh()
-        self.assertEqual(bar.calls, 1)
+        self.assertEqual(bar.calls, 2)
         self.assertEqual(bar.UI_Game_Scorebar_ScoreCount.CachedScore, 1)
         self.assertEqual(bar.UI_Game_Scorebar_ScoreCount_1.CachedScore, 2)
         f.ps.r_TeamId = 2
         f.refresh()
         self.assertEqual(bar.UI_Game_Scorebar_ScoreCount.CachedScore, 2)
         self.assertEqual(bar.UI_Game_Scorebar_ScoreCount_1.CachedScore, 1)
+
+    def test_enemy_score_text_recovers_even_when_its_cached_score_is_current(self):
+        f = self.fixture()
+        bar = f.addWidget(f.world, f.pc)
+        f.setScores(0, 2)
+        bar.UI_Game_Scorebar_ScoreCount_1.CachedScore = 2
+        f.refresh()
+        f.refresh()
+        self.assertEqual(bar.UI_Game_Scorebar_ScoreCount_1.ScoreText.value, '2')
+        self.assertEqual(bar.calls, 1)
 
     def test_late_bar_refreshes_and_foreign_or_hidden_bars_are_excluded(self):
         f = self.fixture()

@@ -13,7 +13,7 @@ class PostMatchEscapeTests(unittest.TestCase):
         lua = LuaRuntime()
         lua.compile(re.sub(r'@@[A-Z_]+@@', '"fixture"', SOURCE))
         start = SOURCE.index('local postMatchEscapeBound=false')
-        end = SOURCE.index('local function client_tick(sys)', start)
+        end = SOURCE.index('local flagReleaseFactory=', start)
         setup = '''
 local resultPhase='GamePhase.GameplayEndedPhase'
 local phase,route,remote,visible=resultPhase,'Result',true,true

@@ -304,6 +304,26 @@ local function same_object(a,b)
     return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
 end
 
+local function prune_generator_icons(panel,world)
+    if not valid(panel) then return end
+    local count=panel:GetChildrenCount()
+    if count<2 or count>32 then return end
+    local seen,duplicates={},{}
+    for index=0,count-1 do
+        local icon=panel:GetChildAt(index)
+        if valid(icon) and icon:GetClass():GetFullName()==
+                'WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_GeneratorIcon.WBP_Game_GeneratorIcon_C' then
+            local generator=icon.CachedActor
+            if valid(generator) and same_object(generator:GetWorld(),world) then
+                local key=generator:GetAddress()
+                if seen[key] then duplicates[#duplicates+1]=index end
+                seen[key]=true
+            end
+        end
+    end
+    for index=#duplicates,1,-1 do panel:RemoveChildAt(duplicates[index]) end
+end
+
 local function refresh_ctf_score_bar(pc,ps,gs)
     local team=ps.r_TeamId
     if team~=1 and team~=2 then return end
@@ -329,29 +349,37 @@ local function refresh_ctf_score_bar(pc,ps,gs)
 
     local rows=gs.r_CurrentTeamScores
     local count=rows:GetArrayNum()
-    if count==0 or count>4 then return end
-    local scores,malformed={},false
-    rows:ForEach(function(_,param)
-        local row=param:get()
-        local id,score=row.TeamNum,row.Score
-        if id~=1 and id~=2 then return end
-        if scores[id]~=nil or type(score)~='number' or score<0 or score%1~=0 then malformed=true;return end
-        scores[id]=score
-    end)
-    if malformed then return end
+    local scores,malformed={},count>4
+    if not malformed then
+        rows:ForEach(function(_,param)
+            local row=param:get()
+            local id,score=row.TeamNum,row.Score
+            if id~=1 and id~=2 then return end
+            if scores[id]~=nil or type(score)~='number' or score<0 or score%1~=0 then malformed=true;return end
+            scores[id]=score
+        end)
+    end
+    if malformed then scores={} end
     local friendly,enemy=scores[team],scores[3-team]
     for _,widget in ipairs(scoreBars) do
         if valid(widget) and widget:IsVisible() then
-            local left,right=widget.UI_Game_Scorebar_ScoreCount,widget.UI_Game_Scorebar_ScoreCount_1
-            if valid(left) and valid(right) and
-                ((friendly~=nil and left.CachedScore~=friendly) or (enemy~=nil and right.CachedScore~=enemy)) then
-                -- This is the original handler for OnCurrentTeamScoresUpdated.
-                -- It reads replicated totals and owns both the counters and fills.
-                widget:UpdateTeamScores()
-                if not scoreBarReported then
-                    scoreBarReported=true
-                    report('CTF_SCORE_BAR_REFRESHED|team='..team..'|friendly='..tostring(left.CachedScore)..'|enemy='..tostring(right.CachedScore))
+            prune_generator_icons(widget.FriendlyGenerators,world)
+            prune_generator_icons(widget.EnemyGenerators,world)
+            local updated=false
+            local function sync_counter(score,fill,counter)
+                if score==nil or not valid(fill) or not valid(counter) or not valid(counter.ScoreText) then return end
+                if counter.CachedScore~=score or tonumber(counter.ScoreText:GetText():ToString())~=score then
+                    -- Use the original fill and counter update with the absolute
+                    -- replicated score for this side, independent of the delta.
+                    widget:UpdateScore(score,fill,counter)
+                    updated=true
                 end
+            end
+            sync_counter(friendly,widget.FriendlyScoreFill,widget.UI_Game_Scorebar_ScoreCount)
+            sync_counter(enemy,widget.EnemyScoreFill,widget.UI_Game_Scorebar_ScoreCount_1)
+            if updated and not scoreBarReported then
+                scoreBarReported=true
+                report('CTF_SCORE_BAR_REFRESHED|team='..team..'|friendly='..tostring(friendly)..'|enemy='..tostring(enemy))
             end
         end
     end
@@ -994,7 +1022,54 @@ local function apply_saved_sound_settings(pc)
         report('SAVED_SOUND_SETTINGS_APPLIED')
     end)
     if not ok then report('SAVED_SOUND_SETTINGS_UNAVAILABLE|'..tostring(why):sub(1,300)) end
+    return ok
 end
+
+local update_match_music=(function()
+    local busPath='/Game/Audio/Submixes/MUS_Game_Submix.MUS_Game_Submix'
+    local world, appliedWorld, appliedPhase, bus, muted, failed
+
+    local function saved_music_is_muted()
+        local config=io.open(@@MUSIC_SETTINGS@@,'rb')
+        if not config then return end
+        local raw=config:read(1048577)
+        config:close()
+        if not raw or #raw>1048576 then return end
+        if raw:sub(1,2)=='\255\254' or raw:sub(1,2)=='\254\255' then raw=raw:gsub('%z','') end
+        local row=raw:match('[\r\n]SavedSettingsConfig=([^\r\n]*)') or ''
+        local value=tonumber(row:match('"MusicSoundVolume"%s*,%s*"([^"]+)"'))
+        return value==0
+    end
+
+    return function(pc,gs,settingsApplied)
+        local current=pc:GetWorld()
+        if not valid(current) then return end
+        if not same_object(current,world) then world=current;failed=nil end
+        if failed then return end
+        local ok,why=pcall(function()
+            local wantMute=saved_music_is_muted()
+            if wantMute==nil or (not wantMute and not muted) then return end
+            local phase=gs.r_GameplayPhaseInfo.Phase.TagName:ToString()
+            if wantMute and muted and not settingsApplied and same_object(current,appliedWorld)
+                and phase==appliedPhase then return end
+            if not valid(bus) then
+                signature('/Script/Engine.SoundSubmix:SetSubmixOutputVolume',
+                          {{'WorldContextObject','ObjectProperty',0},{'InOutputVolume','FloatProperty',8}})
+                bus=LoadAsset(busPath)
+                assert(valid(bus) and bus:GetFullName()=='SoundSubmix '..busPath,'match_music_submix_required')
+            end
+            -- The original match soundtrack submix has unity output. The
+            -- native sound settings still own nonzero Music slider levels.
+            bus:SetSubmixOutputVolume(pc,wantMute and 0.0 or 1.0)
+            muted=wantMute
+            appliedWorld=current
+            appliedPhase=phase
+            report('MATCH_MUSIC_MUTE|'..tostring(muted))
+        end)
+        if not ok then failed=true;report('MATCH_MUSIC_MUTE_UNAVAILABLE|'..tostring(why):sub(1,300)) end
+    end
+end)()
+
 local shieldWallPreviewChecked=false
 local function configure_shield_wall_preview()
  if shieldWallPreviewChecked then return end
@@ -1040,6 +1115,9 @@ local function client_tick(sys)
         spectatorRuntime.tick(pc,ps,gs);return
     end
     assert(SPECTATOR_ROLE=="player","unknown_client_role")
+    local pawnReady=valid(pc.Pawn) and pc.Pawn.bInitialized==true
+    local settingsApplied=pawnReady and apply_saved_sound_settings(pc)
+    update_match_music(pc,gs,settingsApplied)
     configure_shield_wall_preview()
     if not scoreBarFailed then
         local ok,why=pcall(refresh_ctf_score_bar,pc,ps,gs)
@@ -1054,8 +1132,7 @@ local function client_tick(sys)
     if observe_post_match_result then observe_post_match_result() end
     local plc=pc.PlayerLoadoutComponent;if not valid(plc) then return end
     local r=player_record(pc,ps)
-    if valid(pc.Pawn) and pc.Pawn.bInitialized==true then
-        apply_saved_sound_settings(pc)
+    if pawnReady then
         observe_markers(pc,ps,gs)
         releaseRadarRuntime.tick(pc,gs)
         if not r.ready then r.ready=true;report("REMOTE_PAWN_READY|role=client") end
