@@ -15,6 +15,23 @@ from dynamic_destination import destination,isolated_source
 from community_maps import BY_ID, read_options
 from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION
 
+MAX_LOBBY_BOTS = 12
+DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True}
+
+
+def validated_lobby_rules(value, *, partial=False):
+    keys = DEFAULT_LOBBY_RULES.keys()
+    if (not isinstance(value, dict) or not value or not value.keys() <= keys
+            or not partial and value.keys() != keys):
+        raise ValueError('Invalid match rules.')
+    for name, selected in value.items():
+        if name == 'botCount':
+            if type(selected) is not int or not 0 <= selected <= MAX_LOBBY_BOTS:
+                raise ValueError(f'Choose zero to {MAX_LOBBY_BOTS} bots.')
+        elif type(selected) is not bool:
+            raise ValueError('Use a checkbox to change this match rule.')
+    return dict(value)
+
 
 class CommunityError(RuntimeError):
     def __init__(self, message, code=None):
@@ -183,7 +200,7 @@ class CommunityClient:
 
     def action(self, operation, **data):
         with self.lock:
-            if self.code is None or operation not in ('state', 'team', 'map', 'start', 'stop', 'reset', 'leave','spectators'):
+            if self.code is None or operation not in ('state', 'team', 'map', 'start', 'stop', 'reset', 'leave','spectators','rules'):
                 raise CommunityError('No valid lobby action is available.')
             if 'code' in data:
                 raise CommunityError('Invalid lobby action.')
@@ -234,6 +251,10 @@ class CommunityClient:
         try:endpoint=destination(address+':'+str(port),self.policy,test_source=self.test_source)
         except ValueError as exc:raise CommunityError('The match endpoint is not approved by this client.')from exc
         target={'endpoint':endpoint,'map':name,'contentHash':fingerprint,'matchId':match_id}
+        if 'flagIndicators' in match:
+            if type(match['flagIndicators']) is not bool:
+                raise CommunityError('Invalid flag indicator policy.')
+            target['flagIndicators'] = match['flagIndicators']
         if spectator:target['role']='spectator'
         return target
 

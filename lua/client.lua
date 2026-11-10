@@ -358,13 +358,145 @@ local function refresh_ctf_score_bar(pc,ps,gs)
 end
 -- END_DIRECT_PLAYTEST_PRESENTATION
 
+-- Use the original overlay widgets when the lobby opts in.
+local function enabled_flag_markers(env)
+ local valid,report=env.valid,env.report
+ local project=assert(loadfile(env.projection))()({valid=valid})
+ env.signature('/Script/Topaz.TopPickup_Flag:GetFlagState',{{'Querier','ObjectProperty',0},{'ReturnValue','EnumProperty',8}})
+ env.signature('/Script/ValhallaUI.ValRHUIGameOverlay:UpdatePosition',{{'WorldContextObject','ObjectProperty',0},{'ObjectiveActor','ObjectProperty',8}})
+ env.signature('/Script/ValhallaUI.ValRHUIGameOverlay:UpdatePosition_Vector',{{'WorldContextObject','ObjectProperty',0},{'ObjectiveLocation','StructProperty',8}})
+ local state=nil
+ local stopped=false
+ local widgetPath='/Game/UI/Components/Game/Overlays/UI_Game_Overlay_FlagObjective.UI_Game_Overlay_FlagObjective_C'
+ local library=StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary')
+ local function same(a,b) return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() end
+ local function clear()
+  if state then for _,entry in pairs(state.entries) do if entry.owned and valid(entry.widget) then entry.widget:RemoveFromParent() end end end
+  state=nil
+ end
+ local function current(s)
+  return valid(s.pc) and valid(s.ps) and valid(s.gs) and same(s.pc.PlayerState,s.ps) and same(s.pc:GetWorld(),s.gs:GetWorld()) and s.gs:GetFullName()==s.gameState and not s.pc:HasAuthority() and s.pc:IsLocalPlayerController()
+ end
+ local function pulse()
+  local s=state
+  if not s then return end
+  if not current(s) then clear();return end
+  local pawn=s.pc.Pawn
+  if not valid(pawn) or not pawn.bInitialized or pawn:GetHealth()<=0 then return end
+  local carrying=false
+  for _,e in pairs(s.entries) do if valid(e.flag) and e.flag.r_TeamId~=s.ps.r_TeamId and same(e.flag:GetHeldBy().Holder,pawn) then carrying=true end end
+  for _,e in pairs(s.entries) do
+   local flag,w=e.flag,e.widget
+   if valid(flag) and valid(w) and same(flag:GetWorld(),s.pc:GetWorld()) then
+    local friendly=flag.r_TeamId==s.ps.r_TeamId
+    local flagState=flag:GetFlagState(pawn)
+    local ownCarried=not friendly and same(flag:GetHeldBy().Holder,pawn)
+    local homeTarget=friendly and carrying and flagState==1
+    local text=friendly and (flagState==4 and 'RETURN' or flagState==3 and 'CHASE' or homeTarget and 'GO HERE' or 'DEFEND') or (flagState==2 and 'ESCORT' or 'GRAB')
+    w.BackgroundSwitcher:SetActiveWidget(friendly and (homeTarget and w.BlueGoTo or w.BlueDefend) or w.RedGoTo)
+    w.ActionLabelGroup:SetVisibility(4)
+    w.ActionText:SetText(FText(text))
+    local a,b=pawn:K2_GetActorLocation(),flag:K2_GetActorLocation()
+    w.DistanceText:SetText(FText(string.format('%dm',math.floor(math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)/100+0.5))))
+    w:ShowOverlay(not ownCarried)
+    w:SetVisibility(ownCarried and 1 or 4)
+    local status=tostring(flag.r_TeamId)..'|'..text..'|'..tostring(ownCarried)
+    if status~=e.status then e.status=status;report('FLAG_MARKER_STATE|'..status) end
+   end
+  end
+ end
+ local function after_position(ctx,target,isVector)
+  if stopped or not state then return end
+  local widget=ctx:get()
+  if not valid(widget) then return end
+  local entry=state.byWidget[widget:GetAddress()]
+  if not entry or widget:GetFullName()~=entry.widgetName then return end
+  local ok,why=pcall(function()
+   env.scope()
+   if not current(state) or not valid(entry.flag) or not same(entry.flag:GetWorld(),state.pc:GetWorld()) or not same(widget.CachedActor,entry.flag) then return end
+   if isVector then
+    project(entry,state.pc,entry.flag,target:get())
+   elseif same(target:get(),entry.flag) then
+    project(entry,state.pc,entry.flag)
+   end
+  end)
+  if not ok then stopped=true;report('OPTIONAL_FLAG_MARKER_ERROR|'..tostring(why):sub(1,500)) end
+ end
+ -- Native flag-widget Tick calls the vector overload every frame. Correct its
+ -- final position there; the slow label/state pulse must never move the widget.
+ local markerHooks={}
+ for _,item in ipairs({{'/Script/ValhallaUI.ValRHUIGameOverlay:UpdatePosition',false},
+                      {'/Script/ValhallaUI.ValRHUIGameOverlay:UpdatePosition_Vector',true}}) do
+  local isVector=item[2]
+  local pre,post=RegisterHook(item[1],function() end,function(ctx,world,target) after_position(ctx,target,isVector) end)
+  markerHooks[#markerHooks+1]={pre=pre,post=post}
+ end
+ local schedule
+ schedule=function()
+  ExecuteInGameThreadWithDelay(50,function()
+   if stopped then return end
+   local ok,why=pcall(function() env.scope();pulse();schedule() end)
+   if not ok then stopped=true;report('OPTIONAL_FLAG_MARKER_ERROR|'..tostring(why):sub(1,500)) end
+  end)
+ end
+ schedule();report('FLAG_MARKERS_READY')
+ return function(pc,ps,gs)
+  if not valid(pc) or not valid(ps) or not valid(gs) or pc:HasAuthority() or not pc:IsLocalPlayerController() or (ps.r_TeamId~=1 and ps.r_TeamId~=2) then return end
+  if not same(pc:GetWorld(),gs:GetWorld()) then return end
+  if state and (state.gameState~=gs:GetFullName() or not same(state.pc,pc) or not same(state.ps,ps)) then clear() end
+  if not state then state={pc=pc,ps=ps,gs=gs,gameState=gs:GetFullName(),entries={},byWidget={}} end
+  local parent
+  for _,o in ipairs(FindAllOf('UI_Game_Overlays_C') or {}) do if valid(o) and o:GetFullName():find('/Engine/Transient.',1,true) and same(o:GetWorld(),pc:GetWorld()) and valid(o.Flags) then assert(not parent,'multiple_runtime_flag_hud_containers');parent=o.Flags end end
+  if not parent then return end
+  for key,e in pairs(state.entries) do
+   if not valid(e.flag) or not valid(e.widget) or not same(e.flag:GetWorld(),pc:GetWorld()) then
+    state.byWidget[e.widgetAddress]=nil
+    if e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
+    state.entries[key]=nil
+   end
+  end
+  local cls=StaticFindObject(widgetPath);if not valid(cls) then cls=LoadAsset(widgetPath) end
+  assert(valid(cls) and valid(library),'original_flag_ui_required')
+  for _,flag in ipairs(FindAllOf('TopPickup_Flag') or {}) do
+   if valid(flag) and same(flag:GetWorld(),pc:GetWorld()) and (flag.r_TeamId==1 or flag.r_TeamId==2) then
+    local key=flag:GetFullName()..'|'..tostring(flag:GetAddress())
+    local e=state.entries[key]
+    if not e or not valid(e.widget) or not same(e.widget:GetParent(),parent) then
+     if e then state.byWidget[e.widgetAddress]=nil end
+     if e and e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
+     local widget
+     for i=0,parent:GetChildrenCount()-1 do local child=parent:GetChildAt(i);if valid(child) and child:IsA(cls) and same(child.CachedActor,flag) then assert(not widget,'duplicate_native_flag_marker');widget=child end end
+     local owned=not valid(widget)
+     if owned then widget=library:Create(pc,cls,pc);assert(valid(widget),'original_flag_marker_creation_failed');parent:AddChildToCanvas(widget);widget:UpdateFlagActor(flag) end
+     local entry={flag=flag,widget=widget,owned=owned,widgetAddress=widget:GetAddress(),widgetName=widget:GetFullName()}
+     state.entries[key]=entry;state.byWidget[entry.widgetAddress]=entry
+     report('FLAG_MARKER_BOUND|team='..flag.r_TeamId..'|created='..tostring(owned))
+    end
+   end
+  end
+ end
+end
+
 local scoreBarFailed,shockLanceVisualFailed
+local markerFailed
+local function update_flag_markers(pc,ps,gs)
+ if not markerService then
+  local factory=@@SHOW_FLAG_INDICATORS@@ and enabled_flag_markers or assert(loadfile(@@FLAG_MARKERS@@))()
+  markerService=factory({valid=valid,report=report,signature=signature,scope=scope,projection=@@FLAG_PROJECTION@@})
+ end
+ markerService(pc,ps,gs)
+end
+
 local function observe_markers(pc,ps,gs)
  weaponInput(pc,ps)
  if not inputService then inputService=assert(loadfile(@@JETPACK_INPUT@@))()({valid=valid,report=report,signature=signature,scope=scope}) end
  inputService(pc,ps)
- if not markerService then markerService=assert(loadfile(@@FLAG_MARKERS@@))()({valid=valid,report=report,signature=signature,scope=scope,projection=@@FLAG_PROJECTION@@}) end
- markerService(pc,ps,gs)
+ if not @@SHOW_FLAG_INDICATORS@@ then
+  update_flag_markers(pc,ps,gs)
+ elseif not markerFailed then
+  local ok,why=pcall(update_flag_markers,pc,ps,gs)
+  if not ok then markerFailed=true;report('OPTIONAL_FLAG_MARKER_ERROR|'..tostring(why):sub(1,500)) end
+ end
 end
 
 local clientWorld=nil
@@ -650,6 +782,7 @@ local releaseRadarRuntime=releaseRadarRuntimeFactory({valid=valid,report=report,
  primary_assembly_factory=releasePrimaryAssemblyFactory,world_settings_guard_factory=releaseNativeWorldSettingsFactory,blueprint_contracts=releaseRadarBlueprintContracts})
 
 local postMatchEscapeBound=false
+local observe_post_match_result
 local function bind_post_match_escape()
  if postMatchEscapeBound then return end
  local path='/Game/UI/RallyHereUpdates/UI_Scene_Result_Frontier_RH_v2.UI_Scene_Result_Frontier_RH_v2_C'
@@ -694,6 +827,16 @@ local function bind_post_match_escape()
   if failed then return end
   failed=true
   report('POST_MATCH_ESCAPE_ERROR|'..tostring(reason))
+ end
+ local returning=false
+ observe_post_match_result=function()
+  if returning or not active_result() then return end
+  returning=true
+  report('POST_MATCH_SCOREBOARD_VISIBLE')
+  ExecuteInGameThreadWithDelay(8000,function()
+   scope()
+   report('POST_MATCH_RETURN_READY')
+  end)
  end
  local function on_escape()
   if closing or pending or failed or stopped then return end
@@ -908,6 +1051,7 @@ local function client_tick(sys)
     end
     ensure_flag_release_handoff(gs)
     bind_post_match_escape()
+    if observe_post_match_result then observe_post_match_result() end
     local plc=pc.PlayerLoadoutComponent;if not valid(plc) then return end
     local r=player_record(pc,ps)
     if valid(pc.Pawn) and pc.Pawn.bInitialized==true then

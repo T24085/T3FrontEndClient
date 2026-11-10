@@ -11,8 +11,8 @@ from tkinter import ttk
 
 from community_game import CommunityGame
 from startup_paths import installation_options
-from community_transport import CommunityClient, CommunityError, CommunityConnectionError
-from community_maps import options, read_options, LEGACY_MAPS
+from community_transport import CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES, MAX_LOBBY_BOTS
+from community_maps import BY_ID, options, read_options, LEGACY_MAPS
 from map_sync_contract import CATALOG_VERSION
 
 ROOT = Path(__file__).resolve().parent
@@ -86,6 +86,10 @@ class Desktop:
         self.phase = tk.StringVar(value='Create a lobby or enter a code.')
         self.preparation = tk.StringVar(value='')
         self.allow_spectators = tk.BooleanVar(value=True)
+        self.flag_indicators = tk.BooleanVar(value=False)
+        self.allow_bots = tk.BooleanVar(value=False)
+        self.bot_count = tk.StringVar(value='2')
+        self.retail_capture_point = tk.BooleanVar(value=True)
         self.live_status = tk.StringVar(value='Checking spectator support…')
         side = tk.Frame(root, bg='#0d1927', width=225)
         side.pack(side='left', fill='y')
@@ -144,6 +148,21 @@ class Desktop:
             activeforeground=TEXT,font=('Segoe UI',9))
         roster_frame = tk.Frame(card,bg=PANEL)
         roster_frame.pack(fill='both',expand=True,pady=(14,4))
+        self.rules_row = tk.Frame(card,bg=PANEL)
+        check_style = dict(bg=PANEL,fg=TEXT,selectcolor='#20374a',activebackground=PANEL,
+                           activeforeground=TEXT,font=('Segoe UI',9))
+        self.flag_toggle = tk.Checkbutton(self.rules_row,text='Flag indicators',variable=self.flag_indicators,
+            command=lambda:self.call_action('rules',flagIndicators=self.flag_indicators.get()),**check_style)
+        self.flag_toggle.pack(side='left')
+        self.bot_toggle = tk.Checkbutton(self.rules_row,text='Allow bots',variable=self.allow_bots,
+            command=self.change_bots,**check_style)
+        self.bot_toggle.pack(side='left',padx=(10,0))
+        self.bot_spinner = ttk.Spinbox(self.rules_row,from_=1,to=MAX_LOBBY_BOTS,textvariable=self.bot_count,
+                                       width=3,state='disabled',command=self.change_bots)
+        self.bot_spinner.pack(side='left',padx=(2,10))
+        self.capture_toggle = tk.Checkbutton(self.rules_row,text='Retail capture point',variable=self.retail_capture_point,
+            command=lambda:self.call_action('rules',retailCapturePoint=self.retail_capture_point.get()),**check_style)
+        self.capture_toggle.pack(side='left')
         self.roster = tk.Listbox(roster_frame,bg='#0b1a29',fg=TEXT,selectbackground='#31566c',font=('Segoe UI',11),relief='flat',height=8,exportselection=False)
         roster_scroll = ttk.Scrollbar(roster_frame,orient='vertical',command=self.roster.yview)
         self.roster.configure(yscrollcommand=roster_scroll.set)
@@ -295,6 +314,7 @@ class Desktop:
         if self.game:
             try:
                 state = self.game.snapshot()
+                previous_status=self.game_status
                 self.game_status=state['status']
                 if state['status'] in ('starting','playing','stopping'):
                     self.status.set(state.get('progress') or {'starting':'Opening game…','playing':'Game connected.','stopping':'Closing game…'}[state['status']])
@@ -302,6 +322,8 @@ class Desktop:
                         self.live_status.set(state.get('progress') or {'starting':'Opening spectator view…','playing':'Watching match.','stopping':'Closing spectator view…'}[state['status']])
                 elif state['error']:
                     self.status.set(state['error'])
+                elif previous_status != self.game_status and state.get('progress'):
+                    self.status.set(state['progress'])
                 preparation=state.get('preparation')
                 if isinstance(preparation,dict):
                     self.preparation.set(preparation.get('error') or preparation.get('progress') or '')
@@ -410,6 +432,7 @@ class Desktop:
             if self.pending_map and self.pending_map[1] not in labels:
                 self.pending_map = None
             self.map_name.set(labels[self.pending_map[1] if self.pending_map else room['map']])
+        self.render_match_rules(room, setup and leader and not self.controls_busy and self.pending_map is None)
         selected = self.roster.curselection()
         selected_id = self.players[selected[0]]['id'] if selected and selected[0] < len(self.players) else None
         scroll_position = self.roster.yview()[0]
@@ -514,6 +537,28 @@ class Desktop:
     def toggle_spectators(self):
         if self.room is not None and self.caps.get('spectateEnabled')is True:
             self.call_action('spectators',allow=self.allow_spectators.get())
+
+    def render_match_rules(self, room, editable):
+        if self.caps.get('matchRulesEnabled') is not True:
+            self.rules_row.pack_forget()
+            return
+        if not self.rules_row.winfo_manager():
+            self.rules_row.pack(fill='x',before=self.roster.master,pady=(6,0))
+        rules = room.get('rules', DEFAULT_LOBBY_RULES) if room else DEFAULT_LOBBY_RULES
+        self.flag_indicators.set(rules['flagIndicators'])
+        count = rules['botCount']
+        self.allow_bots.set(count > 0)
+        if count:
+            self.bot_count.set(str(count))
+        self.retail_capture_point.set(rules['retailCapturePoint'])
+        definition = BY_ID.get(room['map']) if room else None
+        for control in (self.flag_toggle, self.bot_toggle):
+            control.configure(state='normal' if editable else 'disabled')
+        self.bot_spinner.configure(state='readonly' if editable and count else 'disabled')
+        self.capture_toggle.configure(state='normal' if editable and definition and definition.native else 'disabled')
+
+    def change_bots(self):
+        self.call_action('rules',botCount=int(self.bot_count.get()) if self.allow_bots.get() else 0)
 
     def show_panel(self,name):
         if self.closing:return

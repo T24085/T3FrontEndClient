@@ -33,6 +33,7 @@ def main():
     parser.add_argument('--expected-map')
     parser.add_argument('--expected-content-hash')
     parser.add_argument('--spectate', action='store_true')
+    parser.add_argument('--show-flag-indicators', action='store_true')
     parser.add_argument('--match-id')
     parser.add_argument('--watch-id')
     parser.add_argument('--test-source', choices=ISOLATED_TEST_SOURCES, help=argparse.SUPPRESS)
@@ -169,6 +170,7 @@ def main():
             if not water_runtime.is_file():
                 raise ValueError('The Damnation water runtime is incomplete. Update the community client.')
             template = template.replace('@@DAMNATION_WATER@@', json.dumps(water_runtime.as_posix(), ensure_ascii=False))
+        template = template.replace('@@SHOW_FLAG_INDICATORS@@', 'true' if args.show_flag_indicators else 'false')
         for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=map_definitions.as_posix(), SNOWBLIND_WEATHER=(ROOT/'lua/snowblind_weather.lua').as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
             template = template.replace('@@' + key + '@@', json.dumps(value, ensure_ascii=False))
         if '@@' in template:

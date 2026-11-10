@@ -37,6 +37,7 @@ class CommunityGame:
         self.current_artifacts = None
         self.thread = None
         self.stop_requested = False
+        self.scoreboard_return = False
         self.failure_reason = None
         self.cancellation_written = False
         self.startup_phase = None
@@ -185,6 +186,7 @@ class CommunityGame:
             self.status, self.error, self.run = 'starting', None, None
             self.current_artifacts, self.thread = None, None
             self.stop_requested = False
+            self.scoreboard_return = False
             self.failure_reason, self.cancellation_written = None, False
             self.startup_phase = 'checking_match'
             self.startup_failure = None
@@ -236,6 +238,8 @@ class CommunityGame:
                     '--endpoint', endpoint, '--game-dir', str(self.game_source), '--workspace', str(self.workspace)]
             if startup_contract in ('verified-child-map-v1','prepared-client-v1') or watch_id is not None:
                 argv += ['--expected-map', target['map'], '--expected-content-hash', target['contentHash']]
+            if target.get('flagIndicators') is True:
+                argv.append('--show-flag-indicators')
             if watch_id is not None:
                 argv += ['--spectate', '--match-id', target['matchId'], '--watch-id=' + watch_id]
             if prepared is not None:
@@ -293,6 +297,8 @@ class CommunityGame:
                     self.status, self.error = 'quarantined', 'Client process cleanup could not be confirmed.'
                 elif self.failure_reason is not None:
                     self.status, self.error = 'failed', self.failure_reason
+                elif self.scoreboard_return:
+                    self.status = 'finished'
                 elif self.stop_requested and result['status'] == 'cancelled_by_owner_request':
                     self.status = 'stopped'
                 else:
@@ -328,8 +334,12 @@ class CommunityGame:
                     if runtime_failure(lines):
                         self.failure_reason = self.error = 'The game client runtime reported an error.'
                         self.status = 'stopping'
+                    elif self.role == 'player' and 'POST_MATCH_RETURN_READY' in lines:
+                        self.scoreboard_return = self.stop_requested = True
+                        self.status = 'stopping'
                     elif (self.status == 'playing' and self.role == 'player'
                           and getattr(self.lobby, 'reconnect_requires_new_game', False)
+                          and 'POST_MATCH_SCOREBOARD_VISIBLE' not in lines
                           and next((line for line in reversed(lines) if line in
                                     ('REMOTE_PAWN_READY|role=client', 'RECONNECTING_TO_FIXED_SERVER')), None)
                           == 'RECONNECTING_TO_FIXED_SERVER'):
@@ -344,6 +354,8 @@ class CommunityGame:
                 self._request_cancel()
             preparation=self.preparation_snapshot()
             progress=PHASES.get(self.startup_phase) if self.status=='starting' else None
+            if self.status == 'finished' and self.scoreboard_return:
+                progress = 'Match ended. Back in the lobby.'
             if self.status=='starting' and self.startup_phase=='preparing_client' and preparation['status']=='preparing':
                 progress=preparation['progress']
             if self.status=='starting' and self.startup_phase=='checking_maps':

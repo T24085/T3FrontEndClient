@@ -41,6 +41,40 @@ class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
 
+    def test_match_rules_controls_respect_map_and_leader(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        app = Desktop(root, lobby, lambda _: FakeGame())
+        try:
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            self.assertFalse(app.busy)
+            self.assertFalse(app.rules_row.winfo_manager())
+            app.caps['matchRulesEnabled'] = True
+            lobby.room.update(map='Katabatic', availableMaps=options(('Katabatic', 'Rollercoaster2026')), rules={
+                'flagIndicators':True, 'botCount':4, 'retailCapturePoint':False,
+            })
+            app.render(lobby.room)
+            self.assertEqual(app.rules_row.winfo_manager(), 'pack')
+            self.assertTrue(app.flag_indicators.get())
+            self.assertEqual(app.bot_count.get(), '4')
+            self.assertEqual(str(app.bot_spinner.cget('state')), 'readonly')
+            self.assertEqual(app.capture_toggle.cget('state'), 'normal')
+            self.assertFalse(app.retail_capture_point.get())
+            lobby.room['map'] = 'Rollercoaster2026'
+            app.render(lobby.room)
+            self.assertEqual(app.capture_toggle.cget('state'), 'disabled')
+            lobby.room['playerId'] = 'two'
+            app.render(lobby.room)
+            self.assertEqual(app.flag_toggle.cget('state'), 'disabled')
+            self.assertEqual(app.bot_toggle.cget('state'), 'disabled')
+        finally:
+            app.close()
+            app.close_worker.join(2)
+
     def test_closing_starter_preserves_active_lobby_membership(self):
         root = tk.Tk()
         root.withdraw()

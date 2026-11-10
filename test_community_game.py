@@ -220,6 +220,48 @@ class CommunityGameTest(unittest.TestCase):
         self.assertEqual(state['status'],'failed')
         self.assertIn('runtime',state['error'])
 
+    def test_final_scoreboard_closes_only_owned_game_and_returns_to_lobby(self):
+        released = threading.Event()
+        launched = threading.Event()
+        argv = []
+        match_target = self.lobby.match_target
+        self.lobby.match_target = lambda: dict(match_target(), flagIndicators=True)
+        self.lobby.reconnect_requires_new_game = True
+
+        def owner(command, *args, **kwargs):
+            argv.extend(command)
+            launched.set()
+            if not released.wait(5):
+                raise RuntimeError('test timed out')
+            return {'status':'cancelled_by_owner_request', 'job_active_processes_after_cleanup':0}
+
+        self.game.owner.run_owned_job = owner
+        self.game.start()
+        try:
+            self.assertTrue(launched.wait(2))
+            self.assertIn('--show-flag-indicators', argv)
+            run = self.game.workspace/'client-test'
+            run.mkdir()
+            owner_dir = self.game.current_artifacts/'owner'
+            owner_dir.mkdir(exist_ok=True)
+            (owner_dir/'stdout.log').write_text('Session: '+str(run)+'\n')
+            events = run/'events.txt'
+            lines = 'REMOTE_PAWN_READY|role=client\nPOST_MATCH_SCOREBOARD_VISIBLE\n'
+            events.write_text(lines)
+            self.assertEqual(self.game.snapshot()['status'], 'playing')
+            events.write_text(lines+'RECONNECTING_TO_FIXED_SERVER\n')
+            self.assertEqual(self.game.snapshot()['status'], 'playing')
+            self.assertFalse((self.game.current_artifacts/'stop.json').exists())
+            events.write_text(lines+'POST_MATCH_RETURN_READY\n')
+            self.assertEqual(self.game.snapshot()['status'], 'stopping')
+            self.assertTrue((self.game.current_artifacts/'stop.json').is_file())
+        finally:
+            released.set()
+        state = self.game.wait(5)
+        self.assertEqual(state['status'], 'finished')
+        self.assertEqual(state['progress'], 'Match ended. Back in the lobby.')
+        self.assertIsNone(state['error'])
+
     def test_missing_playing_evidence_does_not_report_connected(self):
         gate=threading.Event()
         def owner(*args,**kwargs):
