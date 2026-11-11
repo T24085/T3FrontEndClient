@@ -191,7 +191,7 @@ class MapSync:
             if required and self.current[1].get(required[0]) == required[1]:
                 return self.current
             self._check_cancelled()
-            self.status = 'Checking for map updatesâ€¦'
+            self.status = 'Checking for map updates...'
             try:
                 return self._refresh(required)
             except (OSError, EOFError, ValueError, TypeError, KeyError, http.client.HTTPException, zlib.error) as exc:
@@ -232,7 +232,7 @@ class MapSync:
         if size and shutil.disk_usage(manifest_path.parent).free < DISK_RESERVE_BYTES + size:
             raise CommunityError('Free up space on the game workspace drive to download map updates.')
         for number, (row, path) in enumerate(pending, 1):
-            self.status = f'Downloading map updates ({number:,}/{len(pending):,} files)â€¦'
+            self.status = f'Downloading map updates ({number:,}/{len(pending):,} files)...'
             self._download(row, path)
         self._check_cancelled()
         temporary = manifest_path.with_name(manifest_path.name + '.' + uuid.uuid4().hex + '.tmp')

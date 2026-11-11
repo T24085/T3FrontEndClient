@@ -50,12 +50,23 @@ class MapSyncTest(unittest.TestCase):
     def test_join_fetches_changed_revision_and_next_start_reuses_it(self):
         fingerprint = self.remote['maps']['Stonehenge']
         self.sync.available = True
+
+        def inventory():
+            self.assertEqual(self.sync.status, 'Checking for map updates...')
+            return self.remote
+
         def fetch(entry, target):
+            self.assertEqual(self.sync.status, 'Downloading map updates (1/1 files)...')
             self.assertEqual(entry['path'], ASSET)
             self.sync._write_verified(BytesIO(gzip.compress(b'new')), target, entry['sha256'], entry['bytes'])
-        with patch.object(self.sync, '_download', side_effect=fetch) as download:
+
+        with (
+            patch.object(self.sync, '_inventory', side_effect=inventory),
+            patch.object(self.sync, '_download', side_effect=fetch) as download,
+        ):
             revision = self.sync.revision_for('Stonehenge', fingerprint)
             download.assert_called_once()
+        self.assertEqual(self.sync.status, 'Maps up to date.')
         entries, catalog, custom = load_overlay(self.root, revision, self.bundled)
         self.assertEqual(custom, {})
         self.assertEqual(catalog['Stonehenge'], fingerprint)
