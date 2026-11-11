@@ -101,7 +101,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
         start = SOURCE.index('local function enabled_flag_markers(env)')
         end = SOURCE.index('local scoreBarFailed', start)
         result = LuaRuntime().execute(r"""
-            local function valid(o) return type(o)=='table' end
+            local function valid(o) return type(o)=='table' and not o.destroyed end
             local world={GetAddress=function(self)return self end}
             local function actor(x)
                 local a={x=x}
@@ -135,6 +135,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             function parent:AddChildToCanvas(widget) table.insert(widgets,widget) end
             local overlay={Flags=parent,GetWorld=parent.GetWorld,GetFullName=function()return '/Engine/Transient.test' end}
             local bases={actor(500),actor(1500),actor(2500)}
+            bases[1].CachedFlag,bases[2].CachedFlag=flags[1],flags[2]
             for _,base in ipairs(bases) do
                 base.returned={}
                 function base:GetOwningPlayer() return pc end
@@ -178,6 +179,8 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             local function FText(value) return value end
             local nextPulse
             local function ExecuteInGameThreadWithDelay(_,fn) nextPulse=fn end
+            local positionHooks={}
+            local function RegisterHook(path,_,post) positionHooks[path]=post end
             local function flag_marker_projection() return function(entry,_,target)
                 entry.widget.projectedX=target.X
                 return true
@@ -185,11 +188,16 @@ class FlagMarkerProjectionTest(unittest.TestCase):
         """ + SOURCE[start:end] + r"""
             local noop=function()end
             local tick=enabled_flag_markers({valid=valid,signature=noop,report=noop,scope=noop})
+            flags[2].holderInfo.bReturned=true
             tick(pc,ps,gs)
             nextPulse()
             local home,enemy=widgets[1],widgets[2]
+            assert(not enemy.shown and enemy.cachedReturned)
+            flags[2].holderInfo={bReturned=false}
+            nextPulse()
             assert(parent.visibility==4 and enemy.shown and enemy.projectedX==1500)
-            flags[2].r_HeldBy=pawn
+            flags[2].r_HeldBy=flags[2].holderInfo
+            flags[2].holderInfo.Holder=pawn
             flags[2].owner=pawn
             nextPulse()
             assert(not enemy.shown and home.ActionText.text=='GO HERE')
@@ -198,6 +206,12 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             flags[2].mode=4
             nextPulse()
             assert(enemy.shown and enemy.projectedX==900 and home.ActionText.text=='DEFEND')
+            for _,name in ipairs({'UpdatePosition','UpdatePosition_Vector'}) do
+                local post=assert(positionHooks['/Script/ValhallaUI.ValRHUIGameOverlay:'..name])
+                enemy.projectedX=-1
+                post({get=function()return enemy end})
+                assert(enemy.projectedX==900)
+            end
             enemy.timerActive,enemy.timerShown=true,true
             flags[2].holderInfo={Holder=pawn,bReturned=true}
             -- Return can arrive before movement and the old owner are cleared.
@@ -235,6 +249,14 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             assert(not home.shown and home.visibility==1 and home.cachedReturned)
             assert(not home.timerActive and not home.timerShown and home.projectedX==700)
             assert(bases[1].returned[1] and bases[2].returned[1])
+            bases[2].destroyed=true
+            flags[2].holderInfo={Holder=pawn,bReturned=true}
+            flags[2].owner=pawn
+            flags[2].mode=1
+            enemy.timerActive,enemy.timerShown=true,true
+            nextPulse()
+            assert(enemy.shown and enemy.visibility==4 and enemy.cachedReturned)
+            assert(not enemy.timerActive and not enemy.timerShown and enemy.projectedX==1500)
             return true
         """)
         self.assertTrue(result)

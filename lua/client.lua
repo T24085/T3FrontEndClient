@@ -468,8 +468,7 @@ local function enabled_flag_markers(env)
  end
  local function flag_holder(flag,info)
   if info.bReturned then return nil end
-  local holder=flag.r_HeldBy
-  if not valid(holder) then holder=info.Holder end
+  local holder=info.Holder
   if not valid(holder) then return nil end
   -- The replicated holder can still name the thrower after detachment.
   local root=flag.RootComponent
@@ -497,6 +496,7 @@ local function enabled_flag_markers(env)
     local returned=holderInfo.bReturned==true
     local holder=flag_holder(flag,holderInfo)
     if e.returned~=returned then
+     if returned and e.returned==nil then e.home=flag:K2_GetActorLocation() end
      -- Retail caches HolderInfo, clears the return timer and hides the moving
      -- objective on return. Its Tick also stops following a returned flag.
      -- Both handlers accept LastHolderInfo and use only the current value.
@@ -505,6 +505,7 @@ local function enabled_flag_markers(env)
      for _,base in ipairs(FindAllOf('UI_Game_Overlay_FlagBase_C') or {}) do
       if valid(base) and same(base:GetWorld(),s.pc:GetWorld()) and same(base:GetOwningPlayer(),s.pc) then
        base:OnFlagHeldChanged(flag,holderInfo,holderInfo)
+       if same(base.CachedFlag,flag) then e.nativeBase=base end
       end
      end
      e.returned=returned
@@ -515,12 +516,24 @@ local function enabled_flag_markers(env)
     w.BackgroundSwitcher:SetActiveWidget(friendly and (homeTarget and w.BlueGoTo or w.BlueDefend) or w.RedGoTo)
     w.ActionLabelGroup:SetVisibility(4)
     w.ActionText:SetText(FText(text))
-    local target=valid(holder) and same(holder:GetWorld(),s.pc:GetWorld()) and holder or flag
-    local a,b=pawn:K2_GetActorLocation(),target:K2_GetActorLocation()
-    w.DistanceText:SetText(FText(string.format('%dm',math.floor(math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)/100+0.5))))
-    -- Community-created widgets may never receive native overlay Tick.
-    local visible=not returned and not ownCarried
-    local projected=visible and project(e,s.pc,b)==true
+    local position
+    if returned then
+     -- Community matches can omit the stand actor and its widget on clients.
+     -- Keep the flag's original home position across out-of-order updates.
+     -- A client that joined with the flag away uses its replicated return.
+     if not valid(e.nativeBase) then position=e.home or flag:K2_GetActorLocation() end
+    elseif not ownCarried then
+     local target=valid(holder) and same(holder:GetWorld(),s.pc:GetWorld()) and holder or flag
+     position=target:K2_GetActorLocation()
+    end
+    e.position=position
+    local visible=position~=nil
+    local projected=false
+    if visible then
+     local a,b=pawn:K2_GetActorLocation(),position
+     w.DistanceText:SetText(FText(string.format('%dm',math.floor(math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)/100+0.5))))
+     projected=project(e,s.pc,b)==true
+    end
     w:ShowOverlay(visible)
     w:SetVisibility(visible and 4 or 1)
     if projected and not e.projected then
@@ -531,6 +544,24 @@ local function enabled_flag_markers(env)
     if status~=e.status then e.status=status;report('FLAG_MARKER_STATE|'..status) end
    end
   end
+ end
+ -- The retail Tick calls these native functions between state pulses. Correct
+ -- their slot writes for tracked flags without changing the other HUD overlays.
+ local function after_native_position(context)
+  local s=state
+  if stopped or not s then return end
+  local widget=context:get()
+  if not valid(widget) then return end
+  local entry=s.byWidget[widget:GetAddress()]
+  if not entry or not entry.position or not same(entry.widget,widget) then return end
+  local ok,why=pcall(function()
+   env.scope()
+   if current(s) then project(entry,s.pc,entry.position) end
+  end)
+  if not ok then stopped=true;report('OPTIONAL_FLAG_MARKER_ERROR|'..tostring(why):sub(1,500)) end
+ end
+ for _,name in ipairs({'UpdatePosition','UpdatePosition_Vector'}) do
+  RegisterHook('/Script/ValhallaUI.ValRHUIGameOverlay:'..name,function() end,after_native_position)
  end
  local schedule
  schedule=function()
@@ -545,7 +576,7 @@ local function enabled_flag_markers(env)
   if not valid(pc) or not valid(ps) or not valid(gs) or pc:HasAuthority() or not pc:IsLocalPlayerController() or (ps.r_TeamId~=1 and ps.r_TeamId~=2) then return end
   if not same(pc:GetWorld(),gs:GetWorld()) then return end
   if state and (state.gameState~=gs:GetFullName() or not same(state.pc,pc) or not same(state.ps,ps)) then clear() end
-  if not state then state={pc=pc,ps=ps,gs=gs,gameState=gs:GetFullName(),entries={}} end
+  if not state then state={pc=pc,ps=ps,gs=gs,gameState=gs:GetFullName(),entries={},byWidget={}} end
   local parent
   for _,o in ipairs(FindAllOf('UI_Game_Overlays_C') or {}) do if valid(o) and o:GetFullName():find('/Engine/Transient.',1,true) and same(o:GetWorld(),pc:GetWorld()) and valid(o.Flags) then assert(not parent,'multiple_runtime_flag_hud_containers');parent=o.Flags end end
   if not parent then return end
@@ -554,6 +585,7 @@ local function enabled_flag_markers(env)
   for key,e in pairs(state.entries) do
    if not valid(e.flag) or not valid(e.widget) or not same(e.flag:GetWorld(),pc:GetWorld()) then
     if e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
+    state.byWidget[e.widgetAddress]=nil
     state.entries[key]=nil
    end
   end
@@ -564,12 +596,18 @@ local function enabled_flag_markers(env)
     local key=flag:GetFullName()..'|'..tostring(flag:GetAddress())
     local e=state.entries[key]
     if not e or not valid(e.widget) or not same(e.widget:GetParent(),parent) then
-     if e and e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
+     if e then
+      if e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
+      state.byWidget[e.widgetAddress]=nil
+     end
      local widget
      for i=0,parent:GetChildrenCount()-1 do local child=parent:GetChildAt(i);if valid(child) and child:IsA(cls) and same(child.CachedActor,flag) then assert(not widget,'duplicate_native_flag_marker');widget=child end end
      local owned=not valid(widget)
      if owned then widget=library:Create(pc,cls,pc);assert(valid(widget),'original_flag_marker_creation_failed');parent:AddChildToCanvas(widget);widget:UpdateFlagActor(flag) end
-     state.entries[key]={flag=flag,widget=widget,owned=owned}
+     local address=widget:GetAddress()
+     e={flag=flag,widget=widget,owned=owned,widgetAddress=address}
+     state.entries[key]=e
+     state.byWidget[address]=e
      report('FLAG_MARKER_BOUND|team='..flag.r_TeamId..'|created='..tostring(owned))
     end
    end
