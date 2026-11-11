@@ -476,10 +476,10 @@ local function enabled_flag_markers(env)
    system:GetComponentBounds(mesh,origin,extent,{})
    origin,extent=origin.Origin or origin,extent.BoxExtent or extent
    if type(extent.Z)=='number' and extent.Z>0 then
-    return {X=origin.X,Y=origin.Y,Z=origin.Z+extent.Z}
+    return {X=origin.X,Y=origin.Y,Z=origin.Z}
    end
   end
-  return {X=root.X,Y=root.Y,Z=root.Z+150}
+  return root
  end
  local function pulse()
   local s=state
@@ -501,15 +501,18 @@ local function enabled_flag_markers(env)
     local holderInfo=flag:GetHeldBy()
     local returned=holderInfo.bReturned==true
     local holder=flag_holder(flag,holderInfo)
+    local holderAddress=valid(holder) and holder:GetAddress() or nil
+    if e.returned~=returned or e.holderAddress~=holderAddress then
+     -- Refresh the retail Tick on detachment as well as return. Both native
+     -- callbacks accept LastHolderInfo and use only the current value.
+     w:OnFlagHeldChanged(flag,holderInfo,holderInfo)
+     e.holderAddress=holderAddress
+    end
     if e.returned~=returned then
      if returned and e.returned==nil then
       e.home=flag:K2_GetActorLocation()
       e.homeAnchor=flag_anchor(flag,e.home)
      end
-     -- Retail caches HolderInfo, clears the return timer and hides the moving
-     -- objective on return. Its Tick also stops following a returned flag.
-     -- Both handlers accept LastHolderInfo and use only the current value.
-     w:OnFlagHeldChanged(flag,holderInfo,holderInfo)
      -- The stationary base widgets consume the same native flag notification.
      for _,base in ipairs(FindAllOf('UI_Game_Overlay_FlagBase_C') or {}) do
       if valid(base) and same(base:GetWorld(),s.pc:GetWorld()) and same(base:GetOwningPlayer(),s.pc) then
@@ -575,6 +578,17 @@ local function enabled_flag_markers(env)
  for _,name in ipairs({'UpdatePosition','UpdatePosition_Vector'}) do
   RegisterHook('/Script/ValhallaUI.ValRHUIGameOverlay:'..name,function() end,after_native_position)
  end
+ local centeringContent=false
+ RegisterHook('/Script/UMG.Widget:SetRenderTranslation',function() end,function(context)
+  local s=state
+  if stopped or centeringContent or not s then return end
+  local content=context:get()
+  if not valid(content) or not same(s.byContent[content:GetAddress()],content) then return end
+  centeringContent=true
+  local ok,why=pcall(function() env.scope();content:SetRenderTranslation({X=0,Y=0}) end)
+  centeringContent=false
+  if not ok then stopped=true;report('OPTIONAL_FLAG_MARKER_ERROR|'..tostring(why):sub(1,500)) end
+ end)
  local schedule
  schedule=function()
   ExecuteInGameThreadWithDelay(50,function()
@@ -588,7 +602,7 @@ local function enabled_flag_markers(env)
   if not valid(pc) or not valid(ps) or not valid(gs) or pc:HasAuthority() or not pc:IsLocalPlayerController() or (ps.r_TeamId~=1 and ps.r_TeamId~=2) then return end
   if not same(pc:GetWorld(),gs:GetWorld()) then return end
   if state and (state.gameState~=gs:GetFullName() or not same(state.pc,pc) or not same(state.ps,ps)) then clear() end
-  if not state then state={pc=pc,ps=ps,gs=gs,gameState=gs:GetFullName(),entries={},byWidget={}} end
+  if not state then state={pc=pc,ps=ps,gs=gs,gameState=gs:GetFullName(),entries={},byWidget={},byContent={}} end
   local parent
   for _,o in ipairs(FindAllOf('UI_Game_Overlays_C') or {}) do if valid(o) and o:GetFullName():find('/Engine/Transient.',1,true) and same(o:GetWorld(),pc:GetWorld()) and valid(o.Flags) then assert(not parent,'multiple_runtime_flag_hud_containers');parent=o.Flags end end
   if not parent then return end
@@ -598,6 +612,7 @@ local function enabled_flag_markers(env)
    if not valid(e.flag) or not valid(e.widget) or not same(e.flag:GetWorld(),pc:GetWorld()) then
     if e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
     state.byWidget[e.widgetAddress]=nil
+    state.byContent[e.contentAddress]=nil
     state.entries[key]=nil
    end
   end
@@ -611,15 +626,27 @@ local function enabled_flag_markers(env)
      if e then
       if e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
       state.byWidget[e.widgetAddress]=nil
+      state.byContent[e.contentAddress]=nil
      end
      local widget
      for i=0,parent:GetChildrenCount()-1 do local child=parent:GetChildAt(i);if valid(child) and child:IsA(cls) and same(child.CachedActor,flag) then assert(not widget,'duplicate_native_flag_marker');widget=child end end
      local owned=not valid(widget)
      if owned then widget=library:Create(pc,cls,pc);assert(valid(widget),'original_flag_marker_creation_failed');parent:AddChildToCanvas(widget);widget:UpdateFlagActor(flag) end
+     -- Retail places the glyph above its anchor using bottom alignment and a
+     -- distance-dependent translation. Center the glyph on the mesh instead.
+     local content=widget.Content
+     local container=content:GetParent()
+     local center={X=0.5,Y=0.5}
+     container.Slot:SetAnchors({Minimum=center,Maximum=center})
+     container.Slot:SetAlignment(center)
+     content.Slot:SetAlignment(center)
+     content:SetRenderTranslation({X=0,Y=0})
      local address=widget:GetAddress()
-     e={flag=flag,widget=widget,owned=owned,widgetAddress=address}
+     local contentAddress=content:GetAddress()
+     e={flag=flag,widget=widget,owned=owned,widgetAddress=address,contentAddress=contentAddress}
      state.entries[key]=e
      state.byWidget[address]=e
+     state.byContent[contentAddress]=content
      report('FLAG_MARKER_BOUND|team='..flag.r_TeamId..'|created='..tostring(owned))
     end
    end
