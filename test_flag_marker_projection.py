@@ -135,8 +135,6 @@ class FlagMarkerProjectionTest(unittest.TestCase):
                 end
             end
             bases[3].GetOwningPlayer=function() return pawn end
-            local widgetTicks={}
-            local function RegisterHook(path,post) widgetTicks[path]=post end
             local library={}
             function library:Create()
                 local w=actor(0)
@@ -145,6 +143,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
                 function w:SetVisibility(value) self.visibility=value end
                 function w:ShowOverlay(value) self.shown=value end
                 function w:IsA() return true end
+                function w:StopAllAnimations() self.stoppedAnimations=true end
                 function w:OnFlagHeldChanged(flag,info,lastInfo)
                     assert(flag==self.CachedActor and info and lastInfo, 'native objective callback requires three arguments')
                     self.cachedReturned=info.bReturned
@@ -200,6 +199,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             nextPulse()
             local home,enemy=widgets[1],widgets[2]
             assert(not enemy.shown and enemy.cachedReturned)
+            assert(enemy.TickFrequency==0 and enemy.stoppedAnimations)
             assert(enemy.Content:GetParent().Slot.anchors.Minimum.X==0.5)
             assert(enemy.Content.Slot.alignment.Y==0.5)
             assert(enemy.Content.translation.X==0 and enemy.Content.translation.Y==0)
@@ -217,12 +217,9 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             flags[2].mode=4
             nextPulse()
             assert(enemy.shown and enemy.projectedX==900 and home.ActionText.text=='DEFEND')
-            local post=assert(widgetTicks['/Game/UI/Components/Game/Overlays/UI_Game_Overlay_FlagObjective.UI_Game_Overlay_FlagObjective_C:Tick'])
             enemy.projectedX=-1
-            enemy:SetRenderTranslation({X=450,Y=270})
-            enemy.Content:SetRenderTranslation({X=-8,Y=-40})
             flags[2].Mesh.centerZ=75
-            post({get=function()return enemy end})
+            nextPulse()
             assert(enemy.projectedX==900 and enemy.projectedZ==75)
             assert(enemy.translation.X==0 and enemy.translation.Y==0)
             assert(enemy.Content.translation.X==0 and enemy.Content.translation.Y==0)

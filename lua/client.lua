@@ -448,7 +448,6 @@ local function enabled_flag_markers(env)
  local system=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
  local state=nil
  local stopped=false
- local tickHook=false
  local widgetPath='/Game/UI/Components/Game/Overlays/UI_Game_Overlay_FlagObjective.UI_Game_Overlay_FlagObjective_C'
  local library=StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary')
  local function same(a,b) return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() end
@@ -539,7 +538,6 @@ local function enabled_flag_markers(env)
     elseif not ownCarried then
      position=flag:K2_GetActorLocation()
     end
-    e.position=position
     local visible=position~=nil
     local projected=false
     if visible then
@@ -547,6 +545,13 @@ local function enabled_flag_markers(env)
      w.DistanceText:SetText(FText(string.format('%dm',math.floor(math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)/100+0.5))))
      local anchor=returned and e.homeAnchor or flag_anchor(flag,b)
      projected=project(e,s.pc,anchor)==true
+     if w.TimerIsActive and w.ResetDuration>0 then
+      local material=w.TimerFill:GetDynamicMaterial()
+      if valid(material) then
+       local progress=(w['Reset Time']-s.gs:GetServerWorldTimeSeconds())/w.ResetDuration
+       material:SetScalarParameterValue(FName('Progress'),math.max(0,math.min(1,progress)))
+      end
+     end
     end
     w:ShowOverlay(visible)
     w:SetVisibility(visible and 4 or 1)
@@ -559,29 +564,9 @@ local function enabled_flag_markers(env)
    end
   end
  end
- -- Apply the marker position after the entire widget Tick. Its native
- -- positioning and render offsets must not be added to the canvas anchor.
- local function after_flag_widget_tick(context)
-  local s=state
-  if stopped or not s then return end
-  local widget=context:get()
-  if not valid(widget) then return end
-  local entry=s.byWidget[widget:GetAddress()]
-  if not entry or not entry.position or not same(entry.widget,widget) then return end
-  local ok,why=pcall(function()
-   env.scope()
-   if current(s) and valid(entry.flag) then
-    local anchor=entry.returned and entry.homeAnchor or flag_anchor(entry.flag,entry.flag:K2_GetActorLocation())
-    widget:SetRenderTranslation({X=0,Y=0})
-    widget.Content:SetRenderTranslation({X=0,Y=0})
-    project(entry,s.pc,anchor)
-   end
-  end)
-  if not ok then stopped=true;report('OPTIONAL_FLAG_MARKER_ERROR|'..tostring(why):sub(1,500)) end
- end
  local schedule
  schedule=function()
-  ExecuteInGameThreadWithDelay(50,function()
+  ExecuteInGameThreadWithDelay(16,function()
    if stopped then return end
    local ok,why=pcall(function() env.scope();pulse();schedule() end)
    if not ok then stopped=true;report('OPTIONAL_FLAG_MARKER_ERROR|'..tostring(why):sub(1,500)) end
@@ -592,7 +577,7 @@ local function enabled_flag_markers(env)
   if not valid(pc) or not valid(ps) or not valid(gs) or pc:HasAuthority() or not pc:IsLocalPlayerController() or (ps.r_TeamId~=1 and ps.r_TeamId~=2) then return end
   if not same(pc:GetWorld(),gs:GetWorld()) then return end
   if state and (state.gameState~=gs:GetFullName() or not same(state.pc,pc) or not same(state.ps,ps)) then clear() end
-  if not state then state={pc=pc,ps=ps,gs=gs,gameState=gs:GetFullName(),entries={},byWidget={}} end
+  if not state then state={pc=pc,ps=ps,gs=gs,gameState=gs:GetFullName(),entries={}} end
   local parent
   for _,o in ipairs(FindAllOf('UI_Game_Overlays_C') or {}) do if valid(o) and o:GetFullName():find('/Engine/Transient.',1,true) and same(o:GetWorld(),pc:GetWorld()) and valid(o.Flags) then assert(not parent,'multiple_runtime_flag_hud_containers');parent=o.Flags end end
   if not parent then return end
@@ -601,29 +586,26 @@ local function enabled_flag_markers(env)
   for key,e in pairs(state.entries) do
    if not valid(e.flag) or not valid(e.widget) or not same(e.flag:GetWorld(),pc:GetWorld()) then
     if e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
-    state.byWidget[e.widgetAddress]=nil
     state.entries[key]=nil
    end
   end
   local cls=StaticFindObject(widgetPath);if not valid(cls) then cls=LoadAsset(widgetPath) end
   assert(valid(cls) and valid(library),'original_flag_ui_required')
-  if not tickHook then
-   RegisterHook(widgetPath..':Tick',after_flag_widget_tick)
-   tickHook=true
-  end
   for _,flag in ipairs(FindAllOf('TopPickup_Flag') or {}) do
    if valid(flag) and same(flag:GetWorld(),pc:GetWorld()) and (flag.r_TeamId==1 or flag.r_TeamId==2) then
     local key=flag:GetFullName()..'|'..tostring(flag:GetAddress())
     local e=state.entries[key]
     if not e or not valid(e.widget) or not same(e.widget:GetParent(),parent) then
-     if e then
-      if e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
-      state.byWidget[e.widgetAddress]=nil
-     end
+     if e and e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
      local widget
      for i=0,parent:GetChildrenCount()-1 do local child=parent:GetChildAt(i);if valid(child) and child:IsA(cls) and same(child.CachedActor,flag) then assert(not widget,'duplicate_native_flag_marker');widget=child end end
      local owned=not valid(widget)
-     if owned then widget=library:Create(pc,cls,pc);assert(valid(widget),'original_flag_marker_creation_failed');parent:AddChildToCanvas(widget);widget:UpdateFlagActor(flag) end
+     if owned then widget=library:Create(pc,cls,pc);assert(valid(widget),'original_flag_marker_creation_failed') end
+     -- The stock widget's Tick writes a second pixel position while the flag
+     -- is away. The HUD pulse owns positioning and the reset meter instead.
+     widget.TickFrequency=0
+     widget:StopAllAnimations()
+     if owned then parent:AddChildToCanvas(widget);widget:UpdateFlagActor(flag) end
      -- Retail places the glyph above its anchor using bottom alignment and a
      -- distance-dependent translation. Center the glyph on the mesh instead.
      local content=widget.Content
@@ -633,10 +615,8 @@ local function enabled_flag_markers(env)
      container.Slot:SetAlignment(center)
      content.Slot:SetAlignment(center)
      content:SetRenderTranslation({X=0,Y=0})
-     local address=widget:GetAddress()
-     e={flag=flag,widget=widget,owned=owned,widgetAddress=address}
-     state.entries[key]=e
-     state.byWidget[address]=e
+     widget:SetRenderTranslation({X=0,Y=0})
+     state.entries[key]={flag=flag,widget=widget,owned=owned}
      report('FLAG_MARKER_BOUND|team='..flag.r_TeamId..'|created='..tostring(owned))
     end
    end
