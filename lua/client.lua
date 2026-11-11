@@ -388,14 +388,12 @@ end
 
 local function flag_marker_projection(valid)
  local layout=StaticFindObject('/Script/UMG.Default__WidgetLayoutLibrary')
- local slate=StaticFindObject('/Script/UMG.Default__SlateBlueprintLibrary')
- assert(valid(layout) and valid(slate),'flag_marker_projection_libraries_required')
+ assert(valid(layout),'flag_marker_projection_library_required')
 
  return function(entry,pc,target)
   local widget=entry.widget
   local slot,parent=widget.Slot,widget:GetParent()
   if not valid(slot) or not valid(parent) then return end
-  local geometry=parent:GetCachedGeometry()
 
   local viewport=layout:GetViewportSize(pc)
   local dpi=layout:GetViewportScale(pc)
@@ -425,20 +423,17 @@ local function flag_marker_projection(valid)
    local scale=math.min(edgeX/math.max(math.abs(x),0.0001),edgeY/math.max(math.abs(y),0.0001))
    x,y=x*scale,y*scale
   end
-  -- The native Flags canvas can have zero layout size while its transform is
-  -- still valid. Use that transform to account for desktop and viewport DPI.
-  local localPosition={}
-  slate:ScreenToWidgetLocal(pc,geometry,{X=cx+x,Y=cy+y},localPosition,false)
-  local position=localPosition.LocalCoordinate or localPosition
-  if type(position.X)~='number' or type(position.Y)~='number' or position.X~=position.X
-     or position.Y~=position.Y or math.abs(position.X)==math.huge or math.abs(position.Y)==math.huge then return end
+  local anchor={X=(cx+x)/viewport.X,Y=(cy+y)/viewport.Y}
+  if anchor.X~=anchor.X or anchor.Y~=anchor.Y or math.abs(anchor.X)==math.huge or math.abs(anchor.Y)==math.huge then return end
   if not same_object(entry.layoutSlot,slot) then
    slot:SetAutoSize(true)
    slot:SetAlignment({X=0.5,Y=0.5})
-   slot:SetAnchors({Minimum={X=0,Y=0},Maximum={X=0,Y=0}})
    entry.layoutSlot=slot
   end
-  slot:SetPosition({X=position.X,Y=position.Y})
+  -- The retail Flags canvas fills the HUD. A point anchor lets Slate apply
+  -- the actual canvas scale and leaves no pixel offset for DPI to distort.
+  slot:SetAnchors({Minimum=anchor,Maximum=anchor})
+  slot:SetPosition({X=0,Y=0})
   return true
  end
 end
