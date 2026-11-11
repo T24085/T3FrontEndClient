@@ -135,8 +135,8 @@ class FlagMarkerProjectionTest(unittest.TestCase):
                 end
             end
             bases[3].GetOwningPlayer=function() return pawn end
-            local positionHooks={}
-            local function RegisterHook(path,_,post) positionHooks[path]=post end
+            local widgetTicks={}
+            local function RegisterHook(path,post) widgetTicks[path]=post end
             local library={}
             function library:Create()
                 local w=actor(0)
@@ -164,10 +164,8 @@ class FlagMarkerProjectionTest(unittest.TestCase):
                     SetAnchors=function(self,v) self.anchors=v end}
                 content.Slot={SetAlignment=function(self,v) self.alignment=v end}
                 function content:GetParent() return container end
-                function content:SetRenderTranslation(v)
-                    self.translation=v
-                    positionHooks['/Script/UMG.Widget:SetRenderTranslation']({get=function() return self end})
-                end
+                function content:SetRenderTranslation(v) self.translation=v end
+                function w:SetRenderTranslation(v) self.translation=v end
                 w.Content=content
                 return w
             end
@@ -204,7 +202,6 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             assert(not enemy.shown and enemy.cachedReturned)
             assert(enemy.Content:GetParent().Slot.anchors.Minimum.X==0.5)
             assert(enemy.Content.Slot.alignment.Y==0.5)
-            enemy.Content:SetRenderTranslation({X=-8,Y=-40})
             assert(enemy.Content.translation.X==0 and enemy.Content.translation.Y==0)
             flags[2].holderInfo={bReturned=false}
             nextPulse()
@@ -220,13 +217,15 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             flags[2].mode=4
             nextPulse()
             assert(enemy.shown and enemy.projectedX==900 and home.ActionText.text=='DEFEND')
-            for _,name in ipairs({'UpdatePosition','UpdatePosition_Vector'}) do
-                local post=assert(positionHooks['/Script/ValhallaUI.ValRHUIGameOverlay:'..name])
-                enemy.projectedX=-1
-                flags[2].Mesh.centerZ=75
-                post({get=function()return enemy end})
-                assert(enemy.projectedX==900 and enemy.projectedZ==75)
-            end
+            local post=assert(widgetTicks['/Game/UI/Components/Game/Overlays/UI_Game_Overlay_FlagObjective.UI_Game_Overlay_FlagObjective_C:Tick'])
+            enemy.projectedX=-1
+            enemy:SetRenderTranslation({X=450,Y=270})
+            enemy.Content:SetRenderTranslation({X=-8,Y=-40})
+            flags[2].Mesh.centerZ=75
+            post({get=function()return enemy end})
+            assert(enemy.projectedX==900 and enemy.projectedZ==75)
+            assert(enemy.translation.X==0 and enemy.translation.Y==0)
+            assert(enemy.Content.translation.X==0 and enemy.Content.translation.Y==0)
             enemy.timerActive,enemy.timerShown=true,true
             flags[2].holderInfo={Holder=pawn,bReturned=true}
             -- Return can arrive before movement and the old owner are cleared.
