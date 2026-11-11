@@ -97,7 +97,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
         self.assertAlmostEqual(fixture.entry.widget.Slot.position.X, 800 / 1.5)
         self.assertAlmostEqual(fixture.entry.widget.Slot.position.Y, 500 / 1.5)
 
-    def test_hud_pulse_updates_pickup_and_toss_without_a_native_widget_tick(self):
+    def test_hud_pulse_updates_pickup_toss_and_return_without_a_native_widget_tick(self):
         start = SOURCE.index('local function enabled_flag_markers(env)')
         end = SOURCE.index('local scoreBarFailed', start)
         result = LuaRuntime().execute(r"""
@@ -121,7 +121,8 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             local flags={actor(500),actor(1500)}
             for i,flag in ipairs(flags) do
                 flag.r_TeamId,flag.mode=i,1
-                function flag:GetHeldBy() return {} end
+                flag.holderInfo={bReturned=false}
+                function flag:GetHeldBy() return self.holderInfo end
                 function flag:GetOwner() return self.owner end
                 function flag:GetFlagState() return self.mode end
             end
@@ -133,6 +134,16 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             function parent:GetChildAt(i) return widgets[i+1] end
             function parent:AddChildToCanvas(widget) table.insert(widgets,widget) end
             local overlay={Flags=parent,GetWorld=parent.GetWorld,GetFullName=function()return '/Engine/Transient.test' end}
+            local bases={actor(500),actor(1500),actor(2500)}
+            for _,base in ipairs(bases) do
+                base.returned={}
+                function base:GetOwningPlayer() return pc end
+                function base:OnFlagHeldChanged(flag,info)
+                    self.returned[flag.r_TeamId]=info.bReturned
+                    self.stateUpdates=(self.stateUpdates or 0)+1
+                end
+            end
+            bases[3].GetOwningPlayer=function() return pawn end
             local library={}
             function library:Create()
                 local w=actor(0)
@@ -141,6 +152,15 @@ class FlagMarkerProjectionTest(unittest.TestCase):
                 function w:SetVisibility(value) self.visibility=value end
                 function w:ShowOverlay(value) self.shown=value end
                 function w:IsA() return true end
+                function w:OnFlagHeldChanged(info)
+                    self.cachedReturned=info.bReturned
+                    self.stateUpdates=(self.stateUpdates or 0)+1
+                    if info.bReturned then
+                        self.timerActive=false
+                        self.timerShown=false
+                        self.shown=false
+                    end
+                end
                 w.BackgroundSwitcher={SetActiveWidget=function() end}
                 w.ActionLabelGroup={SetVisibility=function() end}
                 w.ActionText={SetText=function(self,v) self.text=v end}
@@ -148,7 +168,11 @@ class FlagMarkerProjectionTest(unittest.TestCase):
                 return w
             end
             local function StaticFindObject(path) return path:find('Library',1,true) and library or {} end
-            local function FindAllOf(name) return name=='TopPickup_Flag' and flags or {overlay} end
+            local function FindAllOf(name)
+                if name=='TopPickup_Flag' then return flags end
+                if name=='UI_Game_Overlay_FlagBase_C' then return bases end
+                return {overlay}
+            end
             local function FText(value) return value end
             local nextPulse
             local function ExecuteInGameThreadWithDelay(_,fn) nextPulse=fn end
@@ -169,8 +193,46 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             assert(not enemy.shown and home.ActionText.text=='GO HERE')
             flags[2].owner=nil
             flags[2].x=900
+            flags[2].mode=4
             nextPulse()
             assert(enemy.shown and enemy.projectedX==900 and home.ActionText.text=='DEFEND')
+            enemy.timerActive,enemy.timerShown=true,true
+            flags[2].holderInfo={Holder=pawn,bReturned=true}
+            -- Return can arrive before movement and the old owner are cleared.
+            flags[2].owner=pawn
+            flags[2].mode=1
+            nextPulse()
+            assert(not enemy.shown and enemy.visibility==1)
+            assert(enemy.cachedReturned and not enemy.timerActive and not enemy.timerShown)
+            assert(home.ActionText.text=='DEFEND' and enemy.projectedX==900)
+            assert(bases[1].returned[2] and bases[2].returned[2] and not bases[3].stateUpdates)
+            local updates=enemy.stateUpdates
+            local baseUpdates=bases[1].stateUpdates
+            nextPulse()
+            assert(not enemy.shown and enemy.stateUpdates==updates and bases[1].stateUpdates==baseUpdates)
+            -- Picking up and dropping again must reactivate this same widget.
+            flags[2].holderInfo={Holder=pawn,bReturned=false}
+            flags[2].mode=2
+            nextPulse()
+            assert(not enemy.shown and not enemy.cachedReturned and home.ActionText.text=='GO HERE')
+            assert(not bases[1].returned[2] and not bases[2].returned[2])
+            flags[2].owner=nil
+            flags[2].mode=4
+            flags[2].x=1100
+            nextPulse()
+            assert(enemy.shown and enemy.projectedX==1100 and home.ActionText.text=='DEFEND')
+            -- The same native reset must apply to a friendly returned flag.
+            flags[1].mode=4
+            flags[1].x=700
+            nextPulse()
+            assert(home.shown and home.ActionText.text=='RETURN' and home.projectedX==700)
+            home.timerActive,home.timerShown=true,true
+            flags[1].holderInfo={bReturned=true}
+            flags[1].mode=1
+            nextPulse()
+            assert(not home.shown and home.visibility==1 and home.cachedReturned)
+            assert(not home.timerActive and not home.timerShown and home.projectedX==700)
+            assert(bases[1].returned[1] and bases[2].returned[1])
             return true
         """)
         self.assertTrue(result)

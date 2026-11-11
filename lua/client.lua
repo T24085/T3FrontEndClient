@@ -466,9 +466,10 @@ local function enabled_flag_markers(env)
  local function current(s)
   return valid(s.pc) and valid(s.ps) and valid(s.gs) and same(s.pc.PlayerState,s.ps) and same(s.pc:GetWorld(),s.gs:GetWorld()) and s.gs:GetFullName()==s.gameState and not s.pc:HasAuthority() and s.pc:IsLocalPlayerController()
  end
- local function flag_holder(flag)
+ local function flag_holder(flag,info)
+  if info.bReturned then return nil end
   local holder=flag.r_HeldBy
-  if not valid(holder) then holder=flag:GetHeldBy().Holder end
+  if not valid(holder) then holder=info.Holder end
   if not valid(holder) then return nil end
   -- The replicated holder can still name the thrower after detachment.
   local root=flag.RootComponent
@@ -485,14 +486,28 @@ local function enabled_flag_markers(env)
   if team~=1 and team~=2 then return end
   local carrying=false
   for _,e in pairs(s.entries) do
-   if valid(e.flag) and e.flag.r_TeamId~=team and same(flag_holder(e.flag),pawn) then carrying=true end
+   if valid(e.flag) and e.flag.r_TeamId~=team and same(flag_holder(e.flag,e.flag:GetHeldBy()),pawn) then carrying=true end
   end
   for _,e in pairs(s.entries) do
    local flag,w=e.flag,e.widget
    if valid(flag) and valid(w) and same(flag:GetWorld(),s.pc:GetWorld()) then
     local friendly=flag.r_TeamId==team
     local flagState=flag:GetFlagState(pawn)
-    local holder=flag_holder(flag)
+    local holderInfo=flag:GetHeldBy()
+    local returned=holderInfo.bReturned==true
+    local holder=flag_holder(flag,holderInfo)
+    if e.returned~=returned then
+     -- Retail caches HolderInfo, clears the return timer and hides the moving
+     -- objective on return. Its Tick also stops following a returned flag.
+     w:OnFlagHeldChanged(holderInfo)
+     -- The stationary base widgets consume the same native flag notification.
+     for _,base in ipairs(FindAllOf('UI_Game_Overlay_FlagBase_C') or {}) do
+      if valid(base) and same(base:GetWorld(),s.pc:GetWorld()) and same(base:GetOwningPlayer(),s.pc) then
+       base:OnFlagHeldChanged(flag,holderInfo)
+      end
+     end
+     e.returned=returned
+    end
     local ownCarried=not friendly and same(holder,pawn)
     local homeTarget=friendly and carrying and flagState==1
     local text=friendly and (flagState==4 and 'RETURN' or flagState==3 and 'CHASE' or homeTarget and 'GO HERE' or 'DEFEND') or (flagState==2 and 'ESCORT' or 'GRAB')
@@ -503,7 +518,7 @@ local function enabled_flag_markers(env)
     local a,b=pawn:K2_GetActorLocation(),target:K2_GetActorLocation()
     w.DistanceText:SetText(FText(string.format('%dm',math.floor(math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)/100+0.5))))
     -- Community-created widgets may never receive native overlay Tick.
-    local visible=not ownCarried
+    local visible=not returned and not ownCarried
     local projected=visible and project(e,s.pc,b)==true
     w:ShowOverlay(visible)
     w:SetVisibility(visible and 4 or 1)
@@ -511,7 +526,7 @@ local function enabled_flag_markers(env)
      e.projected=true
      report('FLAG_MARKER_PROJECTED|team='..flag.r_TeamId)
     end
-    local status=tostring(flag.r_TeamId)..'|'..text..'|'..tostring(ownCarried)
+    local status=tostring(flag.r_TeamId)..'|'..text..'|'..tostring(ownCarried)..'|returned='..tostring(returned)
     if status~=e.status then e.status=status;report('FLAG_MARKER_STATE|'..status) end
    end
   end

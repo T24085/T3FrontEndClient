@@ -1,3 +1,24 @@
+# Flag indicator return reset
+
+The enabled marker now reads the native `HolderInfo.bReturned` flag and
+passes return transitions through the original widget's
+`OnFlagHeldChanged` handler. The retail Blueprint caches that struct,
+clears its return timer and hides the moving objective when returned.
+Its Tick also stops tracking a returned flag. The custom pulse now honors
+that visibility and ignores a stale holder while the return is replicated.
+The original stationary base widgets receive the same flag-state update,
+restoring their native home labels from the flag's returned state.
+
+The return regression covers both team flags, delayed owner/movement
+cleanup, timer reset, repeated pulses and the next pickup and toss. The
+previous implementation fails the same regression. All 187 client tests
+pass with seven skipped, and the source check verifies 14 shared contracts.
+Live rendered qualification and signed-update publication are pending.
+The decoded retail widget used for the comparison is retained outside Git
+under `verification/flag-indicator-motion-20261028/widget-functions.json`.
+The companion base widget decoding and review are under
+`verification/flag-indicator-return-20261110/`.
+
 # Community flag indicators and radar scale
 
 The enabled flag indicators follow the replicated flag or carrier from the
