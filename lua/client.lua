@@ -499,11 +499,12 @@ local function enabled_flag_markers(env)
     if e.returned~=returned then
      -- Retail caches HolderInfo, clears the return timer and hides the moving
      -- objective on return. Its Tick also stops following a returned flag.
-     w:OnFlagHeldChanged(holderInfo)
+     -- Both handlers accept LastHolderInfo and use only the current value.
+     w:OnFlagHeldChanged(flag,holderInfo,holderInfo)
      -- The stationary base widgets consume the same native flag notification.
      for _,base in ipairs(FindAllOf('UI_Game_Overlay_FlagBase_C') or {}) do
       if valid(base) and same(base:GetWorld(),s.pc:GetWorld()) and same(base:GetOwningPlayer(),s.pc) then
-       base:OnFlagHeldChanged(flag,holderInfo)
+       base:OnFlagHeldChanged(flag,holderInfo,holderInfo)
       end
      end
      e.returned=returned

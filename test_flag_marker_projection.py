@@ -138,7 +138,8 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             for _,base in ipairs(bases) do
                 base.returned={}
                 function base:GetOwningPlayer() return pc end
-                function base:OnFlagHeldChanged(flag,info)
+                function base:OnFlagHeldChanged(flag,info,lastInfo)
+                    assert(flag and info and lastInfo, 'native base callback requires three arguments')
                     self.returned[flag.r_TeamId]=info.bReturned
                     self.stateUpdates=(self.stateUpdates or 0)+1
                 end
@@ -152,7 +153,8 @@ class FlagMarkerProjectionTest(unittest.TestCase):
                 function w:SetVisibility(value) self.visibility=value end
                 function w:ShowOverlay(value) self.shown=value end
                 function w:IsA() return true end
-                function w:OnFlagHeldChanged(info)
+                function w:OnFlagHeldChanged(flag,info,lastInfo)
+                    assert(flag==self.CachedActor and info and lastInfo, 'native objective callback requires three arguments')
                     self.cachedReturned=info.bReturned
                     self.stateUpdates=(self.stateUpdates or 0)+1
                     if info.bReturned then

@@ -1,3 +1,17 @@
+# Native flag widget callback
+
+Both original flag widgets require the flag actor, current holder info and
+previous holder info in OnFlagHeldChanged. The decoded handlers read only
+the current holder info. The optional HUD pulse now supplies all three
+arguments. A regression checks both callbacks during flag return.
+
+A rendered client with this local candidate processed both at-home flag
+states without an optional marker error in a private High Octane 2026
+match on GameServer01. The same client received one initialized bot per
+team, and both moved. The test ended with its room closed and its Job
+empty. The flags stayed home, so this run did not exercise a projected
+pickup or toss marker. This client candidate has not been published.
+
 # Flag indicator return reset
 
 The enabled marker now reads the native `HolderInfo.bReturned` flag and
