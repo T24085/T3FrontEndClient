@@ -122,6 +122,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             for i,flag in ipairs(flags) do
                 flag.r_TeamId,flag.mode=i,1
                 flag.holderInfo={bReturned=false}
+                flag.Mesh={owner=flag,height=100}
                 function flag:GetHeldBy() return self.holderInfo end
                 function flag:GetOwner() return self.owner end
                 function flag:GetFlagState() return self.mode end
@@ -170,7 +171,15 @@ class FlagMarkerProjectionTest(unittest.TestCase):
                 w.DistanceText={SetText=function() end}
                 return w
             end
-            local function StaticFindObject(path) return path:find('Library',1,true) and library or {} end
+            local system={}
+            function system:GetComponentBounds(mesh,origin,extent)
+                origin.X,origin.Y,origin.Z=mesh.owner.x,15,20
+                extent.Z=mesh.height
+            end
+            local function StaticFindObject(path)
+                if path:find('KismetSystemLibrary',1,true) then return system end
+                return path:find('Library',1,true) and library or {}
+            end
             local function FindAllOf(name)
                 if name=='TopPickup_Flag' then return flags end
                 if name=='UI_Game_Overlay_FlagBase_C' then return bases end
@@ -183,6 +192,8 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             local function RegisterHook(path,_,post) positionHooks[path]=post end
             local function flag_marker_projection() return function(entry,_,target)
                 entry.widget.projectedX=target.X
+                entry.widget.projectedY=target.Y
+                entry.widget.projectedZ=target.Z
                 return true
             end end
         """ + SOURCE[start:end] + r"""
@@ -196,6 +207,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             flags[2].holderInfo={bReturned=false}
             nextPulse()
             assert(parent.visibility==4 and enemy.shown and enemy.projectedX==1500)
+            assert(enemy.projectedY==15 and enemy.projectedZ==120)
             flags[2].r_HeldBy=flags[2].holderInfo
             flags[2].holderInfo.Holder=pawn
             flags[2].owner=pawn
@@ -209,8 +221,9 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             for _,name in ipairs({'UpdatePosition','UpdatePosition_Vector'}) do
                 local post=assert(positionHooks['/Script/ValhallaUI.ValRHUIGameOverlay:'..name])
                 enemy.projectedX=-1
+                flags[2].Mesh.height=75
                 post({get=function()return enemy end})
-                assert(enemy.projectedX==900)
+                assert(enemy.projectedX==900 and enemy.projectedZ==95)
             end
             enemy.timerActive,enemy.timerShown=true,true
             flags[2].holderInfo={Holder=pawn,bReturned=true}
@@ -257,6 +270,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             nextPulse()
             assert(enemy.shown and enemy.visibility==4 and enemy.cachedReturned)
             assert(not enemy.timerActive and not enemy.timerShown and enemy.projectedX==1500)
+            assert(enemy.projectedZ==120)
             return true
         """)
         self.assertTrue(result)

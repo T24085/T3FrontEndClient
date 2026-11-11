@@ -454,6 +454,9 @@ local function enabled_flag_markers(env)
  local valid,report=env.valid,env.report
  local project=flag_marker_projection(valid)
  env.signature('/Script/Topaz.TopPickup_Flag:GetFlagState',{{'Querier','ObjectProperty',0},{'ReturnValue','EnumProperty',8}})
+ env.signature('/Script/Engine.KismetSystemLibrary:GetComponentBounds',{{'Component','ObjectProperty',0},
+  {'Origin','StructProperty',8},{'BoxExtent','StructProperty',32},{'SphereRadius','FloatProperty',56}})
+ local system=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
  local state=nil
  local stopped=false
  local widgetPath='/Game/UI/Components/Game/Overlays/UI_Game_Overlay_FlagObjective.UI_Game_Overlay_FlagObjective_C'
@@ -474,6 +477,20 @@ local function enabled_flag_markers(env)
   local root=flag.RootComponent
   local attached=valid(root) and root:GetAttachParent() or nil
   if same(flag:GetOwner(),holder) or (valid(attached) and same(attached:GetOwner(),holder)) then return holder end
+ end
+ local function flag_anchor(flag,root)
+  -- The pickup root is a collision sphere. The flag's visible mesh has its
+  -- own transform and extends above that pivot, including while carried.
+  local mesh=flag.Mesh
+  if valid(mesh) then
+   local origin,extent={},{}
+   system:GetComponentBounds(mesh,origin,extent,{})
+   origin,extent=origin.Origin or origin,extent.BoxExtent or extent
+   if type(extent.Z)=='number' and extent.Z>0 then
+    return {X=origin.X,Y=origin.Y,Z=origin.Z+extent.Z}
+   end
+  end
+  return {X=root.X,Y=root.Y,Z=root.Z+150}
  end
  local function pulse()
   local s=state
@@ -496,7 +513,10 @@ local function enabled_flag_markers(env)
     local returned=holderInfo.bReturned==true
     local holder=flag_holder(flag,holderInfo)
     if e.returned~=returned then
-     if returned and e.returned==nil then e.home=flag:K2_GetActorLocation() end
+     if returned and e.returned==nil then
+      e.home=flag:K2_GetActorLocation()
+      e.homeAnchor=flag_anchor(flag,e.home)
+     end
      -- Retail caches HolderInfo, clears the return timer and hides the moving
      -- objective on return. Its Tick also stops following a returned flag.
      -- Both handlers accept LastHolderInfo and use only the current value.
@@ -523,8 +543,7 @@ local function enabled_flag_markers(env)
      -- A client that joined with the flag away uses its replicated return.
      if not valid(e.nativeBase) then position=e.home or flag:K2_GetActorLocation() end
     elseif not ownCarried then
-     local target=valid(holder) and same(holder:GetWorld(),s.pc:GetWorld()) and holder or flag
-     position=target:K2_GetActorLocation()
+     position=flag:K2_GetActorLocation()
     end
     e.position=position
     local visible=position~=nil
@@ -532,7 +551,8 @@ local function enabled_flag_markers(env)
     if visible then
      local a,b=pawn:K2_GetActorLocation(),position
      w.DistanceText:SetText(FText(string.format('%dm',math.floor(math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)/100+0.5))))
-     projected=project(e,s.pc,b)==true
+     local anchor=returned and e.homeAnchor or flag_anchor(flag,b)
+     projected=project(e,s.pc,anchor)==true
     end
     w:ShowOverlay(visible)
     w:SetVisibility(visible and 4 or 1)
@@ -556,7 +576,10 @@ local function enabled_flag_markers(env)
   if not entry or not entry.position or not same(entry.widget,widget) then return end
   local ok,why=pcall(function()
    env.scope()
-   if current(s) then project(entry,s.pc,entry.position) end
+   if current(s) and valid(entry.flag) then
+    local anchor=entry.returned and entry.homeAnchor or flag_anchor(entry.flag,entry.flag:K2_GetActorLocation())
+    project(entry,s.pc,anchor)
+   end
   end)
   if not ok then stopped=true;report('OPTIONAL_FLAG_MARKER_ERROR|'..tostring(why):sub(1,500)) end
  end
