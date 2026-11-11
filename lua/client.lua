@@ -396,7 +396,6 @@ local function flag_marker_projection(valid)
   local slot,parent=widget.Slot,widget:GetParent()
   if not valid(slot) or not valid(parent) then return end
   local geometry=parent:GetCachedGeometry()
-  local size=slate:GetLocalSize(geometry)
 
   local viewport=layout:GetViewportSize(pc)
   local dpi=layout:GetViewportScale(pc)
@@ -426,16 +425,11 @@ local function flag_marker_projection(valid)
    local scale=math.min(edgeX/math.max(math.abs(x),0.0001),edgeY/math.max(math.abs(y),0.0001))
    x,y=x*scale,y*scale
   end
-  local position
-  if size.X>0 and size.Y>0 then
-   local localPosition={}
-   slate:ScreenToWidgetLocal(pc,geometry,{X=cx+x,Y=cy+y},localPosition,false)
-   position=localPosition.LocalCoordinate or localPosition
-  else
-   -- The native full-screen Flags canvas can have zero cached layout size.
-   -- Its top-left anchored slots still use the viewport's Slate units.
-   position={X=(cx+x)/dpi,Y=(cy+y)/dpi}
-  end
+  -- The native Flags canvas can have zero layout size while its transform is
+  -- still valid. Use that transform to account for desktop and viewport DPI.
+  local localPosition={}
+  slate:ScreenToWidgetLocal(pc,geometry,{X=cx+x,Y=cy+y},localPosition,false)
+  local position=localPosition.LocalCoordinate or localPosition
   if type(position.X)~='number' or type(position.Y)~='number' or position.X~=position.X
      or position.Y~=position.Y or math.abs(position.X)==math.huge or math.abs(position.Y)==math.huge then return end
   if not same_object(entry.layoutSlot,slot) then

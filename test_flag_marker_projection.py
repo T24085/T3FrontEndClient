@@ -90,12 +90,11 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             self.assertAlmostEqual(geometry.X + slot.X * geometry.scale, 1920 - (40+8)*1.5)
             self.assertAlmostEqual(geometry.Y + slot.Y * geometry.scale, 540)
 
-    def test_unlaid_out_full_screen_canvas_uses_viewport_dpi(self):
+    def test_zero_size_canvas_still_uses_its_transform(self):
         fixture = self.fixture()
         fixture.geometry.width = 0
-        self.assertTrue(fixture.project(800, 500))
-        self.assertAlmostEqual(fixture.entry.widget.Slot.position.X, 800 / 1.5)
-        self.assertAlmostEqual(fixture.entry.widget.Slot.position.Y, 500 / 1.5)
+        fixture.geometry.height = 0
+        self.assert_on_screen(fixture, 800, 500)
 
     def test_hud_pulse_updates_pickup_toss_and_return_without_a_native_widget_tick(self):
         start = SOURCE.index('local function enabled_flag_markers(env)')
