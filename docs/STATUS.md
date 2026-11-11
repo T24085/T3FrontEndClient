@@ -13,7 +13,11 @@ The return regression covers both team flags, delayed owner/movement
 cleanup, timer reset, repeated pulses and the next pickup and toss. The
 previous implementation fails the same regression. All 187 client tests
 pass with seven skipped, and the source check verifies 14 shared contracts.
-Live rendered qualification and signed-update publication are pending.
+Signed Direct Starter revision 19 is published on GameServer01. The live
+HTTPS index signature and all seven payload hashes were verified. A
+disposable copy of the installed revision 18 updated to revision 19
+through the live feed, changing only the flag HUD Lua and its inventory.
+Live rendered qualification is pending.
 The decoded retail widget used for the comparison is retained outside Git
 under `verification/flag-indicator-motion-20261028/widget-functions.json`.
 The companion base widget decoding and review are under
