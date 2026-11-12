@@ -215,9 +215,23 @@ class OwnedGameFocus:
         return self.kernel.WaitForSingleObject(self.handle, 0) == 258
 
     def focused(self):
+        return self.foreground_window() is not None
+
+    def foreground_window(self):
+        window = self.user.GetForegroundWindow()
         pid = W.DWORD()
-        self.user.GetWindowThreadProcessId(self.user.GetForegroundWindow(), C.byref(pid))
-        return pid.value == self.pid and self.alive()
+        self.user.GetWindowThreadProcessId(window, C.byref(pid))
+        return window if pid.value == self.pid and self.alive() else None
+
+    def foreground_bounds(self):
+        window = self.foreground_window()
+        if window is None:
+            return None
+        self.user.GetWindowRect.argtypes = [W.HWND, C.POINTER(W.RECT)]
+        self.user.GetWindowRect.restype = W.BOOL
+        rect = W.RECT()
+        if self.user.GetWindowRect(window, C.byref(rect)) and rect.right > rect.left and rect.bottom > rect.top:
+            return rect.left, rect.top, rect.right, rect.bottom
 
     def pressed(self, key):
         return bool(self.user.GetAsyncKeyState(key) & 0x8000)
@@ -855,7 +869,29 @@ class PublicCTFPanel:
         if self.desktop.game:
             self.desktop.game.stop()
 
+    def center_ballot(self, ballot):
+        bounds = (0, 0, ballot.winfo_screenwidth(), ballot.winfo_screenheight())
+        run = getattr(self.desktop.game, 'run', None)
+        if os.name == 'nt' and run is not None:
+            try:
+                focus = OwnedGameFocus(run)
+                try:
+                    bounds = focus.foreground_bounds() or bounds
+                finally:
+                    focus.close()
+            except (OSError, ValueError, KeyError):
+                pass  # The game can close while the ballot is being opened.
+        ballot.update_idletasks()
+        left, top, right, bottom = bounds
+        x = left + max(0, (right - left - ballot.winfo_reqwidth()) // 2)
+        y = top + max(0, (bottom - top - ballot.winfo_reqheight()) // 2)
+        ballot.geometry(f'+{x}+{y}')
+        ballot.deiconify()
+        ballot.lift()
+
     def refresh_ballot(self, state, active):
+        from desktop_launcher import ACCENT, BG, MUTED, PANEL, TEXT
+
         if state.get('phase') != 'voting' or not state.get('team') or not active:
             if self.ballot is not None:
                 self.ballot.destroy()
@@ -865,27 +901,38 @@ class PublicCTFPanel:
         round_id = state['round']
         key = (round_id, state['seconds'], state['selected'],
                tuple((option['id'], option['votes']) for option in state['options']))
-        if self.ballot is None:
+        opening = self.ballot is None
+        if opening:
             self.ballot = self.tk.Toplevel(self.root)
+            self.ballot.withdraw()
             self.ballot.title('Vote for the next map')
             self.ballot.attributes('-topmost', True)
             self.ballot.resizable(False, False)
             self.ballot.protocol('WM_DELETE_WINDOW', self.ballot.withdraw)
+            self.ballot.configure(bg=BG)
             self.ballot_message = self.tk.StringVar()
-            self.tk.Label(self.ballot, textvariable=self.ballot_message, padx=24, pady=12).pack()
+            self.tk.Label(self.ballot, text='Vote for the next map', font=('Segoe UI', 24, 'bold'),
+                          bg=BG, fg=TEXT).pack(padx=32, pady=(24, 4))
+            self.tk.Label(self.ballot, textvariable=self.ballot_message, font=('Segoe UI', 15),
+                          bg=BG, fg=MUTED).pack(padx=32, pady=(0, 20))
             self.ballot_buttons = {}
             for option in state['options']:
                 map_id = option['id']
-                button = self.tk.Button(self.ballot, width=32, pady=6,
+                button = self.tk.Button(self.ballot, width=30, pady=12, font=('Segoe UI', 18, 'bold'),
+                    bg=PANEL, fg=TEXT, activebackground=ACCENT, activeforeground=BG, relief='flat',
                     command=lambda choice=map_id: self.submit('vote', lambda: self.lobby.public_vote(round_id, choice)))
-                button.pack(padx=20, pady=(0, 8))
+                button.pack(fill='x', padx=32, pady=(0, 12))
                 self.ballot_buttons[map_id] = button
         if self.ballot_key != key:
             self.ballot_key = key
-            self.ballot_message.set(f'Next map · {state["seconds"]} seconds left')
+            self.ballot_message.set(f'{state["seconds"]} seconds left')
             for option in state['options']:
-                prefix = '✓ ' if state['selected'] == option['id'] else ''
-                self.ballot_buttons[option['id']].configure(text=f'{prefix}{option["label"]} ({option["votes"]})')
+                selected = state['selected'] == option['id']
+                prefix = '✓ ' if selected else ''
+                self.ballot_buttons[option['id']].configure(text=f'{prefix}{option["label"]} ({option["votes"]})',
+                    bg=ACCENT if selected else PANEL, fg=BG if selected else TEXT)
+        if opening:
+            self.center_ballot(self.ballot)
 
     def tick(self):
         ui = self.desktop
