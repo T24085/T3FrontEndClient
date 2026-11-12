@@ -174,14 +174,14 @@ class CommunityGame:
     def start(self, *, expected_map=None, expected_match_id=None):
         return self._start(expected_map=expected_map, expected_match_id=expected_match_id)
 
-    def _start(self, *, watch_id=None, expected_map=None, expected_match_id=None):
+    def _start(self, *, watch_id=None, expected_map=None, expected_match_id=None, public_name=None):
         self._release_watch()
         # Desktop calls this on a worker. Reserve the session briefly, then keep
         # expensive verification outside the snapshot lock used by the Tk loop.
         with self.lock:
             if self.status not in ('idle', 'stopped', 'finished', 'failed') or self.watch_id is not None:
                 raise CommunityError('A game session is already active.')
-            self.role = 'spectator' if watch_id is not None else 'player'
+            self.role = 'spectator' if watch_id is not None else 'public' if public_name is not None else 'player'
             self.watch_id, self.match_id = watch_id, None
             self.status, self.error, self.run = 'starting', None, None
             self.current_artifacts, self.thread = None, None
@@ -195,6 +195,9 @@ class CommunityGame:
             if begin_attempt is not None:
                 begin_attempt()
             target_loader = (lambda: self.lobby.spectator_target(watch_id)) if watch_id is not None else self.lobby.match_target
+            if public_name is not None:
+                self.lobby.public_join(public_name)
+                target_loader = self.lobby.public_target
             target = target_loader()
             if expected_match_id is not None and target.get('matchId') != expected_match_id:
                 raise CommunityError('The match changed. Refresh the lobby before joining.')
@@ -240,6 +243,8 @@ class CommunityGame:
                 argv += ['--expected-map', target['map'], '--expected-content-hash', target['contentHash']]
             if target.get('flagIndicators') is True:
                 argv.append('--show-flag-indicators')
+            if public_name is not None:
+                argv.append('--public-session')
             if watch_id is not None:
                 argv += ['--spectate', '--match-id', target['matchId'], '--watch-id=' + watch_id]
             if prepared is not None:
@@ -329,7 +334,8 @@ class CommunityGame:
                     if event_file.stat().st_size > 1048576:
                         raise CommunityError('Client evidence exceeded its bound.')
                     lines = event_file.read_text(errors='replace').splitlines()
-                    phase = runtime_phase(lines, role=self.role, match_id=self.match_id, watch_id=self.watch_id)
+                    phase = runtime_phase(lines, role='player' if self.role == 'public' else self.role,
+                                          match_id=self.match_id, watch_id=self.watch_id)
                     if phase is not None: self.startup_phase = phase
                     if runtime_failure(lines):
                         self.failure_reason = self.error = 'The game client runtime reported an error.'

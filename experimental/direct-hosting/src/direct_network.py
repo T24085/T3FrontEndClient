@@ -218,7 +218,9 @@ def unframe(key,identity,packet,direction,window):
     return packet[28:-32]
 
 class UdpServer:
-    def __init__(self,bind,public_port,native_port,permitted,*,clock=time.monotonic):
+    def __init__(self,bind,public_port,native_port,permitted,*,clock=time.monotonic,forward=None,renew=False):
+        self.forward = forward if forward is not None else permitted
+        self.renew = renew
         self.clock=clock;self.permitted=permitted;self.native=('127.0.0.1',native_port);self.public_port=public_port
         self.lock=threading.RLock();self.stop=threading.Event();self.grants={};self.identities={}
         self.socket=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
@@ -230,7 +232,12 @@ class UdpServer:
         if not self.permitted(match_id,peer_id):raise ValueError('No live match admission exists.')
         with self.lock:
             old=self.identities.get((match_id,peer_id));r=self.grants.get(old)
-            if r is not None and r['expires']>time.time()+60 and r['session']==session:return self.public(r)
+            if r is not None and r['session']==session:
+                now = int(time.time())
+                if self.renew and now < r['expires'] <= now+600:
+                    r['expires'] = now+7200
+                if r['expires']>now+60:
+                    return self.public(r)
             if r is not None:
                 r['socket'].close();del self.grants[old];self.identities.pop((match_id,peer_id),None)
             # A stopped lease must not retain sockets or consume capacity.
@@ -267,14 +274,14 @@ class UdpServer:
                         if len(packet)<60 or packet[:4]!=MAGIC:continue
                         with self.lock:
                             r=self.grants.get(packet[4:20].hex())
-                            if r is None or not self.permitted(r['match'],r['peer']):continue
+                            if r is None or not self.forward(r['match'],r['peer']):continue
                             payload=unframe(r['key'],r['id'],packet,b'C',r['window'])
                             if payload is None:continue
                             r['remote']=source;r['socket'].send(payload)
                     else:
                         payload=sock.recv(65535);r=upstreams[sock]
                         with self.lock:
-                            if r['remote']and len(payload)<=MAX_PAYLOAD and self.permitted(r['match'],r['peer']):
+                            if r['remote']and len(payload)<=MAX_PAYLOAD and self.forward(r['match'],r['peer']):
                                 self.socket.sendto(frame(r['key'],r['id'],r['sent'],payload,b'S'),r['remote']);r['sent']+=1
             except (OSError,ValueError):
                 if self.stop.is_set():break
@@ -309,5 +316,13 @@ class UdpClient:
                         if payload is not None and self.client:self.local.sendto(payload,self.client)
             except OSError:
                 if self.stop.is_set():break
+
+    def renew(self, grant):
+        previous = self.grant
+        expiry = grant.get('expires')
+        if (type(expiry) is not int or not previous['expires'] <= expiry <= time.time()+7201
+                or dict(grant, expires=previous['expires']) != previous):
+            raise ValueError('Invalid public UDP renewal.')
+        self.grant = dict(grant)
 
     def close(self):self.stop.set();self.thread.join(3);self.local.close();self.wire.close()

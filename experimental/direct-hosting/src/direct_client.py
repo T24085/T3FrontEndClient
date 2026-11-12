@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import pathlib
+import queue
 import secrets
 import socket
 import threading
@@ -334,11 +335,48 @@ class DirectClient(CommunityClient):
         self.proximity_settings = proximity_settings
         self.proximity_key = read_proximity_key(proximity_settings)
         self.proximity_status = proximity_prompt(self.proximity_key)
+        self.public_supported = self.public_only = False
 
     def capabilities(self):
         caps = super().capabilities()
         self.proximity_supported = os.name == 'nt' and caps.get('proximityVoice') == VOICE_PROTOCOL
+        self.public_supported = caps.get('publicCTF') is True
+        self.public_only = self.public_supported and caps.get('publicOnly') is True
         return caps
+
+    def _public(self, action, **data):
+        response = self._request('public-' + action, data, use_lobby_token=False)
+        if action == 'leave':
+            return response
+        state = response.get('public')
+        if not isinstance(state, dict) or state.get('phase') not in ('loading', 'playing', 'voting', 'traveling'):
+            raise CommunityError('The host returned invalid Public CTF status.')
+        return state
+
+    def public_join(self, name):
+        return self._public('join', name=name)
+
+    def public_state(self, *, renew=False):
+        state = self._public('state')
+        if renew and state.get('target'):
+            self._validated_target(state['target'], state.get('map'), public=True, existing_only=True)
+        return state
+
+    def public_target(self):
+        deadline = time.monotonic() + 45
+        while True:
+            state = self.public_state()
+            if state.get('target'):
+                return self._validated_target(state['target'], state.get('map'), public=True)
+            if not state.get('team') or time.monotonic() >= deadline:
+                raise CommunityError(state.get('error') or 'Your public match seat was not ready. Try joining again.')
+            time.sleep(1)
+
+    def public_vote(self, round_id, map_id):
+        return self._public('vote', round=round_id, map=map_id)
+
+    def public_leave(self):
+        self._public('leave')
 
     def set_proximity_voice(self, enabled):
         if enabled:
@@ -435,7 +473,7 @@ class DirectClient(CommunityClient):
             raise CommunityError('The host returned an invalid registration receipt.')
         return identity
 
-    def _validated_target(self,match,name,*,spectator=False):
+    def _validated_target(self,match,name,*,spectator=False,public=False,existing_only=False):
         first, last = self.connection['first_udp_port'], self.connection['last_udp_port']
         allowed_ports = (range(first, last + 1),)
         # Stock invitations survive capacity increases and migration between the
@@ -455,8 +493,16 @@ class DirectClient(CommunityClient):
         key=(grant.get('matchId'),grant.get('id'))
         with self.lock:
             proxy=self.proxies.get(key)
-            if proxy is not None and proxy.grant!=grant:raise CommunityError('UDP admission changed without a new identity.')
+            if proxy is not None and proxy.grant!=grant:
+                try:
+                    if not public:
+                        raise ValueError('Unexpected renewal')
+                    proxy.renew(grant)
+                except ValueError as exc:
+                    raise CommunityError('UDP admission changed without a new identity.') from exc
             if proxy is None:
+                if existing_only:
+                    return None
                 # One native session at a time is already enforced by CommunityGame.
                 for old in self.proxies.values():old.close()
                 self.proxies.clear()
@@ -493,6 +539,130 @@ def group_connection(root, local, *, ssl_context=None, test_source=None):
             state['device_id']=client.enroll(group)
             write_json(path,state)
         return connection
+
+
+class PublicCTFPanel:
+    def __init__(self, tk, desktop, lobby):
+        from desktop_launcher import BG, MUTED
+        self.tk, self.desktop, self.lobby = tk, desktop, lobby
+        self.root = desktop.root
+        self.results = queue.Queue()
+        self.pending = set()
+        self.poll_at = 0
+        self.ballot = None
+        self.ballot_key = None
+        self.state = {}
+        self.status = tk.StringVar(value='Checking the public server…')
+        self.panel = tk.Frame(self.root, bg=BG)
+        desktop.label(self.panel, 'Public CTF', 27, True).pack(anchor='w')
+        desktop.label(self.panel, '12 vs. 12 · Bots fill open slots', color=MUTED).pack(anchor='w', pady=(4, 18))
+        tk.Label(self.panel, textvariable=self.status, bg=BG, fg=MUTED, wraplength=580,
+                 justify='left').pack(anchor='w', pady=(0, 12))
+        actions = tk.Frame(self.panel, bg=BG)
+        actions.pack(anchor='w')
+        self.join = desktop.button(actions, 'Join Public CTF', self.start)
+        self.join.pack(side='left')
+        self.leave = desktop.button(actions, 'Leave game', self.stop, False)
+        self.leave.pack(side='left', padx=(8, 0))
+        self.nav = desktop.button(desktop.sidebar, 'Public CTF', lambda: desktop.show_panel('public'), False)
+        self.nav.pack(fill='x', padx=18, pady=(6, 0))
+        if lobby.public_only:
+            desktop.lobbies_nav.pack_forget()
+            desktop.live_nav.pack_forget()
+        desktop.show_panel('public')
+        self.root.after(150, self.tick)
+
+    def submit(self, action, work):
+        if action in self.pending:
+            return
+        self.pending.add(action)
+
+        def run():
+            try:
+                self.results.put((action, work(), None))
+            except Exception as exc:
+                self.results.put((action, None, str(exc)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def start(self):
+        ui = self.desktop
+        if not ui.game:
+            ui.game = ui.game_factory(self.lobby)
+        name = ui.name.get().strip()
+        self.status.set('Reserving a seat…')
+        self.submit('start', lambda: ui.game.start_public(name))
+
+    def stop(self):
+        if self.desktop.game:
+            self.desktop.game.stop()
+
+    def refresh_ballot(self, state, active):
+        if state.get('phase') != 'voting' or not state.get('team') or not active:
+            if self.ballot is not None:
+                self.ballot.destroy()
+                self.ballot = None
+            self.ballot_key = None
+            return
+        round_id = state['round']
+        key = (round_id, state['seconds'], state['selected'],
+               tuple((option['id'], option['votes']) for option in state['options']))
+        if self.ballot is None:
+            self.ballot = self.tk.Toplevel(self.root)
+            self.ballot.title('Vote for the next map')
+            self.ballot.attributes('-topmost', True)
+            self.ballot.resizable(False, False)
+            self.ballot.protocol('WM_DELETE_WINDOW', self.ballot.withdraw)
+            self.ballot_message = self.tk.StringVar()
+            self.tk.Label(self.ballot, textvariable=self.ballot_message, padx=24, pady=12).pack()
+            self.ballot_buttons = {}
+            for option in state['options']:
+                map_id = option['id']
+                button = self.tk.Button(self.ballot, width=32, pady=6,
+                    command=lambda choice=map_id: self.submit('vote', lambda: self.lobby.public_vote(round_id, choice)))
+                button.pack(padx=20, pady=(0, 8))
+                self.ballot_buttons[map_id] = button
+        if self.ballot_key != key:
+            self.ballot_key = key
+            self.ballot_message.set(f'Next map · {state["seconds"]} seconds left')
+            for option in state['options']:
+                prefix = '✓ ' if state['selected'] == option['id'] else ''
+                self.ballot_buttons[option['id']].configure(text=f'{prefix}{option["label"]} ({option["votes"]})')
+
+    def tick(self):
+        ui = self.desktop
+        if ui.closing:
+            return
+        game = ui.game
+        active = ui.game_status not in ('idle', 'stopped', 'finished', 'failed')
+        public = active and game is not None and game.role == 'public'
+        try:
+            while True:
+                action, state, error = self.results.get_nowait()
+                self.pending.discard(action)
+                if error:
+                    self.status.set(error)
+                elif isinstance(state, dict):
+                    self.state = state
+                    label = self.lobby.map_label(state['map']) or state['map']
+                    phase = state['phase']
+                    summary = {'loading': 'Preparing the server', 'playing': label,
+                               'voting': 'Voting for the next map', 'traveling': 'Loading the next map'}[phase]
+                    self.status.set(state.get('error') or f'{summary} · {state["players"]}/24 players')
+        except queue.Empty:
+            pass
+        state = self.state
+        if public and ui.game_status != 'playing':
+            self.status.set(ui.status.get())
+        can_join = state.get('phase') == 'playing' and not active and 'start' not in self.pending
+        self.join.configure(state='normal' if can_join else 'disabled')
+        self.leave.configure(state='normal' if public else 'disabled')
+        self.refresh_ballot(state, public and ui.game_status == 'playing')
+        now = time.monotonic()
+        if now >= self.poll_at and (public or ui.current_panel == 'public'):
+            self.poll_at = now + 2
+            self.submit('poll', lambda: self.lobby.public_state(renew=public))
+        self.root.after(150, self.tick)
 
 def main(root=ROOT, *, on_ready=None):
     import tkinter as tk
@@ -540,11 +710,41 @@ def main(root=ROOT, *, on_ready=None):
             on_ready()
         return
     class DirectDesktop(Desktop):
+        public_panel = None
+
+        def show_panel(self, name):
+            if self.public_panel is not None:
+                self.public_panel.panel.pack_forget()
+                if name == 'public' or lobby.public_only:
+                    self.current_panel = 'public'
+                    self.lobby_panel.pack_forget()
+                    self.live_panel.pack_forget()
+                    self.public_panel.panel.pack(side='left', fill='both', expand=True, padx=32, pady=28)
+                    return
+            super().show_panel(name)
+
         def close(self):
             try:super().close()
             finally:lobby.close()
 
     class DirectGame(CommunityGame):
+        def start_public(self, name):
+            try:
+                status = self._start(public_name=name)
+            except Exception:
+                if self.role == 'public' and self.status == 'failed':
+                    self.release_public()
+                raise
+            if status == 'stopped':
+                self.release_public()
+            return status
+
+        def release_public(self):
+            try:
+                lobby.public_leave()
+            except CommunityError:
+                pass  # The host also releases expired seats and disconnected clients.
+
         def _run(self, argv, artifacts):
             def ready_run():
                 with self.lock:
@@ -553,6 +753,11 @@ def main(root=ROOT, *, on_ready=None):
             if self.role == 'player':
                 with lobby.proximity_game(ready_run):
                     super()._run(argv, artifacts)
+            elif self.role == 'public':
+                try:
+                    super()._run(argv, artifacts)
+                finally:
+                    self.release_public()
             else:
                 super()._run(argv, artifacts)
 
@@ -563,6 +768,9 @@ def main(root=ROOT, *, on_ready=None):
         gui=DirectDesktop(window,lobby,factory,
                           steam_name_loader=lambda:read_steam_name(source,root/'base-game-manifest.json'),
                           map_sync=map_sync)
+        if lobby.public_supported:
+            gui.public_panel = PublicCTFPanel(tk, gui, lobby)
+            gui.show_panel('public' if lobby.public_only else 'lobbies')
         if lobby.proximity_supported:
             enabled = tk.BooleanVar(value=lobby.proximity_enabled.is_set())
             tk.Checkbutton(gui.sidebar, text='Proximity voice', variable=enabled,

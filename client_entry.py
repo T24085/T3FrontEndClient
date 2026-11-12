@@ -38,6 +38,7 @@ def main():
     parser.add_argument('--expected-map')
     parser.add_argument('--expected-content-hash')
     parser.add_argument('--spectate', action='store_true')
+    parser.add_argument('--public-session', action='store_true')
     parser.add_argument('--show-flag-indicators', action='store_true')
     parser.add_argument('--match-id')
     parser.add_argument('--watch-id')
@@ -49,6 +50,8 @@ def main():
     parser.add_argument('--headless', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--seconds', type=float, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.public_session and (args.spectate or args.prepare_only or args.check or not args.expected_map):
+        raise ValueError('Public CTF requires an admitted match and its verified map.')
     if args.spectate:
         if (args.prepare_only or args.check or args.expected_map is None or args.expected_content_hash is None
                 or not re.fullmatch('[0-9a-f]{32}', args.match_id or '')
@@ -141,10 +144,24 @@ def main():
     definitions = {**BY_ID, **custom_definitions(package.get('map_definitions', {})),
                    **custom_definitions(prepared.get('custom_maps', {}))}
     bootstrap_contract = package.get('client_bootstrap_contract')
-    selected_bootstrap = bootstrap_map(bootstrap_contract, args.expected_map, definitions=definitions)
+    bootstrap_id = 'Drydock' if args.public_session else args.expected_map
+    selected_bootstrap = bootstrap_map(bootstrap_contract, bootstrap_id, definitions=definitions)
     template = bootstrap_runtime((ROOT / 'lua/client.lua').read_text(encoding='utf-8'), bootstrap_contract,
-                                 args.expected_map, definitions=definitions)
-    map_definitions = lua_map_definitions(ROOT, run, definitions.get(args.expected_map))
+                                 bootstrap_id, definitions=definitions)
+    if args.public_session:
+        map_definitions = run / 'public-maps.lua'
+        bundled = ROOT / 'lua/community_maps.lua'
+        quote = lambda value: json.dumps(value, ensure_ascii=False)
+        lines = [f'local maps=assert(loadfile({quote(bundled.as_posix())}))()']
+        for key in sorted(definitions.keys() - BY_ID.keys()):
+            definition = definitions[key]
+            world = f'{definition.package}.{definition.level}:'
+            lines.append(f'maps[{quote(key)}]={{name={quote(key)},package={quote(definition.package)},'
+                         f'world={quote(world)},native=true,'
+                         'native_world_settings_class="/Script/Valhalla.ValWorldSettings"}')
+        map_definitions.write_text('\n'.join([*lines, 'return maps', '']), encoding='utf-8')
+    else:
+        map_definitions = lua_map_definitions(ROOT, run, definitions.get(args.expected_map))
     diagnostic_profile = bool(args.headless or args.test_source or args.seconds is not None)
     with ProfileSession(mode=MODE, workspaces=(workspace, source.parent / 'TRIBES3 Client Sessions'),
                         diagnostic=diagnostic_profile, source_game=source, package_root=ROOT,
