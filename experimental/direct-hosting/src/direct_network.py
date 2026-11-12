@@ -9,6 +9,10 @@ import hashlib, hmac, ipaddress, json, os, pathlib, re, secrets, select, socket,
 MAGIC=b'T3D1'
 MAX_PAYLOAD=65000
 MAX_DEVICES=2048
+MATCH_SLOT_LIMIT = 10
+LEGACY_MATCH_UDP_BASE = 18000
+MATCH_UDP_BASE = 18443
+MATCH_UDP_BASES = (LEGACY_MATCH_UDP_BASE, MATCH_UDP_BASE)
 GROUP_FILE='group-invitation.json'
 ENROLL_ROUTE='/api/direct-enroll'
 TOKEN=re.compile(r'[A-Za-z0-9_-]{43}')

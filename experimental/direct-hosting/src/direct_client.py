@@ -1,13 +1,12 @@
 """Separate direct-host Starter entry with local per-device credentials."""
 import os, pathlib, secrets
-from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MAX_DEVICES, TOKEN, UdpClient,
+from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLOT_LIMIT, MATCH_UDP_BASES,
+                            MAX_DEVICES, TOKEN, UdpClient,
                             locked_state, read_json, validate_endpoint, validate_group, write_json)
 from community_transport import CommunityClient,CommunityError
 from dynamic_destination import DIRECT_BRIDGE_POLICY
 
 ROOT=pathlib.Path(__file__).resolve().parent
-FIRST_HOST_MATCH_PORT = 18000
-LAST_HOST_MATCH_PORT = 18009
 
 def validate_connection(d,*,local_test=False):
     if not isinstance(d,dict)or set(d)!=ENDPOINT_FIELDS|{'format','access_token'}or d['format']!=1:
@@ -56,12 +55,14 @@ class DirectClient(CommunityClient):
 
     def _validated_target(self,match,name,*,spectator=False):
         first, last = self.connection['first_udp_port'], self.connection['last_udp_port']
-        # Friend Host can increase its match capacity after exporting an invitation.
-        # Its TLS response still has to name the pinned address and grant this port.
-        if first == FIRST_HOST_MATCH_PORT and last <= LAST_HOST_MATCH_PORT:
-            last = LAST_HOST_MATCH_PORT
+        allowed_ports = (range(first, last + 1),)
+        # Stock invitations survive capacity increases and migration between the
+        # two Friend Host ranges. Custom ranges keep their original bounds.
+        if first in MATCH_UDP_BASES and last < first + MATCH_SLOT_LIMIT:
+            allowed_ports = tuple(range(base, base + MATCH_SLOT_LIMIT) for base in MATCH_UDP_BASES)
         if (not isinstance(match, dict) or match.get('address') != self.server_address
-                or type(match.get('port')) is not int or not first <= match['port'] <= last):
+                or type(match.get('port')) is not int
+                or not any(match['port'] in ports for ports in allowed_ports)):
             raise CommunityError('The public match endpoint differs from this invitation.')
         grant=match.get('udpGrant')
         native=dict(match,address='127.0.0.1',port=DIRECT_BRIDGE_POLICY['first_port'])

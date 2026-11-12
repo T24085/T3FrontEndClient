@@ -45,6 +45,39 @@ class DirectNetworkTests(unittest.TestCase):
             self.assertEqual(target['endpoint'], '127.0.0.1:20500')
             proxy.assert_called_once_with('127.0.0.1', grant)
 
+    def test_stock_invitation_accepts_migrated_ports_with_pinned_address_and_grant(self):
+        from community_transport import CommunityError
+        from direct_client import DirectClient
+
+        connection = {'format': 1, 'hostname': 'localhost', 'public_address': '127.0.0.1',
+                      'https_port': 443, 'first_udp_port': 18000, 'last_udp_port': 18004,
+                      'access_token': 'x'*43}
+        match = {'id': 'match', 'map': 'Stonehenge', 'contentHash': 'a'*64,
+                 'address': '127.0.0.1', 'port': 18447}
+        grant = {'matchId': 'match', 'id': 'grant', 'port': 18447}
+        client = DirectClient(connection, test_source='127.0.0.2')
+        self.addCleanup(client.close)
+        custom = DirectClient(dict(connection, first_udp_port=17000, last_udp_port=17002),
+                              test_source='127.0.0.2')
+        self.addCleanup(custom.close)
+
+        with patch('direct_client.UdpClient') as proxy:
+            proxy.return_value.port = 20500
+            for bad in (dict(match, address='127.0.0.2', udpGrant=grant),
+                        dict(match, port=18453, udpGrant=dict(grant, port=18453)),
+                        dict(match, port=18100, udpGrant=dict(grant, port=18100))):
+                with self.assertRaisesRegex(CommunityError, 'differs from this invitation'):
+                    client._validated_target(bad, 'Stonehenge')
+            with self.assertRaisesRegex(CommunityError, 'differs from this invitation'):
+                custom._validated_target(dict(match, udpGrant=grant), 'Stonehenge')
+            with self.assertRaisesRegex(CommunityError, 'admission is unavailable'):
+                client._validated_target(dict(match, udpGrant=dict(grant, port=18443)), 'Stonehenge')
+            proxy.assert_not_called()
+
+            target = client._validated_target(dict(match, udpGrant=grant), 'Stonehenge')
+            self.assertEqual(target['endpoint'], '127.0.0.1:20500')
+            proxy.assert_called_once_with('127.0.0.1', grant)
+
     def test_next_game_process_rotates_admission_without_changing_lobby_membership(self):
         from direct_client import DirectClient
 
