@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import queue
+import re
 import secrets
 import socket
 import threading
@@ -356,6 +357,19 @@ class DirectClient(CommunityClient):
 
     def public_join(self, name):
         return self._public('join', name=name)
+
+    def public_map(self):
+        deadline = time.monotonic() + 100
+        while True:
+            state = self.public_state()
+            map_id, fingerprint = state.get('map'), state.get('contentHash')
+            if (state['phase'] == 'playing' and isinstance(map_id, str)
+                    and self.map_label(map_id) is not None and isinstance(fingerprint, str)
+                    and re.fullmatch('[0-9a-f]{64}', fingerprint)):
+                return {'map': map_id, 'contentHash': fingerprint}
+            if time.monotonic() >= deadline:
+                raise CommunityError(state.get('error') or 'Public CTF is preparing the next map. Try joining again.')
+            time.sleep(2)
 
     def public_state(self, *, renew=False):
         state = self._public('state')

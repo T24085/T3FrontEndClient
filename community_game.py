@@ -196,9 +196,10 @@ class CommunityGame:
                 begin_attempt()
             target_loader = (lambda: self.lobby.spectator_target(watch_id)) if watch_id is not None else self.lobby.match_target
             if public_name is not None:
-                self.lobby.public_join(public_name)
                 target_loader = self.lobby.public_target
-            target = target_loader()
+                target = self.lobby.public_map()
+            else:
+                target = target_loader()
             if expected_match_id is not None and target.get('matchId') != expected_match_id:
                 raise CommunityError('The match changed. Refresh the lobby before joining.')
             if expected_map is not None and target.get('map') != expected_map:
@@ -233,7 +234,20 @@ class CommunityGame:
                     with self.lock:self.status='stopped'
                     self._release_watch()
                     return self.status
-            if target_loader() != target:
+            if public_name is not None:
+                # Preparing a cold install can outlast a seat reservation or
+                # a round. Stage the catalog before removing a live bot.
+                with self.lock:
+                    if self.stop_requested:
+                        self.status = 'stopped'
+                        return self.status
+                    self.startup_phase = 'checking_match'
+                self.lobby.public_map()
+                self.lobby.public_join(public_name)
+                target = target_loader()
+                if startup_contract is None and catalog.get(target['map']) != target['contentHash']:
+                    raise CommunityError('Your map files do not match this match. Update the community client.')
+            elif target_loader() != target:
                 raise CommunityError('The match changed while verifying your map. Please try again.')
             endpoint = target['endpoint']
             ident = uuid.uuid4().hex

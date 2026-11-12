@@ -90,6 +90,22 @@ class CommunityGameTest(unittest.TestCase):
             self.game.start()
         self.assertEqual(self.game.snapshot()['status'], 'failed')
 
+    def test_public_join_stages_files_before_reserving_a_bot_slot(self):
+        import json
+        game, lobby = self.game, self.lobby
+        (game.package/'package-manifest.json').write_text(json.dumps({'startup_contract':'prepared-client-v1'}))
+        steps = []
+        target = lobby.match_target()
+        lobby.public_map = lambda: target
+        lobby.public_join = lambda name: steps.append(('reserve', name))
+        lobby.public_target = lambda: target
+        game._prepared_for_join = lambda revision: steps.append('prepare') or {'path':'prepared', 'sha256':'a'*64}
+        game._run = lambda argv, artifacts: steps.append(argv)
+        self.assertEqual(game._start(public_name='Player'), 'starting')
+        game.thread.join(3)
+        self.assertEqual(steps[:2], ['prepare', ('reserve', 'Player')])
+        self.assertIn('--public-session', steps[2])
+
     def test_selected_ui_map_cannot_launch_a_different_server_target(self):
         with patch.object(self.game.owner,'run_owned_job') as owner:
             with self.assertRaisesRegex(CommunityError,'selected map changed'):
