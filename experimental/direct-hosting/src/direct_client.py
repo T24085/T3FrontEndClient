@@ -336,6 +336,7 @@ class DirectClient(CommunityClient):
         self.proximity_key = read_proximity_key(proximity_settings)
         self.proximity_status = proximity_prompt(self.proximity_key)
         self.public_supported = self.public_only = False
+        self.public_transport_state = None
 
     def capabilities(self):
         caps = super().capabilities()
@@ -358,8 +359,18 @@ class DirectClient(CommunityClient):
 
     def public_state(self, *, renew=False):
         state = self._public('state')
-        if renew and state.get('target'):
-            self._validated_target(state['target'], state.get('map'), public=True, existing_only=True)
+        if renew:
+            current = state.get('round'), state['phase']
+            with self.lock:
+                previous = self.public_transport_state
+                if previous is not None and (current[0] != previous[0] or
+                        (previous[1] == 'playing' and current[1] != 'playing')):
+                    for proxy in self.proxies.values():
+                        proxy.allow_rebind()
+                if self.proxies:
+                    self.public_transport_state = current
+                if state.get('target'):
+                    self._validated_target(state['target'], state.get('map'), public=True, existing_only=True)
         return state
 
     def public_target(self):
@@ -367,7 +378,10 @@ class DirectClient(CommunityClient):
         while True:
             state = self.public_state()
             if state.get('target'):
-                return self._validated_target(state['target'], state.get('map'), public=True)
+                with self.lock:
+                    target = self._validated_target(state['target'], state.get('map'), public=True)
+                    self.public_transport_state = (state.get('round'), state['phase'])
+                    return target
             if not state.get('team') or time.monotonic() >= deadline:
                 raise CommunityError(state.get('error') or 'Your public match seat was not ready. Try joining again.')
             time.sleep(1)
@@ -461,6 +475,7 @@ class DirectClient(CommunityClient):
         with self.lock:
             self.close()
             self.direct_session = secrets.token_hex(16)
+            self.public_transport_state = None
 
     def enroll(self, group):
         response=self._request(ENROLL_ROUTE.removeprefix('/api/'),{

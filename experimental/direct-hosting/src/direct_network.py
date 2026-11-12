@@ -299,6 +299,7 @@ class UdpClient:
         if len(bytes.fromhex(grant['id']))!=16 or len(bytes.fromhex(grant['key']))!=32 or type(grant['port'])is not int or not 1024<=grant['port']<=65535:raise ValueError('Invalid UDP grant.')
         if type(grant['expires'])is not int or not time.time()<grant['expires']<=time.time()+7201:raise ValueError('Invalid UDP grant deadline.')
         self.grant=dict(grant);self.key=bytes.fromhex(grant['key']);self.window=ReplayWindow();self.sent=0;self.remote=(str(ipaddress.IPv4Address(address)),grant['port']);self.client=None
+        self.rebind_until=0
         self.local=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);self.local.bind(('127.0.0.1',0));self.port=self.local.getsockname()[1]
         self.wire=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);self.wire.connect(self.remote);self.stop=threading.Event();self.thread=threading.Thread(target=self.run,daemon=True);self.thread.start()
 
@@ -309,7 +310,11 @@ class UdpClient:
                 for sock in ready:
                     if sock is self.local:
                         payload,source=sock.recvfrom(65535)
-                        if source[0]!='127.0.0.1' or (self.client is not None and source!=self.client)or len(payload)>MAX_PAYLOAD:continue
+                        if source[0]!='127.0.0.1' or len(payload)>MAX_PAYLOAD:continue
+                        if self.client is not None and source != self.client:
+                            if time.monotonic() >= self.rebind_until:
+                                continue
+                            self.rebind_until = 0
                         self.client=source;self.wire.send(frame(self.key,self.grant['id'],self.sent,payload,b'C'));self.sent+=1
                     else:
                         packet=sock.recv(65535);payload=unframe(self.key,self.grant['id'],packet,b'S',self.window)
@@ -324,5 +329,10 @@ class UdpClient:
                 or dict(grant, expires=previous['expires']) != previous):
             raise ValueError('Invalid public UDP renewal.')
         self.grant = dict(grant)
+
+    def allow_rebind(self):
+        # A public map transition replaces Unreal's local net driver and its
+        # ephemeral port. Keep the proxy port and authenticated grant stable.
+        self.rebind_until = time.monotonic() + 180
 
     def close(self):self.stop.set();self.thread.join(3);self.local.close();self.wire.close()
