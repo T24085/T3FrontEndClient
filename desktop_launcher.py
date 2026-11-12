@@ -92,6 +92,7 @@ class Desktop:
         self.retail_capture_point = tk.BooleanVar(value=True)
         self.live_status = tk.StringVar(value='Checking spectator support…')
         side = tk.Frame(root, bg='#0d1927', width=225)
+        self.sidebar = side
         side.pack(side='left', fill='y')
         side.pack_propagate(False)
         self.label(side, 'TRIBES 3', 25, True, bg='#0d1927').pack(anchor='w', padx=24, pady=(36, 0))

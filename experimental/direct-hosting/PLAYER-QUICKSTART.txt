@@ -9,6 +9,11 @@ TRIBES 3 • Windows Direct Starter • r12
    when the match is ready. The first match can take longer while Starter
    checks and stages your game files.
 
+If your host supports proximity voice, hold F9 while the game is in the
+foreground to talk to enemy players within 100 meters. Proximity volume
+fades near the edge. Turn off Proximity voice in Starter to mute both
+transmission and playback. Use the existing control for team voice.
+
 If Starter asks for a JSON, it is using the unconfigured template. Ask for
 the player ZIP prepared by your host. Individual invitations can still be
 imported into the template using Change Host Invitation.bat.

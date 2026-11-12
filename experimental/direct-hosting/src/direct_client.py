@@ -1,12 +1,247 @@
 """Separate direct-host Starter entry with local per-device credentials."""
-import os, pathlib, secrets
+from collections import deque
+from contextlib import closing, contextmanager
+import ctypes as C
+from ctypes import wintypes as W
+import http.client
+import json
+import os
+import pathlib
+import secrets
+import socket
+import threading
+import time
 from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLOT_LIMIT, MATCH_UDP_BASES,
                             MAX_DEVICES, TOKEN, UdpClient,
+                            VoiceFrames, VOICE_AUDIO, VOICE_FRAME_BYTES, VOICE_KEEPALIVE, VOICE_PROTOCOL,
+                            VOICE_RELEASE, VOICE_ROUTE, VOICE_SAMPLE_RATE,
                             locked_state, read_json, validate_endpoint, validate_group, write_json)
-from community_transport import CommunityClient,CommunityError
+from community_transport import CommunityClient, CommunityError, PinnedHTTPSConnection
 from dynamic_destination import DIRECT_BRIDGE_POLICY
 
 ROOT=pathlib.Path(__file__).resolve().parent
+PTT_KEY = 0x78  # F9
+WAVE_MAPPER = 0xffffffff
+WAVE_DONE = 1
+WAVE_IN_QUEUE = 0x10
+
+
+class WaveFormat(C.Structure):
+    _fields_ = [('format', W.WORD), ('channels', W.WORD), ('rate', W.DWORD),
+                ('bytes_per_second', W.DWORD), ('alignment', W.WORD),
+                ('bits', W.WORD), ('extension_size', W.WORD)]
+
+
+class WaveHeader(C.Structure):
+    _fields_ = [('data', C.c_void_p), ('size', W.DWORD), ('recorded', W.DWORD),
+                ('user', C.c_size_t), ('flags', W.DWORD), ('loops', W.DWORD),
+                ('next', C.c_void_p), ('reserved', C.c_size_t)]
+
+
+class WindowsVoiceDevice:
+    """Small, bounded PCM buffers on the Windows default communications path."""
+    def __init__(self, capture):
+        self.capture = capture
+        self.handle = W.HANDLE()
+        self.buffers = deque()
+        dll = C.WinDLL('winmm')
+        self.api = {}
+        for suffix, arguments in (
+            ('Open', [C.POINTER(W.HANDLE), W.UINT, C.POINTER(WaveFormat),
+                      C.c_size_t, C.c_size_t, W.DWORD]),
+            ('PrepareHeader', [W.HANDLE, C.POINTER(WaveHeader), W.UINT]),
+            ('UnprepareHeader', [W.HANDLE, C.POINTER(WaveHeader), W.UINT]),
+            ('AddBuffer' if capture else 'Write', [W.HANDLE, C.POINTER(WaveHeader), W.UINT]),
+            ('Reset', [W.HANDLE]), ('Close', [W.HANDLE]),
+        ):
+            call = getattr(dll, ('waveIn' if capture else 'waveOut') + suffix)
+            call.argtypes, call.restype = arguments, W.UINT
+            self.api[suffix] = call
+        if capture:
+            dll.waveInStart.argtypes, dll.waveInStart.restype = [W.HANDLE], W.UINT
+            self.api['Start'] = dll.waveInStart
+        fmt = WaveFormat(1, 1, VOICE_SAMPLE_RATE, VOICE_SAMPLE_RATE * 2, 2, 16, 0)
+        self.call('Open', C.byref(self.handle), WAVE_MAPPER, C.byref(fmt), 0, 0, 0)
+        try:
+            for _ in range(4):
+                data = C.create_string_buffer(VOICE_FRAME_BYTES)
+                header = WaveHeader(C.addressof(data), VOICE_FRAME_BYTES)
+                self.header_call('PrepareHeader', header)
+                self.buffers.append((data, header))
+                if capture:
+                    self.header_call('AddBuffer', header)
+            if capture:
+                self.call('Start', self.handle)
+        except OSError:
+            self.close()
+            raise
+
+    def call(self, name, *args):
+        result = self.api[name](*args)
+        if result:
+            raise OSError(f'Windows voice device error {result} ({name}).')
+
+    def header_call(self, name, header):
+        self.call(name, self.handle, C.byref(header), C.sizeof(header))
+
+    def recorded(self):
+        frames = []
+        for _ in range(len(self.buffers)):
+            data, header = self.buffers[0]
+            if not header.flags & WAVE_DONE:
+                break
+            if header.recorded == VOICE_FRAME_BYTES:
+                frames.append(data.raw)
+            self.header_call('AddBuffer', header)
+            self.buffers.rotate(-1)
+        return frames
+
+    def play(self, frame):
+        data, header = self.buffers[0]
+        if not header.flags & WAVE_IN_QUEUE:
+            data.raw = frame
+            self.header_call('Write', header)
+            self.buffers.rotate(-1)
+
+    def close(self):
+        if self.handle:
+            self.api['Reset'](self.handle)
+            for _, header in self.buffers:
+                self.api['UnprepareHeader'](self.handle, C.byref(header), C.sizeof(header))
+            self.api['Close'](self.handle)
+            self.handle = None
+
+
+class OwnedGameFocus:
+    """Match the foreground window against the exact staged game's process."""
+    def __init__(self, run):
+        record = json.loads((run / 'execution/execution.json').read_bytes())
+        executable = run / 'game/Topaz/Binaries/Win64/TribesRivals.exe'
+        self.pid = record.get('pid')
+        if (record.get('status') != 'running' or record.get('assigned_suspended') is not True
+                or type(self.pid) is not int or self.pid < 1
+                or pathlib.Path(record['argv'][0]) != executable):
+            raise ValueError('Voice requires the owned game session.')
+        self.user = C.WinDLL('user32', use_last_error=True)
+        self.kernel = C.WinDLL('kernel32', use_last_error=True)
+        self.user.GetForegroundWindow.argtypes = []
+        self.user.GetForegroundWindow.restype = W.HWND
+        self.user.GetWindowThreadProcessId.argtypes = [W.HWND, C.POINTER(W.DWORD)]
+        self.user.GetWindowThreadProcessId.restype = W.DWORD
+        self.user.GetAsyncKeyState.argtypes = [C.c_int]
+        self.user.GetAsyncKeyState.restype = C.c_short
+        self.kernel.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
+        self.kernel.OpenProcess.restype = W.HANDLE
+        self.kernel.QueryFullProcessImageNameW.argtypes = [W.HANDLE, W.DWORD, W.LPWSTR, C.POINTER(W.DWORD)]
+        self.kernel.QueryFullProcessImageNameW.restype = W.BOOL
+        self.kernel.WaitForSingleObject.argtypes = [W.HANDLE, W.DWORD]
+        self.kernel.WaitForSingleObject.restype = W.DWORD
+        self.kernel.CloseHandle.argtypes = [W.HANDLE]
+        self.kernel.CloseHandle.restype = W.BOOL
+        self.handle = self.kernel.OpenProcess(0x101000, False, self.pid)
+        if not self.handle:
+            raise C.WinError(C.get_last_error())
+        buffer = C.create_unicode_buffer(32768)
+        size = W.DWORD(len(buffer))
+        if (not self.kernel.QueryFullProcessImageNameW(self.handle, 0, buffer, C.byref(size))
+                or pathlib.Path(buffer.value) != executable):
+            self.close()
+            raise ValueError('Voice game process identity changed.')
+
+    def alive(self):
+        return self.kernel.WaitForSingleObject(self.handle, 0) == 258
+
+    def focused(self):
+        pid = W.DWORD()
+        self.user.GetWindowThreadProcessId(self.user.GetForegroundWindow(), C.byref(pid))
+        return pid.value == self.pid and self.alive()
+
+    def pressed(self):
+        return bool(self.user.GetAsyncKeyState(PTT_KEY) & 0x8000)
+
+    def close(self):
+        self.kernel.CloseHandle(self.handle)
+
+
+def proximity_connection(lobby, headers, grant):
+    conn = PinnedHTTPSConnection(lobby.hostname, lobby.port, lobby.server_address,
+                                 context=lobby.context, timeout=2)
+    try:
+        conn.request('GET', VOICE_ROUTE, headers={
+            **headers, 'Origin': lobby.origin, 'Connection': 'Upgrade', 'Upgrade': VOICE_PROTOCOL,
+            'X-Voice-Match': grant['matchId'], 'X-Voice-Grant': grant['id'],
+        })
+        with conn.getresponse() as response:
+            if (response.status != 101 or response.getheader('Upgrade') != VOICE_PROTOCOL
+                    or response.getheader('Connection', '').lower() != 'upgrade'):
+                raise ValueError('The match did not accept proximity voice.')
+        conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        conn.sock.settimeout(0.012)
+        return conn
+    except BaseException:
+        conn.close()
+        raise
+
+
+def run_proximity_voice(connection, focus, active, status):
+    frames = VoiceFrames()
+    connection.sendall(VOICE_KEEPALIVE)
+    next_heartbeat = time.monotonic() + 1
+    last_receive = time.monotonic()
+    previous_press = focus.pressed()
+    capture = playback = None
+    playback_failed = False
+    status('Hold F9 to talk')
+    try:
+        while active() and focus.alive() and time.monotonic() - last_receive < 5:
+            focused, pressed = focus.focused(), focus.pressed()
+            if not (focused and pressed) and capture is not None:
+                capture.close()
+                capture = None
+                connection.sendall(VOICE_RELEASE)
+                status('Hold F9 to talk')
+            if not focused and playback is not None:
+                playback.close()
+                playback = None
+            if focused and pressed and not previous_press:
+                try:
+                    capture = WindowsVoiceDevice(capture=True)
+                except OSError:
+                    status('Microphone unavailable')
+                else:
+                    status('Proximity mic active')
+            previous_press = pressed
+            if capture is not None:
+                for audio in capture.recorded():
+                    if not active() or not focus.focused() or not focus.pressed():
+                        break
+                    connection.sendall(VOICE_AUDIO + audio)
+            now = time.monotonic()
+            if now >= next_heartbeat:
+                connection.sendall(VOICE_KEEPALIVE)
+                next_heartbeat = now + 1
+            try:
+                data = connection.recv(4096)
+            except TimeoutError:
+                continue
+            if not data:
+                return
+            last_receive = time.monotonic()
+            for kind, audio in frames.feed(data):
+                if kind != VOICE_AUDIO or not active() or not focus.focused() or playback_failed:
+                    continue
+                try:
+                    if playback is None:
+                        playback = WindowsVoiceDevice(capture=False)
+                    playback.play(audio)
+                except OSError:
+                    playback_failed = True
+                    status('Voice playback unavailable')
+    finally:
+        if capture is not None:
+            capture.close()
+        if playback is not None:
+            playback.close()
 
 def validate_connection(d,*,local_test=False):
     if not isinstance(d,dict)or set(d)!=ENDPOINT_FIELDS|{'format','access_token'}or d['format']!=1:
@@ -29,6 +264,77 @@ class DirectClient(CommunityClient):
         super().__init__(d['hostname'],d['https_port'],d['public_address'],dict(DIRECT_BRIDGE_POLICY),
                          ssl_context=ssl_context,test_source=test_source)
         self.connection=d;self.access_token=d['access_token'];self.direct_session=secrets.token_hex(16);self.proxies={}
+        self.proximity_supported = False
+        self.proximity_enabled = threading.Event()
+        self.proximity_enabled.set()
+        self.proximity_status = 'Hold F9 to talk'
+
+    def capabilities(self):
+        caps = super().capabilities()
+        self.proximity_supported = os.name == 'nt' and caps.get('proximityVoice') == VOICE_PROTOCOL
+        return caps
+
+    def set_proximity_voice(self, enabled):
+        if enabled:
+            self.proximity_enabled.set()
+            self.proximity_status = 'Hold F9 to talk'
+        else:
+            self.proximity_enabled.clear()
+            self.proximity_status = 'Proximity voice muted'
+
+    @contextmanager
+    def proximity_game(self, ready_run):
+        with self.lock:
+            proxy = next(iter(self.proxies.values()), None)
+            admission = dict(proxy.grant) if proxy is not None else None
+            headers = self.request_headers()
+        if not self.proximity_supported or admission is None or self.test_source:
+            yield
+            return
+
+        stop = threading.Event()
+
+        def status(text):
+            if self.proximity_enabled.is_set() and not stop.is_set():
+                self.proximity_status = text
+
+        def worker():
+            focus = None
+            try:
+                while not stop.wait(0.15) and focus is None:
+                    run = ready_run()
+                    if run is not None:
+                        try:
+                            focus = OwnedGameFocus(run)
+                        except (OSError, ValueError, KeyError, IndexError, TypeError):
+                            continue
+                if focus is None:
+                    return
+                with closing(focus):
+                    while not stop.is_set() and focus.alive():
+                        if not self.proximity_enabled.is_set():
+                            stop.wait(0.15)
+                            continue
+                        try:
+                            with closing(proximity_connection(self, headers, admission)) as conn:
+                                run_proximity_voice(conn.sock, focus,
+                                    lambda: not stop.is_set() and self.proximity_enabled.is_set() and ready_run() is not None,
+                                    status)
+                        except (OSError, ValueError, http.client.HTTPException):
+                            status('Proximity voice reconnecting…')
+                        if stop.wait(2):
+                            return
+            finally:
+                status('Hold F9 to talk')
+
+        thread = threading.Thread(target=worker, name='proximity-voice-client', daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(2.5)
+            self.proximity_status = 'Hold F9 to talk' if self.proximity_enabled.is_set() else 'Proximity voice muted'
 
     def request_headers(self):
         return dict(super().request_headers(), **{
@@ -161,11 +467,42 @@ def main(root=ROOT, *, on_ready=None):
         def close(self):
             try:super().close()
             finally:lobby.close()
+
+    class DirectGame(CommunityGame):
+        def _run(self, argv, artifacts):
+            def ready_run():
+                with self.lock:
+                    return self.run if self.status == 'playing' else None
+
+            if self.role == 'player':
+                with lobby.proximity_game(ready_run):
+                    super()._run(argv, artifacts)
+            else:
+                super()._run(argv, artifacts)
+
     try:
         window=tk.Tk();window.title('TRIBES 3 — Direct Host Starter')
         map_sync=MapSync(lobby,root,workspace)
-        factory=lambda current:CommunityGame(current,root,source,workspace,workspace/'direct-desktop-control',map_sync=map_sync)
-        gui=DirectDesktop(window,lobby,factory,steam_name_loader=lambda:read_steam_name(source,root/'base-game-manifest.json'),map_sync=map_sync)
+        factory=lambda current:DirectGame(current,root,source,workspace,workspace/'direct-desktop-control',map_sync=map_sync)
+        gui=DirectDesktop(window,lobby,factory,
+                          steam_name_loader=lambda:read_steam_name(source,root/'base-game-manifest.json'),
+                          map_sync=map_sync)
+        if lobby.proximity_supported:
+            enabled = tk.BooleanVar(value=lobby.proximity_enabled.is_set())
+            tk.Checkbutton(gui.sidebar, text='Proximity voice', variable=enabled,
+                           command=lambda: lobby.set_proximity_voice(enabled.get()),
+                           bg='#0d1927', fg='#eff7ff', activebackground='#0d1927',
+                           activeforeground='#eff7ff', selectcolor='#20374a').pack(anchor='w', padx=20, pady=(18, 0))
+            indicator = tk.StringVar(value=lobby.proximity_status)
+            tk.Label(gui.sidebar, textvariable=indicator, bg='#0d1927', fg='#9fb3c6',
+                     wraplength=170, justify='left').pack(anchor='w', padx=24)
+
+            def refresh_voice():
+                indicator.set(lobby.proximity_status)
+                if not gui.closing:
+                    window.after(150, refresh_voice)
+
+            window.after(150, refresh_voice)
         window.protocol('WM_DELETE_WINDOW',gui.close)
         if on_ready is not None:
             window.update_idletasks()

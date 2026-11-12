@@ -17,6 +17,35 @@ GROUP_FILE='group-invitation.json'
 ENROLL_ROUTE='/api/direct-enroll'
 TOKEN=re.compile(r'[A-Za-z0-9_-]{43}')
 ENDPOINT_FIELDS={'hostname','public_address','https_port','first_udp_port','last_udp_port'}
+VOICE_ROUTE = '/api/proximity-voice'
+VOICE_PROTOCOL = 't3-proximity-pcm-v1'
+VOICE_SAMPLE_RATE = 16000
+VOICE_FRAME_BYTES = VOICE_SAMPLE_RATE * 2 // 50
+VOICE_KEEPALIVE = b'\x00'
+VOICE_AUDIO = b'\x01'
+VOICE_RELEASE = b'\x02'
+
+
+class VoiceFrames:
+    """Decode fixed-size PCM records and single-byte controls over TLS."""
+    def __init__(self):
+        self.buffer = bytearray()
+
+    def feed(self, raw):
+        self.buffer.extend(raw)
+        records = []
+        cursor = 0
+        while cursor < len(self.buffer):
+            kind = bytes(self.buffer[cursor:cursor+1])
+            if kind not in (VOICE_KEEPALIVE, VOICE_AUDIO, VOICE_RELEASE):
+                raise ValueError('Invalid proximity voice frame.')
+            end = cursor + 1 + (VOICE_FRAME_BYTES if kind == VOICE_AUDIO else 0)
+            if end > len(self.buffer):
+                break
+            records.append((kind, bytes(self.buffer[cursor+1:end])))
+            cursor = end
+        del self.buffer[:cursor]
+        return records
 
 def write_json(path, value):
     path=pathlib.Path(path);path.parent.mkdir(parents=True,exist_ok=True)
@@ -211,6 +240,12 @@ class UdpServer:
             upstream=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);upstream.bind((InviteStore.address(peer_id),0));upstream.connect(self.native)
             r={'id':ident,'key':key,'match':match_id,'peer':peer_id,'session':session,'expires':int(time.time())+7200,'socket':upstream,'remote':None,'window':ReplayWindow(),'sent':0}
             self.grants[ident]=r;self.identities[(match_id,peer_id)]=ident;return self.public(r)
+
+    def voice_admitted(self, match_id, peer_id, session, grant_id):
+        with self.lock:
+            grant = self.grants.get(grant_id)
+            return bool(grant and self.identities.get((match_id, peer_id)) == grant_id
+                        and grant['session'] == session and grant['expires'] > time.time())
 
     def public(self,r):return {'id':r['id'],'key':r['key'].hex(),'matchId':r['match'],'expires':r['expires'],'port':self.public_port}
 
