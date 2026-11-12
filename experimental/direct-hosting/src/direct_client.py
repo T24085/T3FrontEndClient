@@ -582,9 +582,10 @@ class PublicCTFPanel:
         self.ballot_key = None
         self.state = {}
         self.status = tk.StringVar(value='Checking the public server…')
+        self.format_label = tk.StringVar(value='Bots fill open slots')
         self.panel = tk.Frame(self.root, bg=BG)
         desktop.label(self.panel, 'Public CTF', 27, True).pack(anchor='w')
-        desktop.label(self.panel, '12 vs. 12 · Bots fill open slots', color=MUTED).pack(anchor='w', pady=(4, 18))
+        tk.Label(self.panel, textvariable=self.format_label, bg=BG, fg=MUTED).pack(anchor='w', pady=(4, 18))
         tk.Label(self.panel, textvariable=self.status, bg=BG, fg=MUTED, wraplength=580,
                  justify='left').pack(anchor='w', pady=(0, 12))
         actions = tk.Frame(self.panel, bg=BG)
@@ -677,7 +678,11 @@ class PublicCTFPanel:
                     phase = state['phase']
                     summary = {'loading': 'Preparing the server', 'playing': label,
                                'voting': 'Voting for the next map', 'traveling': 'Loading the next map'}[phase]
-                    self.status.set(state.get('error') or f'{summary} · {state["players"]}/24 players')
+                    team_size = state.get('teamSize', 12)
+                    if type(team_size) is not int or not 1 <= team_size <= 64:
+                        team_size = 12
+                    self.format_label.set(f'{team_size} vs. {team_size} · Bots fill open slots')
+                    self.status.set(state.get('error') or f'{summary} · {state["players"]}/{2 * team_size} players')
         except queue.Empty:
             pass
         state = self.state
