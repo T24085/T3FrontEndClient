@@ -20,10 +20,70 @@ from community_transport import CommunityClient, CommunityError, PinnedHTTPSConn
 from dynamic_destination import DIRECT_BRIDGE_POLICY
 
 ROOT=pathlib.Path(__file__).resolve().parent
-PTT_KEY = 0x78  # F9
+DEFAULT_PTT_KEY = 0x78  # F9
+PTT_KEY_NAMES = {
+    **{key: chr(key) for key in (*range(0x30, 0x3a), *range(0x41, 0x5b))},
+    **{0x70 + i: f'F{i + 1}' for i in range(24)},
+    **{0x60 + i: f'Numpad {i}' for i in range(10)},
+    0x08: 'Backspace', 0x09: 'Tab', 0x0d: 'Enter', 0x13: 'Pause',
+    0x14: 'Caps Lock', 0x20: 'Space', 0x21: 'Page Up', 0x22: 'Page Down',
+    0x23: 'End', 0x24: 'Home', 0x25: 'Left', 0x26: 'Up', 0x27: 'Right',
+    0x28: 'Down', 0x2d: 'Insert', 0x2e: 'Delete', 0x5d: 'Menu',
+    0x6a: 'Numpad *', 0x6b: 'Numpad +', 0x6d: 'Numpad −', 0x6e: 'Numpad .',
+    0x6f: 'Numpad /', 0x90: 'Num Lock', 0x91: 'Scroll Lock',
+    0xba: ';', 0xbb: '=', 0xbc: ',', 0xbd: '-', 0xbe: '.', 0xbf: '/',
+    0xc0: '`', 0xdb: '[', 0xdc: '\\', 0xdd: ']', 0xde: "'", 0xe2: 'OEM 102',
+}
 WAVE_MAPPER = 0xffffffff
 WAVE_DONE = 1
 WAVE_IN_QUEUE = 0x10
+
+
+def proximity_prompt(key):
+    return f'Hold {PTT_KEY_NAMES[key]} to talk'
+
+
+def read_proximity_key(path):
+    if path is not None:
+        try:
+            settings = read_json(path, 1024)
+            key = settings.get('key') if isinstance(settings, dict) else None
+            if type(key) is int and key in PTT_KEY_NAMES:
+                return key
+        except (OSError, ValueError):
+            pass
+    return DEFAULT_PTT_KEY
+
+
+def choose_proximity_key(parent, save):
+    import tkinter as tk
+    from tkinter import ttk
+
+    dialog = tk.Toplevel(parent)
+    dialog.title('Proximity voice key')
+    dialog.transient(parent)
+    dialog.resizable(False, False)
+    prompt = tk.StringVar(dialog, 'Press a key to bind. Esc cancels.')
+    ttk.Label(dialog, textvariable=prompt, wraplength=300, padding=16).pack()
+
+    def capture(event):
+        if event.keysym == 'Escape':
+            dialog.destroy()
+        elif event.keycode not in PTT_KEY_NAMES:
+            prompt.set('Choose a keyboard key such as a letter, Space, or F9.')
+        else:
+            try:
+                save(event.keycode)
+            except OSError:
+                prompt.set('Could not save the key. Press it again to retry.')
+            else:
+                dialog.destroy()
+        return 'break'
+
+    dialog.bind('<KeyPress>', capture)
+    dialog.wait_visibility()
+    dialog.grab_set()
+    dialog.focus_set()
 
 
 class WaveFormat(C.Structure):
@@ -156,8 +216,8 @@ class OwnedGameFocus:
         self.user.GetWindowThreadProcessId(self.user.GetForegroundWindow(), C.byref(pid))
         return pid.value == self.pid and self.alive()
 
-    def pressed(self):
-        return bool(self.user.GetAsyncKeyState(PTT_KEY) & 0x8000)
+    def pressed(self, key):
+        return bool(self.user.GetAsyncKeyState(key) & 0x8000)
 
     def close(self):
         self.kernel.CloseHandle(self.handle)
@@ -183,27 +243,31 @@ def proximity_connection(lobby, headers, grant):
         raise
 
 
-def run_proximity_voice(connection, focus, active, status):
+def run_proximity_voice(connection, focus, active, status, binding):
     frames = VoiceFrames()
     connection.sendall(VOICE_KEEPALIVE)
     next_heartbeat = time.monotonic() + 1
     last_receive = time.monotonic()
-    previous_press = focus.pressed()
+    key = binding()
+    previous_press = focus.pressed(key)
     capture = playback = None
     playback_failed = False
-    status('Hold F9 to talk')
+    status(proximity_prompt(key))
     try:
         while active() and focus.alive() and time.monotonic() - last_receive < 5:
-            focused, pressed = focus.focused(), focus.pressed()
-            if not (focused and pressed) and capture is not None:
+            selected_key = binding()
+            changed = selected_key != key
+            key = selected_key
+            focused, pressed = focus.focused(), focus.pressed(key)
+            if capture is not None and (changed or not (focused and pressed)):
                 capture.close()
                 capture = None
                 connection.sendall(VOICE_RELEASE)
-                status('Hold F9 to talk')
+                status(proximity_prompt(key))
             if not focused and playback is not None:
                 playback.close()
                 playback = None
-            if focused and pressed and not previous_press:
+            if focused and pressed and not (changed or previous_press):
                 try:
                     capture = WindowsVoiceDevice(capture=True)
                 except OSError:
@@ -213,7 +277,7 @@ def run_proximity_voice(connection, focus, active, status):
             previous_press = pressed
             if capture is not None:
                 for audio in capture.recorded():
-                    if not active() or not focus.focused() or not focus.pressed():
+                    if not active() or binding() != key or not focus.focused() or not focus.pressed(key):
                         break
                     connection.sendall(VOICE_AUDIO + audio)
             now = time.monotonic()
@@ -259,7 +323,7 @@ class DirectClient(CommunityClient):
     def accepts_server_address(address):
         return address.is_global and not address.is_multicast
 
-    def __init__(self,connection,*,ssl_context=None,test_source=None):
+    def __init__(self,connection,*,ssl_context=None,test_source=None,proximity_settings=None):
         d=validate_connection(connection,local_test=test_source is not None)
         super().__init__(d['hostname'],d['https_port'],d['public_address'],dict(DIRECT_BRIDGE_POLICY),
                          ssl_context=ssl_context,test_source=test_source)
@@ -267,7 +331,9 @@ class DirectClient(CommunityClient):
         self.proximity_supported = False
         self.proximity_enabled = threading.Event()
         self.proximity_enabled.set()
-        self.proximity_status = 'Hold F9 to talk'
+        self.proximity_settings = proximity_settings
+        self.proximity_key = read_proximity_key(proximity_settings)
+        self.proximity_status = proximity_prompt(self.proximity_key)
 
     def capabilities(self):
         caps = super().capabilities()
@@ -277,10 +343,19 @@ class DirectClient(CommunityClient):
     def set_proximity_voice(self, enabled):
         if enabled:
             self.proximity_enabled.set()
-            self.proximity_status = 'Hold F9 to talk'
+            self.proximity_status = proximity_prompt(self.proximity_key)
         else:
             self.proximity_enabled.clear()
             self.proximity_status = 'Proximity voice muted'
+
+    def bind_proximity_key(self, key):
+        if type(key) is not int or key not in PTT_KEY_NAMES:
+            raise ValueError('Unsupported proximity voice key.')
+        if self.proximity_settings is not None:
+            write_json(self.proximity_settings, {'key': key})
+        self.proximity_key = key
+        if self.proximity_enabled.is_set():
+            self.proximity_status = proximity_prompt(key)
 
     @contextmanager
     def proximity_game(self, ready_run):
@@ -319,13 +394,13 @@ class DirectClient(CommunityClient):
                             with closing(proximity_connection(self, headers, admission)) as conn:
                                 run_proximity_voice(conn.sock, focus,
                                     lambda: not stop.is_set() and self.proximity_enabled.is_set() and ready_run() is not None,
-                                    status)
+                                    status, lambda: self.proximity_key)
                         except (OSError, ValueError, http.client.HTTPException):
                             status('Proximity voice reconnecting…')
                         if stop.wait(2):
                             return
             finally:
-                status('Hold F9 to talk')
+                status(proximity_prompt(self.proximity_key))
 
         thread = threading.Thread(target=worker, name='proximity-voice-client', daemon=True)
         thread.start()
@@ -334,7 +409,8 @@ class DirectClient(CommunityClient):
         finally:
             stop.set()
             thread.join(2.5)
-            self.proximity_status = 'Hold F9 to talk' if self.proximity_enabled.is_set() else 'Proximity voice muted'
+            self.proximity_status = (proximity_prompt(self.proximity_key) if self.proximity_enabled.is_set()
+                                     else 'Proximity voice muted')
 
     def request_headers(self):
         return dict(super().request_headers(), **{
@@ -446,7 +522,7 @@ def main(root=ROOT, *, on_ready=None):
                     write_json(saved,validate_connection(read_json(filename,16384)))
             connection=validate_connection(read_json(saved,16384)) if saved.exists() else None
         if connection is not None:
-            lobby=DirectClient(connection)
+            lobby=DirectClient(connection, proximity_settings=local/'proximity-voice.json')
             try:lobby.capabilities()
             except CommunityError:
                 lobby.close()
@@ -493,11 +569,17 @@ def main(root=ROOT, *, on_ready=None):
                            command=lambda: lobby.set_proximity_voice(enabled.get()),
                            bg='#0d1927', fg='#eff7ff', activebackground='#0d1927',
                            activeforeground='#eff7ff', selectcolor='#20374a').pack(anchor='w', padx=20, pady=(18, 0))
+            key_label = tk.StringVar(value=f'Change key ({PTT_KEY_NAMES[lobby.proximity_key]})')
+            change_key = gui.button(gui.sidebar, 'Change proximity key',
+                                    lambda: choose_proximity_key(window, lobby.bind_proximity_key), False)
+            change_key.configure(textvariable=key_label)
+            change_key.pack(anchor='w', padx=24, pady=(2, 4))
             indicator = tk.StringVar(value=lobby.proximity_status)
             tk.Label(gui.sidebar, textvariable=indicator, bg='#0d1927', fg='#9fb3c6',
                      wraplength=170, justify='left').pack(anchor='w', padx=24)
 
             def refresh_voice():
+                key_label.set(f'Change key ({PTT_KEY_NAMES[lobby.proximity_key]})')
                 indicator.set(lobby.proximity_status)
                 if not gui.closing:
                     window.after(150, refresh_voice)
