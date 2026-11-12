@@ -584,10 +584,31 @@ def group_connection(root, local, *, ssl_context=None, test_source=None):
         return connection
 
 
+# The signed Direct bundle supplies the sample as a compressed, verified payload.
+_ARMOR_SAMPLE = b''
+
+
+def armor_sample_model():
+    from base64 import b64decode
+    import lzma
+    from armor_viewport import decode_model
+
+    limit = 6 * 1024 * 1024
+    decoder = lzma.LZMADecompressor(format=lzma.FORMAT_XZ, memlimit=32 * 1024 * 1024)
+    compressed = b64decode(_ARMOR_SAMPLE, validate=True)
+    try:
+        raw = decoder.decompress(compressed, max_length=limit + 1)
+    except lzma.LZMAError as exc:
+        raise ValueError('The 3D sample could not be decoded.') from exc
+    if len(raw) > limit or not decoder.eof or decoder.unused_data:
+        raise ValueError('Invalid 3D sample data.')
+    return decode_model(raw)
+
+
 class ArmorPanel:
     classes = ('Light', 'Medium', 'Heavy')
 
-    def __init__(self, tk, desktop, lobby):
+    def __init__(self, tk, desktop, lobby, *, model_directory=None):
         from tkinter import ttk
         from desktop_launcher import BG, MUTED, PANEL
 
@@ -597,6 +618,12 @@ class ArmorPanel:
         self.saved = {}
         self.previews = {}
         self.requests = set()
+        self.model_directory = model_directory
+        self.viewport = None
+        self.displayed_model = None
+        self.sample_active = False
+        self.sample_model = None
+        self.sample_button = None
         self.weight = tk.StringVar(value=self.classes[0])
         self.suit = tk.StringVar()
         self.status = tk.StringVar()
@@ -612,11 +639,17 @@ class ArmorPanel:
         self.suit_box = ttk.Combobox(row, textvariable=self.suit, state='disabled', width=25)
         self.suit_box.pack(side='left', padx=(8, 0))
         self.suit_box.bind('<<ComboboxSelected>>', self.select_suit)
+        if _ARMOR_SAMPLE and os.name == 'nt':
+            self.sample_button = desktop.button(row, 'Try 3D sample', self.toggle_sample, False)
+            self.sample_button.pack(side='left', padx=(12, 0))
+            self.sample_button.configure(state='disabled')
         preview = tk.Frame(self.panel, bg=PANEL, width=460, height=335)
         preview.pack(anchor='w', pady=(12, 4), fill='x')
         preview.pack_propagate(False)
         self.image = tk.Label(preview, bg=PANEL, fg=MUTED)
         self.image.pack(fill='both', expand=True)
+        self.model_frame = tk.Frame(preview, bg=PANEL, takefocus=True, cursor='fleur')
+        self.orbit_help = desktop.label(self.panel, 'Drag to rotate · Scroll to zoom · Home to reset', color=MUTED)
         tk.Label(self.panel, textvariable=self.caption, bg=BG, fg=MUTED).pack(anchor='w')
         self.save = desktop.button(self.panel, 'Save armor choices', self.save_choices)
         self.save.pack(anchor='w', pady=(10, 0))
@@ -645,7 +678,7 @@ class ArmorPanel:
         if not self.catalog:
             self.status.set('Loading available suits…')
             self.submit('load')
-        elif self.current_selection() not in self.previews:
+        elif not self.sample_active and self.current_selection() not in self.previews and self.current_selection() != self.displayed_model:
             self.select_suit()
 
     def current_selection(self):
@@ -666,12 +699,66 @@ class ArmorPanel:
         suit = next(key for key, label in self.catalog[weight].items() if label == self.suit.get())
         self.selected[weight] = suit
         key = (weight, suit)
+        self.sample_active = False
+        if self.sample_button is not None:
+            self.sample_button.configure(text='Try 3D sample')
         self.caption.set(f'{weight} armor · {self.suit.get()}')
+        if self.show_model(key):
+            self.refresh_save()
+            return
+        self.displayed_model = None
+        self.model_frame.pack_forget()
+        self.orbit_help.pack_forget()
+        self.image.pack(fill='both', expand=True)
         self.image.configure(image=self.previews.get(key, ''), text='')
         if key not in self.previews:
             self.image.configure(text='Loading suit preview…')
             self.submit(key, weight=weight, suit=suit)
         self.refresh_save()
+
+    def show_model(self, key):
+        if self.model_directory is None or os.name != 'nt':
+            return False
+        weight, suit = key
+        if not re.fullmatch(r'[a-z0-9-]{1,48}', suit):
+            return False
+        path = self.model_directory / f'{weight.lower()}-{suit}.t3m'
+        if not path.is_file():
+            return False
+        try:
+            from armor_viewport import read_model
+            self.present_model(read_model(path))
+        except (ImportError, OSError, ValueError, self.tk.TclError):
+            return False
+        self.displayed_model = key
+        return True
+
+    def present_model(self, model):
+        from armor_viewport import ArmorViewport
+        if self.viewport is None:
+            self.viewport = ArmorViewport(self.model_frame)
+        self.image.pack_forget()
+        self.model_frame.pack(fill='both', expand=True)
+        self.viewport.show(model)
+        self.orbit_help.pack(anchor='w', before=self.save)
+
+    def toggle_sample(self):
+        if self.sample_active:
+            self.select_suit()
+            return
+        try:
+            if self.sample_model is None:
+                self.sample_model = armor_sample_model()
+            self.present_model(self.sample_model)
+        except (ImportError, OSError, ValueError, self.tk.TclError):
+            self.select_suit()
+            self.status.set('The 3D sample could not open on this PC.')
+            return
+        self.sample_active = True
+        self.caption.set('Base Armor · 3D sample with neutral shading')
+        self.sample_button.configure(text='Back to suit preview')
+        self.viewport.reset_camera()
+        self.model_frame.focus_set()
 
     def refresh_save(self):
         self.save.configure(state='normal' if self.selected != self.saved and 'save' not in self.requests else 'disabled')
@@ -696,6 +783,8 @@ class ArmorPanel:
         self.saved = dict(choices)
         self.selected = dict(choices)
         self.status.set('')
+        if self.sample_button is not None:
+            self.sample_button.configure(state='normal')
         self.select_class()
 
     def tick(self):
@@ -1065,7 +1154,7 @@ def main(root=ROOT, *, on_ready=None):
             gui.public_panel = PublicCTFPanel(tk, gui, lobby)
             gui.show_panel('public' if lobby.public_only else 'lobbies')
         if lobby.armor_supported:
-            gui.armor_panel = ArmorPanel(tk, gui, lobby)
+            gui.armor_panel = ArmorPanel(tk, gui, lobby, model_directory=root/'armor-models')
         if lobby.proximity_supported:
             enabled = tk.BooleanVar(value=lobby.proximity_enabled.is_set())
             tk.Checkbutton(gui.sidebar, text='Proximity voice', variable=enabled,
