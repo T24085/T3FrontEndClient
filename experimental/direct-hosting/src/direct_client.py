@@ -3,6 +3,7 @@ from collections import deque
 from contextlib import closing, contextmanager
 import ctypes as C
 from ctypes import wintypes as W
+import hashlib
 import http.client
 import json
 import os
@@ -584,25 +585,39 @@ def group_connection(root, local, *, ssl_context=None, test_source=None):
         return connection
 
 
-# The signed Direct bundle supplies the sample as a compressed, verified payload.
-_ARMOR_SAMPLE = b''
+ARMOR_MODEL_BLOBS = {}
 
 
-def armor_sample_model():
-    from base64 import b64decode
+def download_armor_model(lobby, key):
     import lzma
     from armor_viewport import decode_model
+    from direct_update_contract import ROUTE
 
-    limit = 6 * 1024 * 1024
-    decoder = lzma.LZMADecompressor(format=lzma.FORMAT_XZ, memlimit=32 * 1024 * 1024)
-    compressed = b64decode(_ARMOR_SAMPLE, validate=True)
+    size, chunks = ARMOR_MODEL_BLOBS[key]
+    compressed = bytearray()
     try:
-        raw = decoder.decompress(compressed, max_length=limit + 1)
-    except lzma.LZMAError as exc:
-        raise ValueError('The 3D sample could not be decoded.') from exc
-    if len(raw) > limit or not decoder.eof or decoder.unused_data:
-        raise ValueError('Invalid 3D sample data.')
-    return decode_model(raw)
+        for digest, length in chunks:
+            with closing(PinnedHTTPSConnection(lobby.hostname,lobby.port,lobby.server_address,
+                                               context=lobby.context,timeout=8)) as connection:
+                authority = f'{lobby.hostname.lower()}:{lobby.port}'
+                connection.request('GET', ROUTE+'starter-file-'+digest+'.bin', headers={'Host':authority})
+                response = connection.getresponse()
+                if response.status != 200:
+                    raise ValueError('The 3D model is unavailable from this host.')
+                data = response.read(length+1)
+                if len(data)!=length or hashlib.sha256(data).hexdigest()!=digest:
+                    raise ValueError('The downloaded 3D model did not match the signed release.')
+                compressed.extend(data)
+        decoder = lzma.LZMADecompressor(format=lzma.FORMAT_XZ,memlimit=32*1024*1024)
+        raw = decoder.decompress(compressed,max_length=size+1)
+        if len(raw)!=size or not decoder.eof or decoder.unused_data:
+            raise ValueError('Invalid 3D model data.')
+        model = decode_model(raw)
+        if model.texture is None:
+            raise ValueError('The 3D model is missing its suit texture.')
+        return model
+    except (OSError, http.client.HTTPException, ValueError, lzma.LZMAError) as exc:
+        raise CommunityError(str(exc)) from exc
 
 
 class ArmorPanel:
@@ -616,14 +631,11 @@ class ArmorPanel:
         self.results = queue.Queue()
         self.catalog = {}
         self.saved = {}
-        self.previews = {}
         self.requests = set()
+        self.models = {}
         self.model_directory = model_directory
         self.viewport = None
         self.displayed_model = None
-        self.sample_active = False
-        self.sample_model = None
-        self.sample_button = None
         self.weight = tk.StringVar(value=self.classes[0])
         self.suit = tk.StringVar()
         self.status = tk.StringVar()
@@ -639,15 +651,11 @@ class ArmorPanel:
         self.suit_box = ttk.Combobox(row, textvariable=self.suit, state='disabled', width=25)
         self.suit_box.pack(side='left', padx=(8, 0))
         self.suit_box.bind('<<ComboboxSelected>>', self.select_suit)
-        if _ARMOR_SAMPLE and os.name == 'nt':
-            self.sample_button = desktop.button(row, 'Try 3D sample', self.toggle_sample, False)
-            self.sample_button.pack(side='left', padx=(12, 0))
-            self.sample_button.configure(state='disabled')
         preview = tk.Frame(self.panel, bg=PANEL, width=460, height=335)
         preview.pack(anchor='w', pady=(12, 4), fill='x')
         preview.pack_propagate(False)
-        self.image = tk.Label(preview, bg=PANEL, fg=MUTED)
-        self.image.pack(fill='both', expand=True)
+        self.model_status = tk.Label(preview, text='Loading available suits…', bg=PANEL, fg=MUTED)
+        self.model_status.pack(fill='both', expand=True)
         self.model_frame = tk.Frame(preview, bg=PANEL, takefocus=True, cursor='fleur')
         self.orbit_help = desktop.label(self.panel, 'Drag to rotate · Scroll to zoom · Home to reset', color=MUTED)
         tk.Label(self.panel, textvariable=self.caption, bg=BG, fg=MUTED).pack(anchor='w')
@@ -666,7 +674,8 @@ class ArmorPanel:
 
         def run():
             try:
-                self.results.put((key, self.lobby.armor_suits(**data), None))
+                response = download_armor_model(self.lobby,key) if isinstance(key,tuple) else self.lobby.armor_suits(**data)
+                self.results.put((key, response, None))
             except CommunityError as exc:
                 self.results.put((key, None, str(exc)))
 
@@ -678,7 +687,7 @@ class ArmorPanel:
         if not self.catalog:
             self.status.set('Loading available suits…')
             self.submit('load')
-        elif not self.sample_active and self.current_selection() not in self.previews and self.current_selection() != self.displayed_model:
+        elif self.current_selection() != self.displayed_model:
             self.select_suit()
 
     def current_selection(self):
@@ -699,35 +708,35 @@ class ArmorPanel:
         suit = next(key for key, label in self.catalog[weight].items() if label == self.suit.get())
         self.selected[weight] = suit
         key = (weight, suit)
-        self.sample_active = False
-        if self.sample_button is not None:
-            self.sample_button.configure(text='Try 3D sample')
         self.caption.set(f'{weight} armor · {self.suit.get()}')
-        if self.show_model(key):
-            self.refresh_save()
-            return
-        self.displayed_model = None
-        self.model_frame.pack_forget()
-        self.orbit_help.pack_forget()
-        self.image.pack(fill='both', expand=True)
-        self.image.configure(image=self.previews.get(key, ''), text='')
-        if key not in self.previews:
-            self.image.configure(text='Loading suit preview…')
-            self.submit(key, weight=weight, suit=suit)
+        if key != self.displayed_model and not self.show_model(key):
+            self.displayed_model = None
+            self.model_frame.pack_forget()
+            self.orbit_help.pack_forget()
+            loading = os.name=='nt' and key in ARMOR_MODEL_BLOBS and key not in self.models
+            self.model_status.configure(text='Loading 3D suit…' if loading else '3D model unavailable for this suit.')
+            self.model_status.pack(fill='both', expand=True)
+            if loading:
+                self.submit(key)
         self.refresh_save()
 
     def show_model(self, key):
-        if self.model_directory is None or os.name != 'nt':
+        if os.name != 'nt':
             return False
         weight, suit = key
         if not re.fullmatch(r'[a-z0-9-]{1,48}', suit):
             return False
-        path = self.model_directory / f'{weight.lower()}-{suit}.t3m'
-        if not path.is_file():
-            return False
         try:
-            from armor_viewport import read_model
-            self.present_model(read_model(path))
+            model = self.models.get(key)
+            if model is None:
+                if self.model_directory is None:
+                    return False
+                from armor_viewport import read_model
+                path = self.model_directory / f'{weight.lower()}-{suit}.t3m'
+                model = read_model(path)
+            if model.texture is None:
+                return False
+            self.present_model(model)
         except (ImportError, OSError, ValueError, self.tk.TclError):
             return False
         self.displayed_model = key
@@ -737,28 +746,10 @@ class ArmorPanel:
         from armor_viewport import ArmorViewport
         if self.viewport is None:
             self.viewport = ArmorViewport(self.model_frame)
-        self.image.pack_forget()
+        self.model_status.pack_forget()
         self.model_frame.pack(fill='both', expand=True)
         self.viewport.show(model)
         self.orbit_help.pack(anchor='w', before=self.save)
-
-    def toggle_sample(self):
-        if self.sample_active:
-            self.select_suit()
-            return
-        try:
-            if self.sample_model is None:
-                self.sample_model = armor_sample_model()
-            self.present_model(self.sample_model)
-        except (ImportError, OSError, ValueError, self.tk.TclError):
-            self.select_suit()
-            self.status.set('The 3D sample could not open on this PC.')
-            return
-        self.sample_active = True
-        self.caption.set('Base Armor · 3D sample with neutral shading')
-        self.sample_button.configure(text='Back to suit preview')
-        self.viewport.reset_camera()
-        self.model_frame.focus_set()
 
     def refresh_save(self):
         self.save.configure(state='normal' if self.selected != self.saved and 'save' not in self.requests else 'disabled')
@@ -783,8 +774,6 @@ class ArmorPanel:
         self.saved = dict(choices)
         self.selected = dict(choices)
         self.status.set('')
-        if self.sample_button is not None:
-            self.sample_button.configure(state='normal')
         self.select_class()
 
     def tick(self):
@@ -805,16 +794,15 @@ class ArmorPanel:
                     self.saved = saved
                     self.status.set('Armor choices saved. They apply the next time you spawn.')
                 else:
-                    image = self.tk.PhotoImage(data=response.get('preview', ''), format='png')
-                    if image.height() > 315:
-                        image = image.subsample(2)
-                    self.previews[key] = image
-                    if key == self.current_selection():
-                        self.image.configure(image=image, text='')
-            except (ValueError, self.tk.TclError) as exc:
-                if isinstance(key, tuple):
-                    if key == self.current_selection():
-                        self.image.configure(image='', text='Preview unavailable. Select the suit again to retry.')
+                    if len(self.models)>=3:
+                        self.models.pop(next(iter(self.models)))
+                    self.models[key] = response
+                    if key==self.current_selection() and not self.show_model(key):
+                        self.model_status.configure(text='The 3D viewport could not open.')
+            except ValueError as exc:
+                if isinstance(key,tuple):
+                    if key==self.current_selection():
+                        self.model_status.configure(text='3D model unavailable. Select the suit again to retry.')
                 else:
                     self.status.set(str(exc))
             finally:

@@ -3,6 +3,7 @@ import ctypes as C
 from ctypes import wintypes as W
 import math
 import struct
+from typing import NamedTuple
 
 
 class PixelFormat(C.Structure):
@@ -18,24 +19,46 @@ class PixelFormat(C.Structure):
 
 HEADER = struct.Struct('<4sI')
 VERTEX = struct.Struct('<10f')
+TEXTURED_HEADER = struct.Struct('<4sIHH')
+TEXTURED_VERTEX = struct.Struct('<12f')
 MAX_VERTICES = 360_000
+MAX_TEXTURE = 1024
+MAX_MODEL_BYTES = TEXTURED_HEADER.size + MAX_VERTICES * TEXTURED_VERTEX.size + MAX_TEXTURE**2 * 3
+
+
+class ArmorModel(NamedTuple):
+    count: int
+    vertices: object
+    texture: bytes | None
+    width: int
+    height: int
 
 
 def read_model(path):
     with path.open('rb') as stream:
-        return decode_model(stream.read(HEADER.size + MAX_VERTICES * VERTEX.size + 1))
+        return decode_model(stream.read(MAX_MODEL_BYTES + 1))
 
 
 def decode_model(data):
     if len(data) < HEADER.size:
         raise ValueError('Incomplete armor model.')
     marker, count = HEADER.unpack_from(data)
-    if marker != b'T3M1' or not 3 <= count <= MAX_VERTICES or count % 3:
+    if marker not in (b'T3M1', b'T3M2') or not 3 <= count <= MAX_VERTICES or count % 3:
         raise ValueError('Unsupported armor model.')
-    expected = count * VERTEX.size
-    if len(data) != HEADER.size + expected:
+    header_size, stride = HEADER.size, VERTEX.size
+    width = height = 0
+    if marker == b'T3M2':
+        if len(data) < TEXTURED_HEADER.size:
+            raise ValueError('Incomplete textured armor model.')
+        _, _, width, height = TEXTURED_HEADER.unpack_from(data)
+        if any(size < 1 or size > MAX_TEXTURE or size & (size - 1) for size in (width, height)):
+            raise ValueError('Invalid armor texture dimensions.')
+        header_size, stride = TEXTURED_HEADER.size, TEXTURED_VERTEX.size
+    end = header_size + count * stride
+    if len(data) != end + width * height * 3:
         raise ValueError('Invalid armor model size.')
-    return count, C.create_string_buffer(data[HEADER.size:], expected)
+    return ArmorModel(count, C.create_string_buffer(data[header_size:end], end-header_size),
+                      data[end:] if width else None, width, height)
 
 
 class ArmorViewport:
@@ -44,6 +67,8 @@ class ArmorViewport:
         self.context = None
         self.dc = None
         self.model = None
+        self.texture_owner = None
+        self.texture_id = C.c_uint()
         self.drag_start = None
         self.pending = None
         self.reset_camera()
@@ -88,10 +113,17 @@ class ArmorViewport:
                 'glTranslatef': (None, single, single, single),
                 'glRotatef': (None, single, single, single, single),
                 'glEnable': (None, unsigned),
+                'glDisable': (None, unsigned),
                 'glColorMaterial': (None, unsigned, unsigned),
                 'glLightfv': (None, unsigned, unsigned, C.POINTER(single)),
                 'glInterleavedArrays': (None, unsigned, integer, pointer),
                 'glDrawArrays': (None, unsigned, integer, integer),
+                'glGenTextures': (None, integer, C.POINTER(unsigned)),
+                'glDeleteTextures': (None, integer, C.POINTER(unsigned)),
+                'glBindTexture': (None, unsigned, unsigned),
+                'glTexParameteri': (None, unsigned, unsigned, integer),
+                'glPixelStorei': (None, unsigned, integer),
+                'glTexImage2D': (None, unsigned, integer, integer, integer, integer, integer, unsigned, unsigned, pointer),
             }),
         )
         for library, functions in groups:
@@ -154,6 +186,29 @@ class ArmorViewport:
         if self.model is not None and self.pending is None:
             self.pending = self.frame.after_idle(self.draw)
 
+    def bind_material(self, model):
+        gl = self.gl
+        texture_2d = 0x0DE1
+        if self.texture_owner is not model:
+            if self.texture_id.value:
+                gl.glDeleteTextures(1, C.byref(self.texture_id))
+                self.texture_id.value = 0
+            if model.texture is not None:
+                gl.glGenTextures(1, C.byref(self.texture_id))
+                gl.glBindTexture(texture_2d, self.texture_id.value)
+                gl.glTexParameteri(texture_2d, 0x2801, 0x2601)
+                gl.glTexParameteri(texture_2d, 0x2800, 0x2601)
+                gl.glPixelStorei(0x0CF5, 1)
+                pixels = C.c_char_p(model.texture)
+                gl.glTexImage2D(texture_2d, 0, 0x1907, model.width, model.height, 0, 0x1907, 0x1401, pixels)
+            self.texture_owner = model
+        if model.texture is None:
+            gl.glDisable(texture_2d)
+            return 0x2A26
+        gl.glEnable(texture_2d)
+        gl.glBindTexture(texture_2d, self.texture_id.value)
+        return 0x2A2C
+
     def draw(self):
         self.pending = None
         if self.model is None or not self.frame.winfo_ismapped():
@@ -184,9 +239,9 @@ class ArmorViewport:
             gl.glTranslatef(0, 0, -self.distance)
             gl.glRotatef(self.pitch, 1, 0, 0)
             gl.glRotatef(self.yaw, 0, 1, 0)
-            count, data = self.model
-            gl.glInterleavedArrays(0x2A26, 0, C.cast(data, C.c_void_p))
-            gl.glDrawArrays(4, 0, count)
+            layout = self.bind_material(self.model)
+            gl.glInterleavedArrays(layout, 0, C.cast(self.model.vertices, C.c_void_p))
+            gl.glDrawArrays(4, 0, self.model.count)
             self.gdi.SwapBuffers(self.dc)
         finally:
             self.gl.wglMakeCurrent(None, None)
@@ -198,6 +253,8 @@ class ArmorViewport:
         if self.context is not None:
             self.gl.wglDeleteContext(self.context)
             self.context = None
+        self.texture_owner = None
+        self.texture_id.value = 0
         if self.dc is not None:
             self.user.ReleaseDC(self.window, self.dc)
             self.dc = None
