@@ -218,9 +218,10 @@ def unframe(key,identity,packet,direction,window):
     return packet[28:-32]
 
 class UdpServer:
-    def __init__(self,bind,public_port,native_port,permitted,*,clock=time.monotonic,forward=None,renew=False):
+    def __init__(self,bind,public_port,native_port,permitted,*,clock=time.monotonic,forward=None,renew=False,route=None):
         self.forward = forward if forward is not None else permitted
         self.renew = renew
+        self.route = route
         self.clock=clock;self.permitted=permitted;self.native=('127.0.0.1',native_port);self.public_port=public_port
         self.lock=threading.RLock();self.stop=threading.Event();self.grants={};self.identities={}
         self.socket=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
@@ -234,7 +235,8 @@ class UdpServer:
             old=self.identities.get((match_id,peer_id));r=self.grants.get(old)
             if r is not None and r['session']==session:
                 now = int(time.time())
-                if self.renew and now < r['expires'] <= now+600:
+                renewable = self.renew(match_id) if callable(self.renew) else self.renew
+                if renewable and now < r['expires'] <= now+600:
                     r['expires'] = now+7200
                 if r['expires']>now+60:
                     return self.public(r)
@@ -244,7 +246,8 @@ class UdpServer:
             self.prune()
             if len(self.grants)>=128:raise ValueError('UDP admission capacity reached.')
             ident=secrets.token_hex(16);key=secrets.token_bytes(32)
-            upstream=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);upstream.bind((InviteStore.address(peer_id),0));upstream.connect(self.native)
+            native = ('127.0.0.1', self.route(match_id)) if self.route is not None else self.native
+            upstream=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);upstream.bind((InviteStore.address(peer_id),0));upstream.connect(native)
             r={'id':ident,'key':key,'match':match_id,'peer':peer_id,'session':session,'expires':int(time.time())+7200,'socket':upstream,'remote':None,'window':ReplayWindow(),'sent':0}
             self.grants[ident]=r;self.identities[(match_id,peer_id)]=ident;return self.public(r)
 
