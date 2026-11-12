@@ -337,6 +337,7 @@ class DirectClient(CommunityClient):
         self.proximity_key = read_proximity_key(proximity_settings)
         self.proximity_status = proximity_prompt(self.proximity_key)
         self.public_supported = self.public_only = False
+        self.armor_supported = False
         self.public_transport_state = None
 
     def capabilities(self):
@@ -344,7 +345,11 @@ class DirectClient(CommunityClient):
         self.proximity_supported = os.name == 'nt' and caps.get('proximityVoice') == VOICE_PROTOCOL
         self.public_supported = caps.get('publicCTF') is True
         self.public_only = self.public_supported and caps.get('publicOnly') is True
+        self.armor_supported = caps.get('armorSuits') == 1
         return caps
+
+    def armor_suits(self, **data):
+        return self._request('armor-suits', data, use_lobby_token=False)
 
     def _public(self, action, **data):
         response = self._request('public-' + action, data, use_lobby_token=False)
@@ -570,6 +575,158 @@ def group_connection(root, local, *, ssl_context=None, test_source=None):
         return connection
 
 
+class ArmorPanel:
+    classes = ('Light', 'Medium', 'Heavy')
+
+    def __init__(self, tk, desktop, lobby):
+        from tkinter import ttk
+        from desktop_launcher import BG, MUTED, PANEL
+
+        self.tk, self.desktop, self.lobby = tk, desktop, lobby
+        self.results = queue.Queue()
+        self.catalog = {}
+        self.saved = {}
+        self.previews = {}
+        self.requests = set()
+        self.weight = tk.StringVar(value=self.classes[0])
+        self.suit = tk.StringVar()
+        self.status = tk.StringVar()
+        self.caption = tk.StringVar()
+        self.panel = tk.Frame(desktop.root, bg=BG)
+        desktop.label(self.panel, 'Armor', 27, True).pack(anchor='w')
+        desktop.label(self.panel, 'Choose a suit for each armor class.', color=MUTED).pack(anchor='w', pady=(4, 18))
+        row = tk.Frame(self.panel, bg=BG)
+        row.pack(anchor='w')
+        self.weight_box = ttk.Combobox(row, textvariable=self.weight, values=self.classes, state='readonly', width=12)
+        self.weight_box.pack(side='left')
+        self.weight_box.bind('<<ComboboxSelected>>', self.select_class)
+        self.suit_box = ttk.Combobox(row, textvariable=self.suit, state='disabled', width=25)
+        self.suit_box.pack(side='left', padx=(8, 0))
+        self.suit_box.bind('<<ComboboxSelected>>', self.select_suit)
+        preview = tk.Frame(self.panel, bg=PANEL, width=460, height=335)
+        preview.pack(anchor='w', pady=(12, 4), fill='x')
+        preview.pack_propagate(False)
+        self.image = tk.Label(preview, bg=PANEL, fg=MUTED)
+        self.image.pack(fill='both', expand=True)
+        tk.Label(self.panel, textvariable=self.caption, bg=BG, fg=MUTED).pack(anchor='w')
+        self.save = desktop.button(self.panel, 'Save armor choices', self.save_choices)
+        self.save.pack(anchor='w', pady=(10, 0))
+        self.save.configure(state='disabled')
+        tk.Label(self.panel, textvariable=self.status, bg=BG, fg=MUTED, wraplength=530,
+                 justify='left').pack(anchor='w', pady=(6, 0))
+        desktop.button(desktop.sidebar, 'Armor', lambda: desktop.show_panel('armor'), False).pack(
+            fill='x', padx=18, pady=(6, 0))
+
+    def submit(self, key, **data):
+        if key in self.requests:
+            return
+        self.requests.add(key)
+
+        def run():
+            try:
+                self.results.put((key, self.lobby.armor_suits(**data), None))
+            except CommunityError as exc:
+                self.results.put((key, None, str(exc)))
+
+        threading.Thread(target=run, daemon=True).start()
+        if len(self.requests) == 1:
+            self.desktop.root.after(80, self.tick)
+
+    def open(self):
+        if not self.catalog:
+            self.status.set('Loading available suits…')
+            self.submit('load')
+        elif self.current_selection() not in self.previews:
+            self.select_suit()
+
+    def current_selection(self):
+        weight = self.weight.get()
+        suit = self.selected.get(weight) if self.catalog else None
+        return weight, suit
+
+    def select_class(self, _event=None):
+        if self.catalog:
+            weight, suit = self.current_selection()
+            options = self.catalog[weight]
+            self.suit_box.configure(values=list(options.values()), state='readonly')
+            self.suit.set(options[suit])
+            self.select_suit()
+
+    def select_suit(self, _event=None):
+        weight = self.weight.get()
+        suit = next(key for key, label in self.catalog[weight].items() if label == self.suit.get())
+        self.selected[weight] = suit
+        key = (weight, suit)
+        self.caption.set(f'{weight} armor · {self.suit.get()}')
+        self.image.configure(image=self.previews.get(key, ''), text='')
+        if key not in self.previews:
+            self.image.configure(text='Loading suit preview…')
+            self.submit(key, weight=weight, suit=suit)
+        self.refresh_save()
+
+    def refresh_save(self):
+        self.save.configure(state='normal' if self.selected != self.saved and 'save' not in self.requests else 'disabled')
+
+    def save_choices(self):
+        self.submit('save', choices=dict(self.selected))
+        self.status.set('Saving armor choices…')
+        self.refresh_save()
+
+    def load_choices(self, response):
+        catalog, choices = response.get('catalog'), response.get('choices')
+        if not isinstance(catalog, dict) or not isinstance(choices, dict):
+            raise ValueError('The host returned an invalid armor catalog.')
+        for weight in self.classes:
+            options = catalog.get(weight)
+            suit = choices.get(weight)
+            if (not isinstance(options, dict) or type(suit) is not str or suit not in options
+                    or any(type(label) is not str or not label or len(label) > 80 for label in options.values())
+                    or len(set(options.values())) != len(options)):
+                raise ValueError('The host returned an invalid armor catalog.')
+        self.catalog = catalog
+        self.saved = dict(choices)
+        self.selected = dict(choices)
+        self.status.set('')
+        self.select_class()
+
+    def tick(self):
+        if self.desktop.closing:
+            return
+        while not self.results.empty():
+            key, response, error = self.results.get_nowait()
+            try:
+                if error:
+                    raise ValueError(error)
+                if key == 'load':
+                    self.load_choices(response)
+                elif key == 'save':
+                    saved = response.get('choices')
+                    if not isinstance(saved, dict) or set(saved) != set(self.classes) or any(
+                            type(saved[weight]) is not str or saved[weight] not in self.catalog[weight] for weight in self.classes):
+                        raise ValueError('The host did not confirm your armor choices.')
+                    self.saved = saved
+                    self.status.set('Armor choices saved. They apply the next time you spawn.')
+                else:
+                    image = self.tk.PhotoImage(data=response.get('preview', ''), format='png')
+                    if image.height() > 315:
+                        image = image.subsample(2)
+                    self.previews[key] = image
+                    if key == self.current_selection():
+                        self.image.configure(image=image, text='')
+            except (ValueError, self.tk.TclError) as exc:
+                if isinstance(key, tuple):
+                    if key == self.current_selection():
+                        self.image.configure(image='', text='Preview unavailable. Select the suit again to retry.')
+                else:
+                    self.status.set(str(exc))
+            finally:
+                self.requests.remove(key)
+                if self.catalog:
+                    self.refresh_save()
+        if self.requests:
+            self.desktop.root.after(80, self.tick)
+
+
 class PublicCTFPanel:
     def __init__(self, tk, desktop, lobby):
         from desktop_launcher import BG, MUTED
@@ -745,10 +902,23 @@ def main(root=ROOT, *, on_ready=None):
         return
     class DirectDesktop(Desktop):
         public_panel = None
+        armor_panel = None
 
         def show_panel(self, name):
+            if self.closing:
+                return
+            if self.armor_panel is not None:
+                self.armor_panel.panel.pack_forget()
             if self.public_panel is not None:
                 self.public_panel.panel.pack_forget()
+            if name == 'armor' and self.armor_panel is not None:
+                self.current_panel = 'armor'
+                self.lobby_panel.pack_forget()
+                self.live_panel.pack_forget()
+                self.armor_panel.panel.pack(side='left', fill='both', expand=True, padx=32, pady=28)
+                self.armor_panel.open()
+                return
+            if self.public_panel is not None:
                 if name == 'public' or lobby.public_only:
                     self.current_panel = 'public'
                     self.lobby_panel.pack_forget()
@@ -805,6 +975,8 @@ def main(root=ROOT, *, on_ready=None):
         if lobby.public_supported:
             gui.public_panel = PublicCTFPanel(tk, gui, lobby)
             gui.show_panel('public' if lobby.public_only else 'lobbies')
+        if lobby.armor_supported:
+            gui.armor_panel = ArmorPanel(tk, gui, lobby)
         if lobby.proximity_supported:
             enabled = tk.BooleanVar(value=lobby.proximity_enabled.is_set())
             tk.Checkbutton(gui.sidebar, text='Proximity voice', variable=enabled,
