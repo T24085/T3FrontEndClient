@@ -19,6 +19,7 @@ from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLO
                             VOICE_RELEASE, VOICE_ROUTE, VOICE_SAMPLE_RATE,
                             locked_state, read_json, validate_endpoint, validate_group, write_json)
 from community_transport import CommunityClient, CommunityError, PinnedHTTPSConnection
+from community_game import CommunityGame
 from dynamic_destination import DIRECT_BRIDGE_POLICY
 
 ROOT=pathlib.Path(__file__).resolve().parent
@@ -379,16 +380,10 @@ class DirectClient(CommunityClient):
     def public_state(self, *, renew=False):
         state = self._public('state')
         if renew:
-            current = state.get('round'), state['phase']
             with self.lock:
                 previous = self.public_transport_state
-                if previous is not None and (current[0] != previous[0] or
-                        (previous[1] == 'playing' and current[1] != 'playing')):
-                    for proxy in self.proxies.values():
-                        proxy.allow_rebind()
-                if self.proxies:
-                    self.public_transport_state = current
-                if state.get('target'):
+                # The next round gets a fresh native session and UDP grant.
+                if previous == (state.get('id'), state.get('round')) and state.get('target'):
                     self._validated_target(state['target'], state.get('map'), public=True, existing_only=True)
         return state
 
@@ -399,8 +394,8 @@ class DirectClient(CommunityClient):
             if state.get('target'):
                 with self.lock:
                     target = self._validated_target(state['target'], state.get('map'), public=True)
-                    self.public_transport_state = (state.get('round'), state['phase'])
-                    return target
+                    self.public_transport_state = (state['id'], state['round'])
+                    return dict(target, publicRound=self.public_transport_state)
             if not state.get('team') or time.monotonic() >= deadline:
                 raise CommunityError(state.get('error') or 'Your public match seat was not ready. Try joining again.')
             time.sleep(1)
@@ -727,6 +722,82 @@ class ArmorPanel:
             self.desktop.root.after(80, self.tick)
 
 
+class DirectGame(CommunityGame):
+    """Own one native process at a time while retaining the public seat between rounds."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.public_name = None
+        self.round_change = None
+        self.retiring_public_session = None
+
+    def start_public(self, name, *, cancel=None):
+        self.public_name = name
+        try:
+            status = self._start(public_name=name, public_cancel=cancel)
+        except Exception:
+            if self.role == 'public' and self.status in ('failed', 'stopped'):
+                self.release_public()
+            raise
+        if status == 'stopped':
+            self.release_public()
+        return status
+
+    def continue_public(self, next_round):
+        with self.lock:
+            current = self.public_round
+            if (self.role != 'public' or self.status not in ('starting', 'playing') or self.thread is None
+                    or self.round_change is not None or current is None
+                    or current[0] != next_round[0] or current[1] >= next_round[1]):
+                return None
+            cancel = self.round_change = threading.Event()
+            self.retiring_public_session = self.current_artifacts
+            old_thread = self.thread
+        try:
+            super().stop()
+            old_thread.join(45)
+            with self.lock:
+                if old_thread.is_alive() or self.status == 'quarantined':
+                    raise CommunityError('The previous round is still closing. Wait for it to close before rejoining.')
+                self.retiring_public_session = None
+            return self.start_public(self.public_name, cancel=cancel)
+        finally:
+            with self.lock:
+                self.retiring_public_session = None
+                self.round_change = None
+
+    def stop(self):
+        with self.lock:
+            if self.round_change is not None:
+                self.round_change.set()
+            super().stop()
+
+    def release_public(self):
+        try:
+            self.lobby.public_leave()
+        except CommunityError:
+            pass  # The host expires seats that never reconnect.
+
+    def _run(self, argv, artifacts):
+        def ready_run():
+            with self.lock:
+                return self.run if self.status == 'playing' else None
+
+        if self.role == 'player':
+            with self.lobby.proximity_game(ready_run):
+                super()._run(argv, artifacts)
+        elif self.role == 'public':
+            try:
+                super()._run(argv, artifacts)
+            finally:
+                with self.lock:
+                    retain_seat = artifacts == self.retiring_public_session or self.status == 'quarantined'
+                if not retain_seat:
+                    self.release_public()
+        else:
+            super()._run(argv, artifacts)
+
+
 class PublicCTFPanel:
     def __init__(self, tk, desktop, lobby):
         from desktop_launcher import BG, MUTED
@@ -843,11 +914,17 @@ class PublicCTFPanel:
         except queue.Empty:
             pass
         state = self.state
+        if public and state.get('phase') == 'playing' and state.get('team'):
+            current = game.public_round
+            round_id = state.get('round')
+            if current and current[0] == state.get('id') and type(round_id) is int and round_id > current[1]:
+                self.submit('continue', lambda: game.continue_public((current[0], round_id)))
         if public and ui.game_status != 'playing':
             self.status.set(ui.status.get())
-        can_join = state.get('phase') == 'playing' and not active and 'start' not in self.pending
+        continuing = 'continue' in self.pending
+        can_join = state.get('phase') == 'playing' and not active and not continuing and 'start' not in self.pending
         self.join.configure(state='normal' if can_join else 'disabled')
-        self.leave.configure(state='normal' if public else 'disabled')
+        self.leave.configure(state='normal' if public or continuing else 'disabled')
         self.refresh_ballot(state, public and ui.game_status == 'playing')
         now = time.monotonic()
         if now >= self.poll_at and (public or ui.current_panel == 'public'):
@@ -859,7 +936,6 @@ def main(root=ROOT, *, on_ready=None):
     import tkinter as tk
     from tkinter import filedialog,messagebox
     from desktop_launcher import Desktop
-    from community_game import CommunityGame
     from startup_paths import installation_options
     from client_support import discover_game
     from map_sync import MapSync
@@ -930,40 +1006,6 @@ def main(root=ROOT, *, on_ready=None):
         def close(self):
             try:super().close()
             finally:lobby.close()
-
-    class DirectGame(CommunityGame):
-        def start_public(self, name):
-            try:
-                status = self._start(public_name=name)
-            except Exception:
-                if self.role == 'public' and self.status == 'failed':
-                    self.release_public()
-                raise
-            if status == 'stopped':
-                self.release_public()
-            return status
-
-        def release_public(self):
-            try:
-                lobby.public_leave()
-            except CommunityError:
-                pass  # The host also releases expired seats and disconnected clients.
-
-        def _run(self, argv, artifacts):
-            def ready_run():
-                with self.lock:
-                    return self.run if self.status == 'playing' else None
-
-            if self.role == 'player':
-                with lobby.proximity_game(ready_run):
-                    super()._run(argv, artifacts)
-            elif self.role == 'public':
-                try:
-                    super()._run(argv, artifacts)
-                finally:
-                    self.release_public()
-            else:
-                super()._run(argv, artifacts)
 
     try:
         window=tk.Tk();window.title('TRIBES 3 — Direct Host Starter')

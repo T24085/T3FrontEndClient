@@ -50,6 +50,7 @@ class CommunityGame:
         self.preparation_stop_requested = False
         self.preparation_revision = None
         self.role = 'player'
+        self.public_round = None
         self.watch_id = None
         self.match_id = None
         self.watch_releasing = False
@@ -174,14 +175,18 @@ class CommunityGame:
     def start(self, *, expected_map=None, expected_match_id=None):
         return self._start(expected_map=expected_map, expected_match_id=expected_match_id)
 
-    def _start(self, *, watch_id=None, expected_map=None, expected_match_id=None, public_name=None):
+    def _start(self, *, watch_id=None, expected_map=None, expected_match_id=None, public_name=None,
+               public_cancel=None):
         self._release_watch()
         # Desktop calls this on a worker. Reserve the session briefly, then keep
         # expensive verification outside the snapshot lock used by the Tk loop.
         with self.lock:
+            if public_cancel is not None and public_cancel.is_set():
+                return 'stopped'
             if self.status not in ('idle', 'stopped', 'finished', 'failed') or self.watch_id is not None:
                 raise CommunityError('A game session is already active.')
             self.role = 'spectator' if watch_id is not None else 'public' if public_name is not None else 'player'
+            self.public_round = None
             self.watch_id, self.match_id = watch_id, None
             self.status, self.error, self.run = 'starting', None, None
             self.current_artifacts, self.thread = None, None
@@ -194,11 +199,11 @@ class CommunityGame:
             begin_attempt = getattr(self.lobby, 'begin_game_attempt', None)
             if begin_attempt is not None:
                 begin_attempt()
-            target_loader = (lambda: self.lobby.spectator_target(watch_id)) if watch_id is not None else self.lobby.match_target
             if public_name is not None:
                 target_loader = self.lobby.public_target
                 target = self.lobby.public_map()
             else:
+                target_loader = (lambda: self.lobby.spectator_target(watch_id)) if watch_id is not None else self.lobby.match_target
                 target = target_loader()
             if expected_match_id is not None and target.get('matchId') != expected_match_id:
                 raise CommunityError('The match changed. Refresh the lobby before joining.')
@@ -245,6 +250,7 @@ class CommunityGame:
                 self.lobby.public_map()
                 self.lobby.public_join(public_name)
                 target = target_loader()
+                self.public_round = target.get('publicRound')
                 if startup_contract is None and catalog.get(target['map']) != target['contentHash']:
                     raise CommunityError('Your map files do not match this match. Update the community client.')
             elif target_loader() != target:
