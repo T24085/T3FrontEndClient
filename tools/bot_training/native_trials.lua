@@ -75,16 +75,11 @@ return function(env)
             {'AbilityToActivate','StructProperty',0},{'bAllowRemoteActivation','BoolProperty',4},{'ReturnValue','BoolProperty',5}})
         signature('/Script/GameplayAbilities.AbilitySystemBlueprintLibrary:SendGameplayEventToActor',{
             {'Actor','ObjectProperty',0},{'EventTag','StructProperty',8},{'Payload','StructProperty',16}})
-        signature('/Script/Topaz.TopPickup_Flag:ForceReturnFlag',{{'ReturningCharacter','ObjectProperty',0}})
         brain:StopLogic('Local High Octane training')
         local trial, id, poll, jet_on, ski_on = nil, 1, 0, false, false
         local function release()
             if jet_on then events:SendGameplayEventToActor(pawn, stop_tag, {});jet_on = false end
             if ski_on then movement:SetWantsToSki(false);ski_on = false end
-        end
-        local function restore_flag()
-            if same(enemy:GetOwner(), pawn) then enemy:Drop(false,false,false) end
-            if not stands[2]:IsFlagAtHome() then enemy:ForceReturnFlag(nil) end
         end
         local function start_trial(line, now)
             local fields = {}
@@ -94,7 +89,10 @@ return function(env)
                 and pulse >= 0 and pulse <= 1.25 and period >= 1.5 and period <= 6
                 and (ski == 0 or ski == 1) and math.abs(turn) <= 20, 'training_invalid_trial')
             release()
-            restore_flag()
+            if same(enemy:GetOwner(), pawn) then
+                enemy:Drop(false,false,false)
+                assert(not same(enemy:GetOwner(),pawn), 'training_flag_drop_failed')
+            end
             local p = starts[spawn]
             local dx, dy = enemy_position.X-p.X, enemy_position.Y-p.Y
             local length = math.sqrt(dx*dx+dy*dy)
@@ -140,7 +138,8 @@ return function(env)
                     trial.closest = trial.initial
                     report(('BOT_TRAIN_RESET|%d|energy=%.1f'):format(id, energy))
                 else
-                    assert(now-trial.settle <= 12, 'training_reset_settle_timeout')
+                    local flag_home = stands[2]:IsFlagAtHome()
+                    assert(now-trial.settle <= (flag_home and 90 or 85), 'training_reset_settle_timeout')
                     return
                 end
             end
