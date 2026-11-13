@@ -38,8 +38,10 @@ acceleration, braking, and time stopped. See `trials.jsonl` and
 
 For a repeatable speed check, run the training launcher with
 `--qualify --attempts 4 --seconds 76`. Add `--fast-approach` to run later
-braking, or `--compare-approach` to run both settings on the same starts in
-one match. Each qualification writes `qualification.json`.
+braking. To compare both settings, use `--qualify --compare-approach
+--attempts 2 --seconds 76`, then repeat with `--start-index 2` for the next
+two starts. A match ends after five captures. Each qualification writes
+`qualification.json`.
 The first attempt uses the known pickup start. The other three use a held-out
 spawn with different offsets. The test uses one blue bot without defenders.
 
