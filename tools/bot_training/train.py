@@ -41,6 +41,14 @@ def publish(path, data):
     temp.replace(path)
 
 
+def read_ready(path):
+    try:
+        return path.read_text(encoding='ascii')
+    except (FileNotFoundError, PermissionError):
+        # Windows can briefly deny a read immediately after the native rename.
+        return None
+
+
 def reward(result):
     progress = 1 - min(1, result['closest_cm'] / max(1, result['initial_cm']))
     return 4 * result['capture'] + 2 * result['pickup'] + progress
@@ -118,8 +126,8 @@ class Trainer:
             path = out / f'result-{trial}.csv'
             values = [spawn, offset, self.seconds, *asdict(policy).values()]
             publish(out / f'trial-{trial}.csv', ','.join(map(str, values)) + '\n')
-            self.wait(out, process, lambda _: path.is_file(), self.seconds * 4 + 40)
-            row = dict(zip(METRICS, map(float, path.read_text().strip().split(',')), strict=True))
+            data = self.wait(out, process, lambda _: read_ready(path), self.seconds * 4 + 100)
+            row = dict(zip(METRICS, map(float, data.strip().split(',')), strict=True))
             if (not all(map(math.isfinite, row.values())) or row['id'] != trial or row['start_energy'] < 98
                     or row['pickup'] not in (0, 1) or row['capture'] not in (0, row['pickup'])):
                 raise ValueError(f'Invalid result for native trial {trial}.')
