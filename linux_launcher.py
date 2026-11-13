@@ -213,7 +213,7 @@ def main():
         message = ('In Steam: TRIBES 3 > Properties > Compatibility: enable Proton.\n'
                    'In General > Launch Options, paste this entire line:\n\n'+option+
                    '\n\nThen click Play in Steam to open Community Starter.\n'
-                   'Keep Steam and Tailscale connected. No server files are included.')
+                   'Keep Steam signed in while playing. No server files are included.')
         print(message)
         # Optional desktop clipboard helper. Setup remains usable without it.
         if shutil.which('zenity'):

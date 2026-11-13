@@ -44,6 +44,35 @@ def check_owned_jobs(artifacts):
     return result
 
 
+def launch_starter(root, game_dir, workspace, context):
+    manifest = json.loads((root/'package-manifest.json').read_bytes())
+    if 'direct_host_contract' not in manifest:
+        startup = root/'community_starter.pyw'
+        sys.argv = [str(startup), '--game-dir', game_dir, '--workspace', workspace]
+        runpy.run_path(str(startup))['launch_startup'](root, ssl_context=context)
+        return
+
+    import startup_paths
+    from starter_update import DIRECT_CHANNEL, run_startup
+
+    def launch(on_ready):
+        from direct_client import main
+        original = startup_paths.installation_options
+
+        def steam_options(game_directory=None, explicit_workspace=None):
+            return original(game_directory or game_dir, explicit_workspace or workspace)
+
+        # Direct Starter resolves installation_options inside main. Bind the
+        # Steam-selected paths for this process without rewriting signed files.
+        startup_paths.installation_options = steam_options
+        try:
+            main(root, on_ready=on_ready)
+        finally:
+            startup_paths.installation_options = original
+
+    run_startup(root, launch, channel=DIRECT_CHANNEL, ssl_context=context)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--game-dir', required=True)
@@ -79,10 +108,7 @@ def main():
             (args.launch_dir/'bridge-ready.json').write_text(json.dumps(proof, indent=2)+'\n', encoding='utf-8')
             if args.probe_only:
                 return 0
-            startup = ROOT/'community_starter.pyw'
-            sys.argv = [str(startup), '--game-dir', args.game_dir, '--workspace', args.workspace]
-            launch = runpy.run_path(str(startup))['launch_startup']
-            launch(ROOT, ssl_context=context)
+            launch_starter(ROOT, args.game_dir, args.workspace, context)
             return 0
         except Exception as exc:
             traceback.print_exc()

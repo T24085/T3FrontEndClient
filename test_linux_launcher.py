@@ -2,15 +2,48 @@
 import json
 import os
 from pathlib import Path
+import runpy
 import shlex
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 if sys.platform == 'linux':
     from linux_launcher import main, merge_dll_overrides, prepare_launch, run_in_terminal, setup_option, steam_command, windows_path
+
+
+class LinuxDirectBootstrapTest(unittest.TestCase):
+    def test_direct_channel_passes_linux_ca_and_steam_paths(self):
+        launch = runpy.run_path(str(Path(__file__).with_name('linux_bootstrap.pyw')))['launch_starter']
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root/'package-manifest.json').write_text('{"direct_host_contract": "fixture"}')
+            tls = object()
+            ready = object()
+            original = lambda game, workspace: (game, workspace)
+            paths = SimpleNamespace(installation_options=original)
+
+            def run_startup(package, callback, *, channel, ssl_context):
+                self.assertEqual(package, root)
+                self.assertEqual(channel, 'direct')
+                self.assertIs(ssl_context, tls)
+                callback(ready)
+
+            def main(package, *, on_ready):
+                self.assertEqual(package, root)
+                self.assertIs(on_ready, ready)
+                self.assertEqual(paths.installation_options(), ('steam game', 'linux workspace'))
+
+            with patch.dict(sys.modules, {
+                'startup_paths': paths,
+                'starter_update': SimpleNamespace(DIRECT_CHANNEL='direct', run_startup=run_startup),
+                'direct_client': SimpleNamespace(main=main),
+            }):
+                launch(root, 'steam game', 'linux workspace', tls)
+            self.assertIs(paths.installation_options, original)
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'POSIX path and Steam wrapper checks run on Linux')
