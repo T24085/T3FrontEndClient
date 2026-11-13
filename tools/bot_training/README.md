@@ -57,6 +57,21 @@ skiing, jetting, and energy. The grab row records speed and the component
 of velocity toward home. A negative homeward speed means the bot must
 turn or brake before returning.
 
+## 100-attempt batch
+
+Run `Train 100 High Octane Attempts.bat` to start or resume the local
+100-attempt campaign. The trainer opens successive matches and saves
+`Campaign-100-20261113/progress.json` after every completed trial. The
+first 90 trials tune preset routes, ski, jet timing, braking and steering.
+The final ten compare the selected settings with the current direct
+baseline on five identical, held-out starts. Keep Steam signed in.
+
+Run `Train 1000 High Octane Attempts.bat` after the 100-attempt campaign
+finishes. The larger run uses the winner of the matched comparison as
+its starting policy and tries additional braking distances around it.
+The campaign length and policy configuration are pinned when a folder
+is first created.
+
 This first trainer learns movement settings for the one route task. The next
 step is to learn a state-dependent controller from demonstrations, then
 fine-tune it on repeatable attempts that also vary speed and energy. A
