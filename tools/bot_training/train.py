@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 import random
-from statistics import median
+from statistics import mean, median
 import time
 
 from practice import HERE, event_text, memory_available, start
@@ -18,6 +18,7 @@ class Policy:
     ski: int
     turn: float
     approach_cm: int = 4200
+    flank: int = 0
 
 
 BASELINE = Policy(0, 2, 0, 0)
@@ -28,9 +29,12 @@ POLICIES = [BASELINE, Policy(0, 2, 1, 0)] + [
 ]
 METRICS = ('id', 'capture', 'pickup', 'seconds', 'initial_cm', 'closest_cm',
            'displacement_cm', 'jet_frames', 'ski_frames', 'start_energy', 'pickup_seconds', 'closest_home_cm',
-           'average_kmh', 'peak_kmh', 'outbound_average_kmh', 'return_average_kmh')
+           'average_kmh', 'peak_kmh', 'outbound_average_kmh', 'return_average_kmh',
+           'grab_kmh', 'grab_homeward_kmh', 'grab_energy')
 KNOWN_PICKUP = Policy(.25, 1.8, 1, -8)
 FASTER_APPROACH = Policy(.25, 1.8, 1, -8, 2800)
+FLANKS = tuple(Policy(.25, 1.8, 1, -8, 2800, flank) for flank in (1, -1, 2, -2))
+POLICIES.extend((FASTER_APPROACH, *FLANKS))
 
 
 def replace_once(source, anchor, replacement):
@@ -78,6 +82,16 @@ def summarize(results):
         return round(sum(samples) / len(samples), 2) if samples else None
 
     peaks = [row['peak_kmh'] for row in results if row.get('peak_kmh', -1) >= 0]
+    fastest_grab = min((row for row in results if row['pickup']), key=lambda row: row['pickup_seconds'], default=None)
+    fastest_cap = min((row for row in results if row['capture']), key=lambda row: row['seconds'], default=None)
+
+    def record(row):
+        if row is None:
+            return None
+        keys = ('id', 'spawn', 'offset_cm', 'pickup_seconds', 'seconds', 'grab_kmh',
+                'grab_homeward_kmh', 'grab_energy', 'trace')
+        return {key: row[key] for key in keys if key in row}
+
     return dict(trials=len(results), skiing=sum(row['ski_frames'] > 0 for row in results),
                 jetting=sum(row['jet_frames'] > 0 for row in results),
                 pickups=len(grabs), captures=len(caps),
@@ -86,7 +100,10 @@ def summarize(results):
                 median_return_seconds=round(median(returns), 2) if returns else None,
                 average_kmh=mean_speed('average_kmh'), peak_kmh=round(max(peaks), 2) if peaks else None,
                 outbound_average_kmh=mean_speed('outbound_average_kmh'),
-                return_average_kmh=mean_speed('return_average_kmh'))
+                return_average_kmh=mean_speed('return_average_kmh'),
+                mean_grab_seconds=round(mean(grabs), 2) if grabs else None,
+                mean_cap_seconds=round(mean(caps), 2) if caps else None,
+                fastest_grab=record(fastest_grab), fastest_cap=record(fastest_cap))
 
 
 class Trainer:
@@ -164,9 +181,10 @@ class Trainer:
                     or (row['pickup'] and not 0 <= row['pickup_seconds'] <= row['seconds'])
                     or (not row['pickup'] and row['pickup_seconds'] != -1)):
                 raise ValueError(f'Invalid result for native trial {trial}.')
+            row.update(policy=asdict(policy), reward=reward(row), spawn=spawn, offset_cm=offset,
+                       held_out=evaluation, trace=f'trace-{trial}.csv')
             with (out / 'trials.jsonl').open('a', encoding='utf-8') as log:
-                log.write(json.dumps(dict(row, policy=asdict(policy), reward=reward(row),
-                                          spawn=spawn, offset_cm=offset, held_out=evaluation)) + '\n')
+                log.write(json.dumps(row) + '\n')
             print(f"Trial {trial}: {row['average_kmh']:.1f} km/h average, {row['peak_kmh']:.1f} km/h peak, "
                   f"pickup {int(row['pickup'])}, capture {int(row['capture'])}, "
                   f"closest home while carrying {row['closest_home_cm']/100:.1f} m", flush=True)
@@ -226,6 +244,7 @@ if __name__ == '__main__':
     parser.add_argument('--qualify', action='store_true', help='Repeat the flag route across six fixed starts.')
     parser.add_argument('--fast-approach', action='store_true', help='Test later braking on the same qualification starts.')
     parser.add_argument('--compare-approach', action='store_true', help='Compare both approaches within one local match.')
+    parser.add_argument('--compare-routes', action='store_true', help='Compare direct and mirrored side/back approaches on one start.')
     parser.add_argument('--start-index', type=int, default=0, help='Skip this many fixed qualification starts.')
     args = parser.parse_args()
     if not 1 <= args.attempts <= 50 or not 3 <= args.seconds <= 90:
@@ -236,16 +255,20 @@ if __name__ == '__main__':
         parser.error('Select a range within the six qualification starts.')
     if args.start_index and not args.qualify:
         parser.error('--start-index requires --qualify.')
-    if (args.fast_approach or args.compare_approach) and not args.qualify:
+    if (args.fast_approach or args.compare_approach or args.compare_routes) and not args.qualify:
         parser.error('Approach options require --qualify.')
-    if args.fast_approach and args.compare_approach:
+    if sum((args.fast_approach, args.compare_approach, args.compare_routes)) > 1:
         parser.error('Select one approach option.')
     if args.compare_approach and args.attempts > 2:
         parser.error('Compare at most two starts per match. A match ends after five captures.')
+    if args.compare_routes and args.attempts != 1:
+        parser.error('Use one start per five-route comparison.')
     policies = ()
     if args.qualify:
         policies = (FASTER_APPROACH,) if args.fast_approach else (KNOWN_PICKUP,)
     if args.compare_approach:
         policies = (KNOWN_PICKUP, FASTER_APPROACH)
+    if args.compare_routes:
+        policies = (FASTER_APPROACH, *FLANKS)
     trainer = Trainer(args.attempts, 5 if args.smoke else args.seconds, args.seed, args.smoke, policies, args.start_index)
     start(json.loads(args.config.read_bytes()), trainer=trainer)

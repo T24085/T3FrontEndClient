@@ -36,6 +36,15 @@ class TrainingRankTest(unittest.TestCase):
         self.assertEqual(summary['outbound_average_kmh'], 121.5)
         self.assertEqual(summary['return_average_kmh'], 116)
 
+    def test_fastest_grab_and_cap_can_be_different_runs(self):
+        common = dict(ski_frames=1, jet_frames=1, grab_homeward_kmh=90)
+        first = dict(trial(capture=1, pickup=1, seconds=52), **common, id=1, pickup_seconds=28)
+        second = dict(trial(capture=1, pickup=1, seconds=56), **common, id=2, pickup_seconds=25)
+        result = summarize([first, second])
+        self.assertEqual(result['fastest_grab']['id'], 2)
+        self.assertEqual(result['fastest_cap']['id'], 1)
+        self.assertEqual(result['fastest_cap']['grab_homeward_kmh'], 90)
+
 
 if __name__ == '__main__':
     unittest.main()
