@@ -17,10 +17,10 @@ return function(env)
         end)
         return assert(result, 'training_blue_score_missing')
     end
-    local function write_result(id, result)
-        local base = env.path .. '/result-' .. id
+    local function write_csv(name, body)
+        local base = env.path .. '/' .. name
         local file = assert(io.open(base .. '.tmp', 'w'))
-        assert(file:write(table.concat(result, ','), '\n'))
+        assert(file:write(body, '\n'))
         assert(file:close())
         assert(os.rename(base .. '.tmp', base .. '.csv'))
     end
@@ -50,6 +50,14 @@ return function(env)
         local enemy, home = flags[2], stands[1]
         assert(valid(enemy) and valid(home) and valid(stands[2]), 'training_flags_missing')
         local enemy_position, home_position = vector(enemy:K2_GetActorLocation()), vector(home:K2_GetActorLocation())
+        local home_dx, home_dy = home_position.X-enemy_position.X, home_position.Y-enemy_position.Y
+        local home_range = math.sqrt(home_dx^2+home_dy^2)
+        assert(home_range > 100, 'training_flag_axis_missing')
+        local hx, hy = home_dx/home_range, home_dy/home_range
+        local function flag_relative(homeward, lateral)
+            return {X=enemy_position.X+hx*homeward-hy*lateral,
+                Y=enemy_position.Y+hy*homeward+hx*lateral,Z=enemy_position.Z}
+        end
         local starts = {}
         for _, start in ipairs(FindAllOf('TopPlayerStart') or {}) do
             if same(start:GetWorld(), world) and start.TeamNumber == 1 then
@@ -93,11 +101,12 @@ return function(env)
         local function start_trial(line, now)
             local fields = {}
             for item in line:gmatch('[^,]+') do fields[#fields+1] = tonumber(item) end
-            local spawn, offset, duration, pulse, period, ski, turn, approach = table.unpack(fields)
-            assert(#fields == 8 and starts[spawn] and math.abs(offset) <= 100 and duration >= 3 and duration <= 90
+            local spawn, offset, duration, pulse, period, ski, turn, approach, flank = table.unpack(fields)
+            assert(#fields == 9 and starts[spawn] and math.abs(offset) <= 100 and duration >= 3 and duration <= 90
                 and pulse >= 0 and pulse <= 1.25 and period >= 1.5 and period <= 6
                 and (ski == 0 or ski == 1) and math.abs(turn) <= 20
-                and approach >= 2000 and approach <= 6000, 'training_invalid_trial')
+                and approach >= 2000 and approach <= 6000
+                and flank%1 == 0 and math.abs(flank) <= 2, 'training_invalid_trial')
             release()
             if same(enemy:GetOwner(), pawn) then
                 enemy:Drop(false,false,false)
@@ -110,10 +119,22 @@ return function(env)
             local at = {X=p.X-dy*offset/length, Y=p.Y+dx*offset/length, Z=p.Z+30}
             local facing = {Pitch=0,Yaw=math.deg(math.atan(dy,dx)),Roll=0}
             place(at, facing, spawn)
+            local waypoints = {}
+            if flank ~= 0 then
+                local side = flank > 0 and 1 or -1
+                waypoints[1] = flag_relative(-2500,side*5500)
+                if math.abs(flank) == 2 then waypoints[2] = flag_relative(-5500,0) end
+            end
             trial = {settle=now, at=at, facing=facing, spawn=spawn, retries=0,
                 duration=duration, pulse=pulse, period=period, ski=ski==1,
                 turn=math.rad(turn), approach=approach, displacement=0, jet_frames=0, ski_frames=0,
-                distance_out=0, distance_return=0, seconds_out=0, seconds_return=0, peak_speed=0}
+                distance_out=0, distance_return=0, seconds_out=0, seconds_return=0, peak_speed=0,
+                waypoints=waypoints, waypoint=1, trace={}, next_sample=0}
+        end
+        local function sample_trace(elapsed, p, v, carrying, phase)
+            trial.trace[#trial.trace+1] = ('%.3f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.2f,%d,%d,%d,%s'):format(
+                elapsed,p.X,p.Y,p.Z,v.X,v.Y,v.Z,pawn:GetEnergy(),
+                movement:IsSkiing() and 1 or 0,movement.bIsJetpackActive and 1 or 0,carrying and 1 or 0,phase)
         end
         local function frame()
             scope()
@@ -172,6 +193,10 @@ return function(env)
             trial.last_sample, trial.last_speed, trial.last_carrying = now, speed, trial.last_carrying or carrying
             if carrying and not trial.pickup then
                 trial.pickup = elapsed
+                trial.grab_speed = .036 * speed
+                trial.grab_homeward = .036 * (velocity.X*hx + velocity.Y*hy)
+                trial.grab_energy = pawn:GetEnergy()
+                sample_trace(elapsed,at,velocity,carrying,'grab')
                 report(('BOT_TRAIN_PICKUP|%d|seconds=%.2f'):format(id, elapsed))
             end
             local captured = trial.pickup and score(gs) > trial.before
@@ -186,23 +211,37 @@ return function(env)
             if captured or elapsed >= trial.duration then
                 release()
                 movement:StopMovementImmediately()
-                write_result(id, {id, captured and 1 or 0, trial.pickup and 1 or 0,
+                sample_trace(elapsed,at,velocity,carrying,captured and 'cap' or 'timeout')
+                write_csv('trace-'..id, 'seconds,x_cm,y_cm,z_cm,vx_cm_s,vy_cm_s,vz_cm_s,energy,ski,jet,carrying,phase\n'
+                    ..table.concat(trial.trace,'\n'))
+                write_csv('result-'..id, table.concat({id, captured and 1 or 0, trial.pickup and 1 or 0,
                     elapsed, trial.initial, trial.closest, trial.displacement,
                     trial.jet_frames, trial.ski_frames, trial.energy, trial.pickup or -1,
                     trial.home_closest or -1,
                     .036*(trial.distance_out+trial.distance_return)/math.max(elapsed,.001),
                     .036*trial.peak_speed,
                     trial.seconds_out > 0 and .036*trial.distance_out/trial.seconds_out or -1,
-                    trial.seconds_return > 0 and .036*trial.distance_return/trial.seconds_return or -1})
+                    trial.seconds_return > 0 and .036*trial.distance_return/trial.seconds_return or -1,
+                    trial.grab_speed or -1,trial.grab_homeward or 0,trial.grab_energy or -1},','))
                 report('BOT_TRAIN_TRIAL|' .. id)
                 trial, id = nil, id + 1
                 return
             end
-            local target = carrying and home_position or vector(enemy:K2_GetActorLocation())
+            local waypoint = not trial.pickup and trial.waypoints[trial.waypoint]
+            if waypoint and (waypoint.X-at.X)^2+(waypoint.Y-at.Y)^2 < 1800^2 then
+                trial.waypoint = trial.waypoint + 1
+                waypoint = trial.waypoints[trial.waypoint]
+            end
+            if elapsed >= trial.next_sample then
+                sample_trace(elapsed,at,velocity,carrying,waypoint and ('waypoint'..trial.waypoint)
+                    or (carrying and 'return' or 'approach'))
+                trial.next_sample = elapsed + .2
+            end
+            local target = carrying and home_position or waypoint or vector(enemy:K2_GetActorLocation())
             local dx, dy = target.X-at.X, target.Y-at.Y
             local range = math.sqrt(dx*dx+dy*dy)
             local closing = (dx*velocity.X+dy*velocity.Y)/math.max(range,1)
-            local precision = range < trial.approach
+            local precision = not waypoint and range < trial.approach
             local turning = carrying and closing < -550
             local heading = math.atan(dy,dx) + (precision and 0 or trial.turn)
             if precision then

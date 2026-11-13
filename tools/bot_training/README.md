@@ -45,6 +45,18 @@ two starts. A match ends after five captures. Each qualification writes
 The first attempt uses the known pickup start. The other three use a held-out
 spawn with different offsets. The test uses one blue bot without defenders.
 
+Use `--qualify --compare-routes --attempts 1 --seconds 76 --start-index 1`
+to compare the direct route with mirrored side and back approaches from
+one spawn. The flags define the route coordinates. The side approaches
+pass a lateral waypoint, and the back approaches add a waypoint behind
+the stand. These waypoints are candidates for trial runs.
+
+The report keeps mean and median times alongside the individual fastest
+grab and cap. Each trial has a `trace-N.csv` with positions, velocity,
+skiing, jetting, and energy. The grab row records speed and the component
+of velocity toward home. A negative homeward speed means the bot must
+turn or brake before returning.
+
 This first trainer learns movement settings for the one route task. The next
 step is to learn a state-dependent controller from demonstrations, then
 fine-tune it on repeatable attempts that also vary speed and energy. A
