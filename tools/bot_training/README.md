@@ -16,19 +16,24 @@ The launcher uses an existing verified game cache, separate local profiles and
 the Windows Job supervisor. It starts a loopback-only host with no bots so
 you can repeat routes. It records the local pawn during this session only.
 
-## Reinforcement learning follow-up
+## Automated movement trials
 
-1. Fit a small movement policy from demonstrations. Hold out entire sessions.
-2. Build a headless, single-bot test that can reset spawn pose, velocity, energy,
-   route progress and previous input. Verify resets against native telemetry
-   before batching. The current recorder does not implement the action and
-   reset loop.
-3. Start with a simple search over jet pulse and turn parameters as a baseline.
-   Then fine-tune the movement policy using repeated rollouts. Reward progress
-   through ordered route checkpoints and verified flag arrival. Penalize
-   timeouts and going out of bounds.
-4. Rank policies by completion rate on held-out starts, then median time among
-   completions. Vary speed, angle, energy and landing conditions. Compare
-   against the stock bot and the demonstration-only policy on the same starts.
-5. Recheck the winning policy in native practice and measure server frame
-   times with 24 bots before considering a public rollout.
+Run **Train High Octane Bot.bat** on the same PC. It launches one headless,
+local game host and one blue bot. The bot steers toward the opposing flag,
+then toward its own stand after pickup. The trainer uses a bandit algorithm
+to choose ski use, jet timing and steering offsets from trial rewards. The
+baseline uses straight steering with skiing and jets off.
+
+Each attempt starts at a selected blue spawn from rest with full or nearly
+full jet energy. A pickup is credited when the native flag owner changes
+to the bot. A capture requires a pickup and a native team score increase.
+Training ranks attempts by capture, pickup and approach distance. The
+final comparison uses a held-out spawn and three offsets per policy. It
+ranks the policies by captures, successful capture time, then pickups and
+approach progress. See `trials.jsonl` and `evaluation.json` in the run folder.
+
+This first trainer learns movement settings for the one route task. The next
+step is to learn a state-dependent controller from demonstrations, then
+fine-tune it on repeatable attempts that also vary speed and energy. A
+capture-capable controller can then be evaluated with defenders and under
+public-server bot load.
