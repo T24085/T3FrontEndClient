@@ -30,7 +30,18 @@ to the bot. A capture requires a pickup and a native team score increase.
 Training ranks attempts by capture, pickup and approach distance. The
 final comparison uses a held-out spawn and three offsets per policy. It
 ranks the policies by captures, successful capture time, then pickups and
-approach progress. See `trials.jsonl` and `evaluation.json` in the run folder.
+grab time. The report separates spawn-to-grab, grab-to-cap, and total cap
+time. It also shows the average and peak horizontal speed in km/h, with
+separate averages before and after the first grab. The average includes
+acceleration, braking, and time stopped. See `trials.jsonl` and
+`evaluation.json` in the run folder.
+
+For a repeatable speed check, run the training launcher with
+`--qualify --attempts 4 --seconds 76`. Add `--fast-approach` to run later
+braking, or `--compare-approach` to run both settings on the same starts in
+one match. Each qualification writes `qualification.json`.
+The first attempt uses the known pickup start. The other three use a held-out
+spawn with different offsets. The test uses one blue bot without defenders.
 
 This first trainer learns movement settings for the one route task. The next
 step is to learn a state-dependent controller from demonstrations, then

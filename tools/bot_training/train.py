@@ -17,6 +17,7 @@ class Policy:
     period: float
     ski: int
     turn: float
+    approach_cm: int = 4200
 
 
 BASELINE = Policy(0, 2, 0, 0)
@@ -26,7 +27,10 @@ POLICIES = [BASELINE, Policy(0, 2, 1, 0)] + [
     for turn in (-8, 0, 8)
 ]
 METRICS = ('id', 'capture', 'pickup', 'seconds', 'initial_cm', 'closest_cm',
-           'displacement_cm', 'jet_frames', 'ski_frames', 'start_energy')
+           'displacement_cm', 'jet_frames', 'ski_frames', 'start_energy', 'pickup_seconds', 'closest_home_cm',
+           'average_kmh', 'peak_kmh', 'outbound_average_kmh', 'return_average_kmh')
+KNOWN_PICKUP = Policy(.25, 1.8, 1, -8)
+FASTER_APPROACH = Policy(.25, 1.8, 1, -8, 2800)
 
 
 def replace_once(source, anchor, replacement):
@@ -51,20 +55,46 @@ def read_ready(path):
 
 def reward(result):
     progress = 1 - min(1, result['closest_cm'] / max(1, result['initial_cm']))
-    return 4 * result['capture'] + 2 * result['pickup'] + progress
+    grab_speed = 1 / (1 + result.get('pickup_seconds', 0) / 20) if result['pickup'] else 0
+    cap_speed = 1 / (1 + result['seconds'] / 40) if result['capture'] else 0
+    remaining = result.get('closest_home_cm', -1)
+    return_progress = (1 - min(1, remaining / max(1, result['initial_cm']))) if remaining >= 0 else 0
+    return 4 * result['capture'] + 2 * result['pickup'] + progress + grab_speed + cap_speed + return_progress
 
 
 def rank(results):
     captures = [row['seconds'] for row in results if row['capture']]
+    grabs = [row.get('pickup_seconds', row['seconds']) for row in results if row['pickup']]
     return (len(captures), -median(captures) if captures else 0,
-            sum(row['pickup'] for row in results), sum(reward(row) for row in results))
+            len(grabs), -median(grabs) if grabs else 0, sum(reward(row) for row in results))
+
+
+def summarize(results):
+    grabs = [row['pickup_seconds'] for row in results if row['pickup']]
+    caps = [row['seconds'] for row in results if row['capture']]
+    returns = [row['seconds'] - row['pickup_seconds'] for row in results if row['capture']]
+    def mean_speed(key):
+        samples = [row[key] for row in results if row.get(key, -1) >= 0]
+        return round(sum(samples) / len(samples), 2) if samples else None
+
+    peaks = [row['peak_kmh'] for row in results if row.get('peak_kmh', -1) >= 0]
+    return dict(trials=len(results), skiing=sum(row['ski_frames'] > 0 for row in results),
+                jetting=sum(row['jet_frames'] > 0 for row in results),
+                pickups=len(grabs), captures=len(caps),
+                median_grab_seconds=round(median(grabs), 2) if grabs else None,
+                median_cap_seconds=round(median(caps), 2) if caps else None,
+                median_return_seconds=round(median(returns), 2) if returns else None,
+                average_kmh=mean_speed('average_kmh'), peak_kmh=round(max(peaks), 2) if peaks else None,
+                outbound_average_kmh=mean_speed('outbound_average_kmh'),
+                return_average_kmh=mean_speed('return_average_kmh'))
 
 
 class Trainer:
-    def __init__(self, attempts, seconds, seed, smoke):
+    def __init__(self, attempts, seconds, seed, smoke, qualification_policies=()):
         self.attempts, self.seconds, self.smoke = attempts, seconds, smoke
         self.rng = random.Random(seed)
         self.seed = seed
+        self.qualification_policies = qualification_policies
 
     def instrument(self, text, run):
         stamp = "  local stamp=now();assert(finite(stamp),'match_loading_clock_unknown')"
@@ -129,13 +159,16 @@ class Trainer:
             data = self.wait(out, process, lambda _: read_ready(path), self.seconds * 4 + 100)
             row = dict(zip(METRICS, map(float, data.strip().split(',')), strict=True))
             if (not all(map(math.isfinite, row.values())) or row['id'] != trial or row['start_energy'] < 98
-                    or row['pickup'] not in (0, 1) or row['capture'] not in (0, row['pickup'])):
+                    or row['pickup'] not in (0, 1) or row['capture'] not in (0, row['pickup'])
+                    or (row['pickup'] and not 0 <= row['pickup_seconds'] <= row['seconds'])
+                    or (not row['pickup'] and row['pickup_seconds'] != -1)):
                 raise ValueError(f'Invalid result for native trial {trial}.')
             with (out / 'trials.jsonl').open('a', encoding='utf-8') as log:
                 log.write(json.dumps(dict(row, policy=asdict(policy), reward=reward(row),
                                           spawn=spawn, offset_cm=offset, held_out=evaluation)) + '\n')
-            print(f"Trial {trial}: moved {row['displacement_cm']/100:.1f} m, "
-                  f"pickup {int(row['pickup'])}, capture {int(row['capture'])}, reward {reward(row):.3f}", flush=True)
+            print(f"Trial {trial}: {row['average_kmh']:.1f} km/h average, {row['peak_kmh']:.1f} km/h peak, "
+                  f"pickup {int(row['pickup'])}, capture {int(row['capture'])}, "
+                  f"closest home while carrying {row['closest_home_cm']/100:.1f} m", flush=True)
             return row
 
         if self.smoke:
@@ -143,6 +176,19 @@ class Trainer:
             assert all(row['displacement_cm'] >= 100 for row in results), 'Native bot failed to move.'
             assert results[1]['jet_frames'] > 0, 'Native jet input did not activate.'
             publish(out / 'smoke.json', json.dumps({'verified_trials': len(results), 'results': results}, indent=2))
+            return
+
+        if self.qualification_policies:
+            starts = [(2, 40), (count, -80), (count, 0), (count, 80), (1, 0), (2, -40)]
+            results = {policy: [] for policy in self.qualification_policies}
+            for index, (spawn, offset) in enumerate(starts[:self.attempts]):
+                for policy in results:
+                    results[policy].append(attempt(policy, spawn, offset, index != 0))
+            reports = [dict(policy=asdict(policy), **summarize(rows)) for policy, rows in results.items()]
+            totals = reports[0] if len(reports) == 1 else dict(
+                evaluated=reports, winner=asdict(max(results, key=lambda policy: rank(results[policy]))))
+            publish(out / 'qualification.json', json.dumps(totals, indent=2))
+            print(json.dumps(totals), flush=True)
             return
 
         for index in range(self.attempts):
@@ -161,10 +207,8 @@ class Trainer:
         winner = max(held_out, key=lambda policy: rank(held_out[policy]))
         report = dict(seed=self.seed, training_attempts=self.attempts, trial_seconds=self.seconds,
                       winner=asdict(winner), evaluated=[
-                          dict(policy=asdict(policy), captures=int(sum(row['capture'] for row in results)),
-                               pickups=int(sum(row['pickup'] for row in results)),
-                               mean_reward=round(sum(map(reward, results))/len(results), 3),
-                               trials=len(results))
+                          dict(policy=asdict(policy), **summarize(results),
+                               mean_reward=round(sum(map(reward, results))/len(results), 3))
                           for policy, results in held_out.items()])
         publish(out / 'evaluation.json', json.dumps(report, indent=2) + '\n')
         print(json.dumps(report, indent=2), flush=True)
@@ -177,10 +221,26 @@ if __name__ == '__main__':
     parser.add_argument('--seconds', type=int, default=25)
     parser.add_argument('--seed', type=int, default=2026)
     parser.add_argument('--smoke', action='store_true')
+    parser.add_argument('--qualify', action='store_true', help='Repeat the flag route across six fixed starts.')
+    parser.add_argument('--fast-approach', action='store_true', help='Test later braking on the same qualification starts.')
+    parser.add_argument('--compare-approach', action='store_true', help='Compare both approaches within one local match.')
     args = parser.parse_args()
     if not 1 <= args.attempts <= 50 or not 3 <= args.seconds <= 90:
         parser.error('Use 1–50 attempts and 3–90 seconds per attempt.')
     if not args.smoke and (args.attempts + 6) * (args.seconds + 6) > 850:
         parser.error('Shorten the trials or reduce the attempt count to fit one native match.')
-    trainer = Trainer(args.attempts, 5 if args.smoke else args.seconds, args.seed, args.smoke)
+    if args.qualify and not 1 <= args.attempts <= 6:
+        parser.error('Qualification accepts up to six attempts.')
+    if (args.fast_approach or args.compare_approach) and not args.qualify:
+        parser.error('Approach options require --qualify.')
+    if args.fast_approach and args.compare_approach:
+        parser.error('Select one approach option.')
+    if args.compare_approach and 2 * args.attempts * (args.seconds + 6) > 850:
+        parser.error('Shorten the comparison to fit one native match.')
+    policies = ()
+    if args.qualify:
+        policies = (FASTER_APPROACH,) if args.fast_approach else (KNOWN_PICKUP,)
+    if args.compare_approach:
+        policies = (KNOWN_PICKUP, FASTER_APPROACH)
+    trainer = Trainer(args.attempts, 5 if args.smoke else args.seconds, args.seed, args.smoke, policies)
     start(json.loads(args.config.read_bytes()), trainer=trainer)
