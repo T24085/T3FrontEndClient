@@ -1,6 +1,6 @@
 import unittest
 
-from train import rank, reward
+from train import rank, reward, summarize
 
 
 def trial(*, capture=0, pickup=0, seconds=25, closest=500):
@@ -20,6 +20,21 @@ class TrainingRankTest(unittest.TestCase):
         slow = trial(capture=1, pickup=1, seconds=20)
         self.assertGreater(rank([slow, slow]), rank([fast, trial()]))
         self.assertGreater(rank([fast]), rank([slow]))
+
+    def test_grab_and_return_times_are_reported_separately(self):
+        first = dict(trial(capture=1, pickup=1, seconds=35), pickup_seconds=15, ski_frames=3, jet_frames=4,
+                     average_kmh=120, peak_kmh=190, outbound_average_kmh=125, return_average_kmh=116)
+        second = dict(trial(pickup=1), pickup_seconds=17, ski_frames=3, jet_frames=0,
+                      average_kmh=100, peak_kmh=210, outbound_average_kmh=118, return_average_kmh=-1)
+        summary = summarize([first, second])
+        self.assertEqual(summary['median_grab_seconds'], 16)
+        self.assertEqual(summary['median_return_seconds'], 20)
+        self.assertEqual(summary['median_cap_seconds'], 35)
+        self.assertEqual((summary['skiing'], summary['jetting']), (2, 1))
+        self.assertEqual(summary['average_kmh'], 110)
+        self.assertEqual(summary['peak_kmh'], 210)
+        self.assertEqual(summary['outbound_average_kmh'], 121.5)
+        self.assertEqual(summary['return_average_kmh'], 116)
 
 
 if __name__ == '__main__':

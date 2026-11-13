@@ -84,10 +84,11 @@ return function(env)
         local function start_trial(line, now)
             local fields = {}
             for item in line:gmatch('[^,]+') do fields[#fields+1] = tonumber(item) end
-            local spawn, offset, duration, pulse, period, ski, turn = table.unpack(fields)
-            assert(#fields == 7 and starts[spawn] and math.abs(offset) <= 100 and duration >= 3 and duration <= 90
+            local spawn, offset, duration, pulse, period, ski, turn, approach = table.unpack(fields)
+            assert(#fields == 8 and starts[spawn] and math.abs(offset) <= 100 and duration >= 3 and duration <= 90
                 and pulse >= 0 and pulse <= 1.25 and period >= 1.5 and period <= 6
-                and (ski == 0 or ski == 1) and math.abs(turn) <= 20, 'training_invalid_trial')
+                and (ski == 0 or ski == 1) and math.abs(turn) <= 20
+                and approach >= 2000 and approach <= 6000, 'training_invalid_trial')
             release()
             if same(enemy:GetOwner(), pawn) then
                 enemy:Drop(false,false,false)
@@ -109,7 +110,8 @@ return function(env)
             controller:SetControlRotation(facing)
             movement:StopMovementImmediately()
             trial = {settle=now, at=at, duration=duration, pulse=pulse, period=period, ski=ski==1,
-                turn=math.rad(turn), pickup=false, displacement=0, jet_frames=0, ski_frames=0}
+                turn=math.rad(turn), approach=approach, displacement=0, jet_frames=0, ski_frames=0,
+                distance_out=0, distance_return=0, seconds_out=0, seconds_return=0, peak_speed=0}
         end
         local function frame()
             scope()
@@ -145,8 +147,30 @@ return function(env)
             end
             local elapsed = now - trial.started
             local carrying = same(enemy:GetOwner(),pawn)
-            trial.pickup = trial.pickup or carrying
+            local velocity = movement.Velocity
+            local speed = math.sqrt(velocity.X^2+velocity.Y^2)
+            trial.peak_speed = math.max(trial.peak_speed, speed)
+            if trial.last_sample then
+                local dt = now - trial.last_sample
+                local distance = (trial.last_speed + speed) * .5 * dt
+                if trial.last_carrying then
+                    trial.distance_return = trial.distance_return + distance
+                    trial.seconds_return = trial.seconds_return + dt
+                else
+                    trial.distance_out = trial.distance_out + distance
+                    trial.seconds_out = trial.seconds_out + dt
+                end
+            end
+            trial.last_sample, trial.last_speed, trial.last_carrying = now, speed, trial.last_carrying or carrying
+            if carrying and not trial.pickup then
+                trial.pickup = elapsed
+                report(('BOT_TRAIN_PICKUP|%d|seconds=%.2f'):format(id, elapsed))
+            end
             local captured = trial.pickup and score(gs) > trial.before
+            if carrying then
+                local remaining = distance(at, home_position)
+                trial.home_closest = math.min(trial.home_closest or remaining, remaining)
+            end
             trial.closest = math.min(trial.closest, distance(at, enemy_position))
             trial.displacement = math.max(trial.displacement, distance(at, trial.origin))
             if movement.bIsJetpackActive then trial.jet_frames = trial.jet_frames + 1 end
@@ -156,22 +180,40 @@ return function(env)
                 movement:StopMovementImmediately()
                 write_result(id, {id, captured and 1 or 0, trial.pickup and 1 or 0,
                     elapsed, trial.initial, trial.closest, trial.displacement,
-                    trial.jet_frames, trial.ski_frames, trial.energy})
+                    trial.jet_frames, trial.ski_frames, trial.energy, trial.pickup or -1,
+                    trial.home_closest or -1,
+                    .036*(trial.distance_out+trial.distance_return)/math.max(elapsed,.001),
+                    .036*trial.peak_speed,
+                    trial.seconds_out > 0 and .036*trial.distance_out/trial.seconds_out or -1,
+                    trial.seconds_return > 0 and .036*trial.distance_return/trial.seconds_return or -1})
                 report('BOT_TRAIN_TRIAL|' .. id)
                 trial, id = nil, id + 1
                 return
             end
-            local target = carrying and home_position or enemy_position
+            local target = carrying and home_position or vector(enemy:K2_GetActorLocation())
             local dx, dy = target.X-at.X, target.Y-at.Y
-            local heading = math.atan(dy,dx) + trial.turn
-            local rising = trial.pulse > 0 and elapsed % trial.period < trial.pulse
+            local range = math.sqrt(dx*dx+dy*dy)
+            local closing = (dx*velocity.X+dy*velocity.Y)/math.max(range,1)
+            local precision = range < trial.approach
+            local turning = carrying and closing < -550
+            local heading = math.atan(dy,dx) + (precision and 0 or trial.turn)
+            if precision then
+                local desired = math.min(900, range * 2.5)
+                local correction_x = math.cos(heading)*desired-velocity.X
+                local correction_y = math.sin(heading)*desired-velocity.Y
+                if correction_x^2+correction_y^2 > 1 then heading = math.atan(correction_y,correction_x) end
+            end
+            local climbing = target.Z-at.Z > 160 and range < 2100
+            local rising = trial.pulse > 0 and not turning and (not precision or climbing)
+                and elapsed % trial.period < trial.pulse
             if rising and not jet_on and pawn:GetEnergy() >= 10 then
                 jet_on = pawn.AbilitySystemComponent:TryActivateAbility(jet, false)
             elseif not rising and jet_on then
                 events:SendGameplayEventToActor(pawn,stop_tag,{})
                 jet_on = false
             end
-            if ski_on ~= trial.ski then movement:SetWantsToSki(trial.ski);ski_on = trial.ski end
+            local wants_ski = trial.ski and not precision and not turning
+            if ski_on ~= wants_ski then movement:SetWantsToSki(wants_ski);ski_on = wants_ski end
             pawn:AddMovementInput({X=math.cos(heading),Y=math.sin(heading),Z=0},1,true)
         end
         local function tick()
