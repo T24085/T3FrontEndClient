@@ -3,6 +3,7 @@ import time
 import gc
 import tkinter as tk
 import unittest
+from unittest.mock import patch
 
 from desktop_launcher import Desktop
 from community_transport import CommunityError
@@ -54,7 +55,8 @@ class DesktopTest(unittest.TestCase):
             self.assertFalse(app.busy)
             self.assertFalse(app.rules_row.winfo_manager())
             app.caps['matchRulesEnabled'] = True
-            lobby.room.update(map='Katabatic', availableMaps=options(('Katabatic', 'Rollercoaster2026')), rules={
+            lobby.room.update(map='Katabatic', blueSide='A',
+                              availableMaps=options(('Katabatic', 'Rollercoaster2026')), rules={
                 'flagIndicators':True, 'botCount':4, 'retailCapturePoint':False,
             })
             app.render(lobby.room)
@@ -64,13 +66,21 @@ class DesktopTest(unittest.TestCase):
             self.assertEqual(str(app.bot_spinner.cget('state')), 'readonly')
             self.assertEqual(app.capture_toggle.cget('state'), 'normal')
             self.assertFalse(app.retail_capture_point.get())
+            self.assertEqual(str(app.side_combo.cget('state')), 'readonly')
+            app.blue_side.set('Side B')
+            with patch.object(app, 'call_action') as call:
+                app.choose_side()
+                call.assert_called_once_with('rules', blueSide='B')
             lobby.room['map'] = 'Rollercoaster2026'
+            lobby.room['blueSide'] = 'B'
             app.render(lobby.room)
             self.assertEqual(app.capture_toggle.cget('state'), 'disabled')
+            self.assertEqual(app.blue_side.get(), 'Side B')
             lobby.room['playerId'] = 'two'
             app.render(lobby.room)
             self.assertEqual(app.flag_toggle.cget('state'), 'disabled')
             self.assertEqual(app.bot_toggle.cget('state'), 'disabled')
+            self.assertEqual(str(app.side_combo.cget('state')), 'disabled')
         finally:
             app.close()
             app.close_worker.join(2)
@@ -267,15 +277,17 @@ class DesktopTest(unittest.TestCase):
         app=Desktop(root,lobby,lambda _:game)
         try:
             app.render(lobby.room);root.update()
-            app.roster.selection_set(20);app.roster.see(20);root.update()
-            before=app.roster.yview()[0]
+            red = app.rosters['red']
+            red.selection_set(10);red.see(10);root.update()
+            before=red.yview()[0]
             updated=dict(lobby.room,players=list(reversed([dict(p) for p in lobby.room['players']])))
             app.render(updated);root.update()
-            selected=app.roster.curselection()
+            selected=red.curselection()
             self.assertEqual(len(selected),1)
-            self.assertEqual(app.players[selected[0]]['id'],'20')
-            self.assertAlmostEqual(app.roster.yview()[0],before,delta=0.05)
-            self.assertTrue(app.roster.cget('yscrollcommand'))
+            self.assertEqual(app.selected_player(),'20')
+            self.assertAlmostEqual(red.yview()[0],before,delta=0.05)
+            self.assertTrue(red.cget('yscrollcommand'))
+            self.assertLess(app.rosters['blue'].winfo_rootx(), red.winfo_rootx())
         finally:
             app.close()
 
@@ -285,6 +297,8 @@ class DesktopTest(unittest.TestCase):
         app=Desktop(root,lobby,lambda _:game)
         try:
             root.geometry('%dx%d' % root.minsize())
+            lobby.room['blueSide'] = 'B'
+            app.caps['matchRulesEnabled'] = True
             app.render(lobby.room)
             app.status.set('Community service connected.')
             root.update_idletasks();root.update()
@@ -292,7 +306,7 @@ class DesktopTest(unittest.TestCase):
             status=next(child for child in app.lobby_panel.pack_slaves()
                         if isinstance(child,tk.Label) and str(child.cget('textvariable'))==str(app.status))
             widgets=(app.name_entry,app.code_entry,app.create_button,app.join_button,app.map_combo,
-                     app.roster,app.blue_button,app.red_button,app.move_blue,app.move_red,
+                     app.side_combo,*app.rosters.values(),app.blue_button,app.red_button,app.move_blue,app.move_red,
                      app.start_button,app.game_button,app.stop_button,app.reset_button,app.leave_button,status)
             self.assertGreaterEqual(status.winfo_height(),status.winfo_reqheight())
             for widget in widgets:
@@ -354,7 +368,7 @@ class DesktopTest(unittest.TestCase):
             self.assertEqual(lobby.calls[0],('create','One'))
             app.red_button.invoke()
             wait(lambda:not app.busy and app.players[0]['team']=='red')
-            app.roster.selection_set(1)
+            app.rosters[None].selection_set(0)
             app.move_blue.invoke()
             wait(lambda:not app.busy and app.players[1]['team']=='blue')
             app.call_action('map',map='Snowblind')

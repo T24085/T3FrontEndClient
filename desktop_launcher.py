@@ -20,6 +20,21 @@ CLIENT_PACKAGE = ROOT if (ROOT / 'connection-policy.json').is_file() else ROOT /
 BG, PANEL, TEXT, MUTED, ACCENT = '#0a111b', '#132335', '#eff7ff', '#9fb3c6', '#4be4c1'
 
 
+def starter_version(package=ROOT):
+    try:
+        manifest = json.loads((package / 'package-manifest.json').read_bytes())
+        if isinstance(manifest, dict):
+            revision = manifest.get('starter_update_revision')
+            if type(revision) is int and revision > 0:
+                return f'Starter r{revision}'
+            release = manifest.get('release_id')
+            if isinstance(release, str) and release.strip():
+                return f'Starter {release}'
+    except (OSError, ValueError):
+        pass
+    return 'Starter r0 · base build'
+
+
 def match_phase_text(room):
     if room is None:
         return 'Create a lobby or enter a code.'
@@ -68,7 +83,7 @@ class Desktop:
         self.copy_reset_handle = None
         root.title('TRIBES 3 • Community Starter')
         root.geometry('1030x800')
-        root.minsize(850, 650)
+        root.minsize(850, 740)
         root.configure(bg=BG)
         root.protocol('WM_DELETE_WINDOW', self.close)
         style = ttk.Style(root)
@@ -105,7 +120,7 @@ class Desktop:
             from server_access import show_setup
             self.access_button = self.button(side, 'Set up server access', lambda: show_setup(self, server_access), False)
             self.access_button.pack(fill='x', padx=18, pady=(20, 0))
-        self.label(side, 'Private playtest', 10, color=MUTED, bg='#0d1927').pack(side='bottom', anchor='w', padx=26, pady=24)
+        self.label(side, starter_version(), 10, color=MUTED, bg='#0d1927').pack(side='bottom', anchor='w', padx=26, pady=24)
         tk.Label(side,textvariable=self.preparation,bg='#0d1927',fg=MUTED,font=('Segoe UI',10),
                  anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
         if self.map_sync is not None:
@@ -114,9 +129,8 @@ class Desktop:
                      anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
         main = tk.Frame(root, bg=BG)
         self.lobby_panel=main
-        main.pack(side='left', fill='both', expand=True, padx=32, pady=28)
-        self.label(main, 'Get your team together.', 27, True).pack(anchor='w')
-        self.label(main, 'Create a lobby, choose teams, and pick a map.', 11, color=MUTED).pack(anchor='w', pady=(4, 18))
+        main.pack(side='left', fill='both', expand=True, padx=32, pady=20)
+        self.label(main, 'Get your team together.', 27, True).pack(anchor='w', pady=(0, 12))
         entry = tk.Frame(main, bg=PANEL, padx=18, pady=14)
         entry.pack(fill='x')
         self.label(entry, 'STEAM PLAYER NAME' if steam_name_loader else 'YOUR PLAYER NAME', 9, color=ACCENT, bg=PANEL).grid(row=0,column=0,sticky='w')
@@ -147,8 +161,17 @@ class Desktop:
         self.spectator_toggle=tk.Checkbutton(maprow,text='Allow spectators',variable=self.allow_spectators,
             command=self.toggle_spectators,bg=PANEL,fg=TEXT,selectcolor='#20374a',activebackground=PANEL,
             activeforeground=TEXT,font=('Segoe UI',9))
-        roster_frame = tk.Frame(card,bg=PANEL)
-        roster_frame.pack(fill='both',expand=True,pady=(14,4))
+        self.side_row = tk.Frame(card, bg=PANEL)
+        self.label(self.side_row, 'BLUE STARTING SIDE', 9, color=ACCENT, bg=PANEL).pack(side='left', padx=(0, 8))
+        self.blue_side = tk.StringVar(value='Side A')
+        self.side_combo = ttk.Combobox(self.side_row, textvariable=self.blue_side,
+                                       values=('Side A', 'Side B'), width=8, state='disabled')
+        self.side_combo.pack(side='left')
+        self.side_combo.bind('<<ComboboxSelected>>', self.choose_side)
+        self.red_side = tk.StringVar(value='Red starts on Side B')
+        tk.Label(self.side_row, textvariable=self.red_side, bg=PANEL, fg=MUTED).pack(side='left', padx=10)
+        roster_frame = self.roster_frame = tk.Frame(card,bg=PANEL)
+        roster_frame.pack(fill='both',expand=True,pady=(8,4))
         self.rules_row = tk.Frame(card,bg=PANEL)
         check_style = dict(bg=PANEL,fg=TEXT,selectcolor='#20374a',activebackground=PANEL,
                            activeforeground=TEXT,font=('Segoe UI',9))
@@ -164,11 +187,27 @@ class Desktop:
         self.capture_toggle = tk.Checkbutton(self.rules_row,text='Retail capture point',variable=self.retail_capture_point,
             command=lambda:self.call_action('rules',retailCapturePoint=self.retail_capture_point.get()),**check_style)
         self.capture_toggle.pack(side='left')
-        self.roster = tk.Listbox(roster_frame,bg='#0b1a29',fg=TEXT,selectbackground='#31566c',font=('Segoe UI',11),relief='flat',height=8,exportselection=False)
-        roster_scroll = ttk.Scrollbar(roster_frame,orient='vertical',command=self.roster.yview)
-        self.roster.configure(yscrollcommand=roster_scroll.set)
-        roster_scroll.pack(side='right',fill='y')
-        self.roster.pack(side='left',fill='both',expand=True)
+        self.rosters = {}
+        self.roster_players = {}
+        roster_frame.columnconfigure((0, 1), weight=1, uniform='teams')
+        roster_frame.rowconfigure(0, weight=1)
+        for team, label, color, col in (('blue', 'Team Blue', '#78b8ff', 0),
+                                         ('red', 'Team Red', '#ff9393', 1),
+                                         (None, 'Unassigned', MUTED, 0)):
+            frame = tk.Frame(roster_frame, bg=PANEL)
+            frame.grid(row=1 if team is None else 0, column=col, columnspan=2 if team is None else 1,
+                       sticky='nsew', padx=(0, 6) if team == 'blue' else (0, 0))
+            self.label(frame, label, 10, True, color=color, bg=PANEL).pack(anchor='w')
+            roster = tk.Listbox(frame, bg='#0b1a29', fg=TEXT, selectbackground='#31566c',
+                                font=('Segoe UI', 11), relief='flat', width=1,
+                                height=1 if team is None else 4, exportselection=False)
+            scroll = ttk.Scrollbar(frame, orient='vertical', command=roster.yview)
+            roster.configure(yscrollcommand=scroll.set)
+            scroll.pack(side='right', fill='y')
+            roster.pack(side='left', fill='both', expand=True)
+            roster.bind('<<ListboxSelect>>', lambda _event, box=roster: self.select_roster(box))
+            self.rosters[team] = roster
+            self.roster_players[team] = []
         teams = tk.Frame(card,bg=PANEL);teams.pack(side='bottom',before=roster_frame,fill='x')
         self.blue_button = self.button(teams,'Join blue',lambda:self.call_action('team',team='blue'),False);self.blue_button.pack(side='left',padx=(0,8))
         self.red_button = self.button(teams,'Join red',lambda:self.call_action('team',team='red'),False);self.red_button.pack(side='left',padx=(0,8))
@@ -433,19 +472,10 @@ class Desktop:
             if self.pending_map and self.pending_map[1] not in labels:
                 self.pending_map = None
             self.map_name.set(labels[self.pending_map[1] if self.pending_map else room['map']])
-        self.render_match_rules(room, setup and leader and not self.controls_busy and self.pending_map is None)
-        selected = self.roster.curselection()
-        selected_id = self.players[selected[0]]['id'] if selected and selected[0] < len(self.players) else None
-        scroll_position = self.roster.yview()[0]
-        self.players = room['players'] if in_room else []
-        self.roster.delete(0,tk.END)
-        for index,player in enumerate(self.players):
-            self.roster.insert(tk.END, (player['team'] or 'unassigned').upper()+'    '+player['name']+('  • leader' if player['leader'] else '')+('  • you' if player['id']==room['playerId'] else ''))
-            if player['id'] == selected_id:
-                self.roster.selection_set(index)
-                self.roster.activate(index)
-        if in_room:
-            self.roster.yview_moveto(scroll_position)
+        editable = setup and leader and not self.controls_busy and self.pending_map is None
+        self.render_match_rules(room, editable)
+        self.render_rosters(room)
+        self.render_sides(room, editable)
         for widget in (self.blue_button,self.red_button): widget.configure(state='normal' if setup and not self.controls_busy else 'disabled')
         for widget in (self.move_blue,self.move_red): widget.configure(state='normal' if setup and leader and not self.controls_busy else 'disabled')
         self.start_button.configure(state='normal' if setup and leader and not self.controls_busy and self.pending_map is None and self.caps.get('matchStartEnabled') else 'disabled')
@@ -499,9 +529,57 @@ class Desktop:
         self.run_async(work,self.render)
 
     def move(self,team):
-        selection = self.roster.curselection()
-        if not selection: self.status.set('Select a player first.');return
-        self.call_action('team',team=team,playerId=self.players[selection[0]]['id'])
+        player = self.selected_player()
+        if player is None: self.status.set('Select a player first.');return
+        self.call_action('team',team=team,playerId=player)
+
+    def select_roster(self, selected):
+        if selected.curselection():
+            for box in self.rosters.values():
+                if box is not selected:
+                    box.selection_clear(0, tk.END)
+
+    def selected_player(self):
+        for team, box in self.rosters.items():
+            indices = box.curselection()
+            if indices and indices[0] < len(self.roster_players[team]):
+                return self.roster_players[team][indices[0]]['id']
+        return None
+
+    def render_rosters(self, room):
+        selected = self.selected_player()
+        self.players = room['players'] if room else []
+        for team, box in self.rosters.items():
+            offset = box.yview()[0]
+            players = [p for p in self.players if (p['team'] or None) == team]
+            self.roster_players[team] = players
+            box.delete(0, tk.END)
+            for index, player in enumerate(players):
+                box.insert(tk.END, player['name'] + ('  • leader' if player['leader'] else '')
+                           + ('  • you' if player['id'] == room['playerId'] else ''))
+                if player['id'] == selected:
+                    box.selection_set(index)
+                    box.activate(index)
+            if room:
+                box.yview_moveto(offset)
+
+    def render_sides(self, room, editable):
+        side = room.get('blueSide') if room else None
+        if side not in ('A', 'B'):
+            self.side_row.pack_forget()
+            return
+        if not self.side_row.winfo_manager():
+            self.side_row.pack(fill='x', before=self.roster_frame, pady=(6, 0))
+        self.blue_side.set('Side ' + side)
+        self.red_side.set('Red starts on Side A · In-game colors swap' if side == 'B'
+                          else 'Red starts on Side B')
+        self.side_combo.configure(state='readonly' if editable else 'disabled')
+
+    def choose_side(self, _event=None):
+        if self.side_combo.instate(('readonly',)):
+            value = self.blue_side.get()
+            if value in ('Side A', 'Side B'):
+                self.call_action('rules', blueSide=value[-1])
 
     def maybe_auto_join(self):
         if (self.busy or self.watch_id is not None or self.game_status not in ('idle', 'stopped', 'finished', 'failed')
@@ -544,7 +622,7 @@ class Desktop:
             self.rules_row.pack_forget()
             return
         if not self.rules_row.winfo_manager():
-            self.rules_row.pack(fill='x',before=self.roster.master,pady=(6,0))
+            self.rules_row.pack(fill='x',before=self.roster_frame,pady=(6,0))
         rules = room.get('rules', DEFAULT_LOBBY_RULES) if room else DEFAULT_LOBBY_RULES
         self.flag_indicators.set(rules['flagIndicators'])
         count = rules['botCount']
