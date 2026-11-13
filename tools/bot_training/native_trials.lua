@@ -81,6 +81,15 @@ return function(env)
             if jet_on then events:SendGameplayEventToActor(pawn, stop_tag, {});jet_on = false end
             if ski_on then movement:SetWantsToSki(false);ski_on = false end
         end
+        local function place(at, facing, spawn)
+            movement:StopMovementImmediately()
+            if not pawn:K2_TeleportTo(at, facing) then
+                local raised = {X=at.X,Y=at.Y,Z=at.Z+pawn.CapsuleComponent:GetScaledCapsuleHalfHeight()}
+                assert(pawn:K2_TeleportTo(raised, facing), 'training_teleport_failed_spawn_'..spawn)
+            end
+            controller:SetControlRotation(facing)
+            movement:StopMovementImmediately()
+        end
         local function start_trial(line, now)
             local fields = {}
             for item in line:gmatch('[^,]+') do fields[#fields+1] = tonumber(item) end
@@ -100,16 +109,9 @@ return function(env)
             assert(length > 100, 'training_spawn_at_objective')
             local at = {X=p.X-dy*offset/length, Y=p.Y+dx*offset/length, Z=p.Z+30}
             local facing = {Pitch=0,Yaw=math.deg(math.atan(dy,dx)),Roll=0}
-            movement:StopMovementImmediately()
-            local placed = pawn:K2_TeleportTo(at, facing)
-            if not placed then
-                at.Z = at.Z + pawn.CapsuleComponent:GetScaledCapsuleHalfHeight()
-                placed = pawn:K2_TeleportTo(at, facing)
-            end
-            assert(placed, 'training_teleport_failed_spawn_'..spawn)
-            controller:SetControlRotation(facing)
-            movement:StopMovementImmediately()
-            trial = {settle=now, at=at, duration=duration, pulse=pulse, period=period, ski=ski==1,
+            place(at, facing, spawn)
+            trial = {settle=now, at=at, facing=facing, spawn=spawn, retries=0,
+                duration=duration, pulse=pulse, period=period, ski=ski==1,
                 turn=math.rad(turn), approach=approach, displacement=0, jet_frames=0, ski_frames=0,
                 distance_out=0, distance_return=0, seconds_out=0, seconds_return=0, peak_speed=0}
         end
@@ -134,7 +136,13 @@ return function(env)
                 local energy = pawn:GetEnergy()
                 if movement:IsMovingOnGround() and math.sqrt(speed.X^2+speed.Y^2+speed.Z^2) <= 30
                     and energy >= 98 and stands[2]:IsFlagAtHome() then
-                    assert(distance(at, trial.at) < 300, 'training_reset_position')
+                    if distance(at, trial.at) >= 300 then
+                        assert(trial.retries < 2, 'training_reset_position_spawn_'..trial.spawn)
+                        trial.retries = trial.retries + 1
+                        place(trial.at, trial.facing, trial.spawn)
+                        report('BOT_TRAIN_RESET_RETRY|'..id)
+                        return
+                    end
                     trial.started, trial.energy, trial.origin, trial.before = now, energy, vector(at), score(gs)
                     trial.initial = distance(at, enemy_position)
                     trial.closest = trial.initial
