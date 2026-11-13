@@ -75,7 +75,7 @@ def event_text(folder):
     return path.read_text(encoding='utf-8', errors='replace') if path.is_file() else ''
 
 
-def start(config, smoke=False):
+def start(config, smoke=False, trainer=None):
     workspace = Path(config['workspace']).resolve(strict=True)
     baseline = Path(config['host_fixture']).resolve(strict=True)
     package = Path(config['host_package']).resolve(strict=True)
@@ -93,26 +93,31 @@ def start(config, smoke=False):
     spec = importlib.util.spec_from_file_location('practice_reference', baseline / 'playtest.py')
     reference = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(reference)
+    if not reference.running_image('steam.exe'):
+        raise RuntimeError('Open Steam and sign in before starting local practice.')
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
     runs = Path(config['runs']).resolve()
     runs.mkdir(parents=True, exist_ok=True)
-    out = runs / (time.strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:8])
+    out = runs / ((('training-' if trainer else '') + time.strftime('%Y%m%d-%H%M%S-')) + uuid.uuid4().hex[:8])
     out.mkdir()
     print(f'Practice session files: {out}', flush=True)
     definitions, objectives = runtime_paths(package, out, definition)
     lease = uuid.uuid4().hex
     commit = out / 'commit.roster'
-    commit.write_text(f"T3ROSTER1\n{lease}\n{MAP}\n1\n127.0.0.2|1|{b'Local Practice'.hex()}\n",
+    human_team = 2 if trainer else 1
+    commit.write_text(f"T3ROSTER1\n{lease}\n{MAP}\n1\n127.0.0.2|{human_team}|{b'Local Practice'.hex()}\n",
                       encoding='ascii', newline='\n')
     host_template = out / 'host-template.lua'
     render_warm_file(baseline / 'network.lua', host_template, commit, lease, MAP,
-                     allow_loopback=True, map_definitions={MAP: definition}, bot_count=0)
+                     allow_loopback=True, map_definitions={MAP: definition}, bot_count=int(trainer is not None))
     host_text = host_template.read_text(encoding='utf-8')
     turret = '    if not base_kit_tick(gm,gs) then return end'
     if turret in host_text:
         host_text = host_text.replace(turret, '    -- No base turrets in movement practice.', 1)
+    if trainer:
+        host_text = trainer.instrument(host_text, out)
     client_text = (installed / 'lua/client.lua').read_text(encoding='utf-8')
     anchor = 'local function client_tick(sys)'
     ready = 'if pawnReady then'
@@ -184,7 +189,7 @@ local practiceRecorder=assert(loadfile(@@DEMO_SCRIPT@@))()({
         if any(row and row[0].lower() == 'tribesrivals.exe' for row in csv.reader(listing.stdout.splitlines())):
             raise RuntimeError('Close the existing TRIBES 3 game before opening local practice.')
         host = stage('host', host_args, host_text, dict(ROLE='host', DESTINATION='', ROTATION_SECONDS=0, MATCH_MAP=MAP))
-        client = stage('client', client_args, client_text, dict(
+        client = None if trainer else stage('client', client_args, client_text, dict(
             DESTINATION=f'127.0.0.1:{port}', SHOW_FLAG_INDICATORS=True, STOCK_CLOUD_MAP='', SPECTATOR_ROLE='player',
             MATCH_LEASE='', WATCH_ID='', MUSIC_SETTINGS=(out / 'client/profile/Saved/Config/Windows/GameUserSettings.ini').as_posix(),
             DEMO_SCRIPT=(HERE / 'record.lua').as_posix(), DEMO_PATH=recording.as_posix(), DEMO_WORLD=definition.package))
@@ -195,6 +200,9 @@ local practiceRecorder=assert(loadfile(@@DEMO_SCRIPT@@))()({
 
         try:
             launch('host', host)
+            if trainer:
+                trainer.run(out, jobs['host'])
+                return
             deadline = time.monotonic() + 420
             announced = False
             client_loading = False
