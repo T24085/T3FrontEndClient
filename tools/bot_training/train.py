@@ -90,11 +90,12 @@ def summarize(results):
 
 
 class Trainer:
-    def __init__(self, attempts, seconds, seed, smoke, qualification_policies=()):
+    def __init__(self, attempts, seconds, seed, smoke, qualification_policies=(), start_index=0):
         self.attempts, self.seconds, self.smoke = attempts, seconds, smoke
         self.rng = random.Random(seed)
         self.seed = seed
         self.qualification_policies = qualification_policies
+        self.start_index = start_index
 
     def instrument(self, text, run):
         stamp = "  local stamp=now();assert(finite(stamp),'match_loading_clock_unknown')"
@@ -124,6 +125,9 @@ class Trainer:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             log = event_text(out / 'host')
+            result = ready(log)
+            if result:
+                return result
             for line in log.splitlines():
                 if line.startswith(('RUNTIME_ERROR|', 'BOT_TRAIN_ERROR|')):
                     raise RuntimeError(line)
@@ -131,9 +135,6 @@ class Trainer:
                 raise RuntimeError('Local host exited. Check host/game.log in the training run.')
             if memory_available() < 1024**3:
                 raise RuntimeError('Available commit dropped below the game reserve.')
-            result = ready(log)
-            if result:
-                return result
             time.sleep(.25)
         raise RuntimeError('Timed out waiting for native training evidence.')
 
@@ -181,7 +182,8 @@ class Trainer:
         if self.qualification_policies:
             starts = [(2, 40), (count, -80), (count, 0), (count, 80), (1, 0), (2, -40)]
             results = {policy: [] for policy in self.qualification_policies}
-            for index, (spawn, offset) in enumerate(starts[:self.attempts]):
+            selected = starts[self.start_index:self.start_index + self.attempts]
+            for index, (spawn, offset) in enumerate(selected, self.start_index):
                 for policy in results:
                     results[policy].append(attempt(policy, spawn, offset, index != 0))
             reports = [dict(policy=asdict(policy), **summarize(rows)) for policy, rows in results.items()]
@@ -224,23 +226,26 @@ if __name__ == '__main__':
     parser.add_argument('--qualify', action='store_true', help='Repeat the flag route across six fixed starts.')
     parser.add_argument('--fast-approach', action='store_true', help='Test later braking on the same qualification starts.')
     parser.add_argument('--compare-approach', action='store_true', help='Compare both approaches within one local match.')
+    parser.add_argument('--start-index', type=int, default=0, help='Skip this many fixed qualification starts.')
     args = parser.parse_args()
     if not 1 <= args.attempts <= 50 or not 3 <= args.seconds <= 90:
         parser.error('Use 1–50 attempts and 3–90 seconds per attempt.')
     if not args.smoke and (args.attempts + 6) * (args.seconds + 6) > 850:
         parser.error('Shorten the trials or reduce the attempt count to fit one native match.')
-    if args.qualify and not 1 <= args.attempts <= 6:
-        parser.error('Qualification accepts up to six attempts.')
+    if args.qualify and (args.start_index < 0 or args.start_index + args.attempts > 6):
+        parser.error('Select a range within the six qualification starts.')
+    if args.start_index and not args.qualify:
+        parser.error('--start-index requires --qualify.')
     if (args.fast_approach or args.compare_approach) and not args.qualify:
         parser.error('Approach options require --qualify.')
     if args.fast_approach and args.compare_approach:
         parser.error('Select one approach option.')
-    if args.compare_approach and 2 * args.attempts * (args.seconds + 6) > 850:
-        parser.error('Shorten the comparison to fit one native match.')
+    if args.compare_approach and args.attempts > 2:
+        parser.error('Compare at most two starts per match. A match ends after five captures.')
     policies = ()
     if args.qualify:
         policies = (FASTER_APPROACH,) if args.fast_approach else (KNOWN_PICKUP,)
     if args.compare_approach:
         policies = (KNOWN_PICKUP, FASTER_APPROACH)
-    trainer = Trainer(args.attempts, 5 if args.smoke else args.seconds, args.seed, args.smoke, policies)
+    trainer = Trainer(args.attempts, 5 if args.smoke else args.seconds, args.seed, args.smoke, policies, args.start_index)
     start(json.loads(args.config.read_bytes()), trainer=trainer)
