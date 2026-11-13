@@ -107,12 +107,13 @@ def summarize(results):
 
 
 class Trainer:
-    def __init__(self, attempts, seconds, seed, smoke, qualification_policies=(), start_index=0):
+    def __init__(self, attempts, seconds, seed, smoke, qualification_policies=(), start_index=0, batch=None):
         self.attempts, self.seconds, self.smoke = attempts, seconds, smoke
         self.rng = random.Random(seed)
         self.seed = seed
         self.qualification_policies = qualification_policies
         self.start_index = start_index
+        self.batch = batch
 
     def instrument(self, text, run):
         stamp = "  local stamp=now();assert(finite(stamp),'match_loading_clock_unknown')"
@@ -195,6 +196,10 @@ class Trainer:
             assert all(row['displacement_cm'] >= 100 for row in results), 'Native bot failed to move.'
             assert results[1]['jet_frames'] > 0, 'Native jet input did not activate.'
             publish(out / 'smoke.json', json.dumps({'verified_trials': len(results), 'results': results}, indent=2))
+            return
+
+        if self.batch:
+            self.batch(out, count, attempt)
             return
 
         if self.qualification_policies:

@@ -1,0 +1,209 @@
+"""Run a resumable series of native bot trials across local matches."""
+import argparse
+from dataclasses import asdict, replace
+import json
+import math
+from pathlib import Path
+import random
+import shutil
+from statistics import mean
+import time
+import msvcrt
+
+from practice import start
+from train import FASTER_APPROACH, FLANKS, KNOWN_PICKUP, Policy, Trainer, publish, rank, reward, summarize
+
+
+CHALLENGERS = (
+    KNOWN_PICKUP,
+    replace(FASTER_APPROACH, approach_cm=2200),
+    replace(FASTER_APPROACH, turn=0),
+    replace(FASTER_APPROACH, pulse=.40, period=2.2),
+    *FLANKS,
+)
+POLICIES = (FASTER_APPROACH, *CHALLENGERS)
+HELD_OUT = ((1, -80), (2, 80), (3, 0), (3, -80), (3, 80))
+
+
+def select(history, rng, baseline=FASTER_APPROACH):
+    trials = sum(map(len, history.values()))
+    if not trials:
+        return baseline
+    unseen = [policy for policy, rows in history.items() if not rows]
+    if unseen:
+        return rng.choice(unseen)
+    return max(history, key=lambda policy: mean(map(reward, history[policy]))
+               + math.sqrt(2 * math.log(trials + 1) / len(history[policy])))
+
+
+def champion(history):
+    tested = [policy for policy, rows in history.items() if rows]
+    # Require repeat evidence before a challenger can replace the known baseline.
+    eligible = [policy for policy in tested if len(history[policy]) >= 3]
+    return max(eligible or tested, key=lambda policy: (
+        mean(row['capture'] for row in history[policy]), mean(map(reward, history[policy]))))
+
+
+class Campaign:
+    def __init__(self, root, total, seconds, seed, prior=None):
+        self.root = root
+        self.total, self.seconds, self.seed = total, seconds, seed
+        self.checkpoint = root / 'progress.json'
+        self.baseline = FASTER_APPROACH
+        self.policies = POLICIES
+        if prior:
+            groups = {}
+            for row in prior['attempts']:
+                if row['held_out']:
+                    groups.setdefault(row['evaluation_role'], []).append(row)
+            if set(groups) != {'baseline', 'selected'} or len(groups['baseline']) != len(groups['selected']):
+                raise ValueError('The prior campaign needs a complete matched evaluation.')
+            winning_role = max(('baseline', 'selected'), key=lambda role: rank(groups[role]))
+            self.baseline = Policy(**groups[winning_role][0]['policy'])
+            refined = tuple(replace(self.baseline, approach_cm=distance)
+                            for distance in (2000, 2400, 3200, 3600))
+            self.policies = tuple(dict.fromkeys((self.baseline, *POLICIES, *refined)))
+        self.spec = dict(version=1, attempts=total, seconds=seconds, seed=seed,
+                         policies=[asdict(policy) for policy in self.policies])
+        if prior:
+            self.spec['starting_policy'] = asdict(self.baseline)
+        self.training_total = total - min(10, max(2, total // 5 * 2)) if total >= 12 else total
+        self.rows = []
+        self.last_match = None
+        self.runs = None
+        if self.checkpoint.exists():
+            previous = json.loads(self.checkpoint.read_bytes())
+            if previous['configuration'] != self.spec:
+                raise ValueError('Use the same settings to resume, or choose a new campaign directory.')
+            self.rows = previous['attempts']
+
+    def retire_game_copy(self):
+        if self.last_match is None:
+            return
+        run = self.last_match.resolve(strict=True)
+        game = run / 'host/game'
+        if game.is_dir():
+            # rmtree on Windows removes directory junctions as links.
+            if (run.parent != self.runs or game.resolve(strict=True) != run / 'host/game'
+                    or not run.name.startswith('training-')):
+                raise ValueError('Unexpected game staging path.')
+            shutil.rmtree(game)
+
+    def write(self):
+        history = [row for row in self.rows if not row['held_out']]
+        evaluated = [row for row in self.rows if row['held_out']]
+        groups = {}
+        for row in evaluated:
+            groups.setdefault(row['evaluation_role'], []).append(row)
+        report = dict(configuration=self.spec, completed=len(self.rows), summary=summarize(self.rows),
+                      training=summarize(history), evaluation={
+                          key: dict(policy=rows[0]['policy'], **summarize(rows)) for key, rows in groups.items()
+                      }, attempts=self.rows)
+        for retry in range(20):
+            try:
+                publish(self.checkpoint, json.dumps(report, indent=2) + '\n')
+                return
+            except PermissionError:
+                if retry == 19:
+                    raise
+                time.sleep(.1)
+
+    def play(self, out, count, attempt):
+        self.last_match = out
+        if count < 3:
+            raise ValueError('The batch requires the three High Octane starts.')
+        history = {policy: [] for policy in self.policies}
+        for row in self.rows:
+            if not row['held_out']:
+                history[Policy(**row['policy'])].append(row)
+        captures = 0
+        # Limit normal match time to leave room for slow flag returns and keep the
+        # original five-capture win condition. The fifth capture is already on disk.
+        deadline = time.monotonic() + 650
+        for _ in range(7):
+            index = len(self.rows)
+            if index >= self.total or captures == 5 or time.monotonic() >= deadline:
+                break
+            rng = random.Random(f'{self.seed}:{index}')
+            evaluating = index >= self.training_total
+            role = None
+            if evaluating:
+                pair, side = divmod(index - self.training_total, 2)
+                spawn, offset = HELD_OUT[pair]
+                policy = champion(history) if side else self.baseline
+                role = 'selected' if side else 'baseline'
+            else:
+                policy = select(history, rng, self.baseline)
+                spawn, offset = rng.randint(1, 2), rng.choice((-40, 0, 40))
+            row = attempt(policy, spawn, offset, evaluating)
+            row.update(campaign_attempt=index + 1, evaluation_role=role,
+                       trace=str((out / row['trace']).resolve()))
+            self.rows.append(row)
+            self.write()
+            if not evaluating:
+                history[policy].append(row)
+            captures += int(row['capture'])
+            print(f'Campaign progress {len(self.rows)}/{self.total}', flush=True)
+
+
+def run(config, campaign):
+    campaign.runs = Path(config['runs']).resolve()
+    campaign.write()
+    retries = 0
+    while len(campaign.rows) < campaign.total:
+        campaign.last_match = None
+        try:
+            start(config, trainer=Trainer(0, campaign.seconds, campaign.seed, False, batch=campaign.play))
+        except RuntimeError as exc:
+            if type(exc).__name__ == 'NativeResourceBusy':
+                print('Another Unreal task has the test slot. Retrying in 20 seconds.', flush=True)
+                time.sleep(20)
+                continue
+            recoverable = ('training_reset_position', 'training_teleport_failed', 'training_reset_settle_timeout',
+                           'Local host exited', 'Timed out waiting for native training evidence')
+            if retries >= 2 or not any(reason in str(exc) for reason in recoverable):
+                raise
+            retries += 1
+            print(f'Retrying in a fresh match after {exc}', flush=True)
+            if campaign.last_match:
+                try:
+                    campaign.retire_game_copy()
+                except OSError as cleanup_error:
+                    print(f'Could not remove the finished match staging copy: {cleanup_error}', flush=True)
+        else:
+            retries = 0
+            try:
+                campaign.retire_game_copy()
+            except OSError as exc:
+                print(f'Could not remove the finished match staging copy: {exc}', flush=True)
+    print(f'Finished {len(campaign.rows)} native attempts. Results: {campaign.checkpoint}', flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('config', type=Path)
+    parser.add_argument('output', type=Path)
+    parser.add_argument('--attempts', type=int, default=100)
+    parser.add_argument('--seconds', type=int, default=76)
+    parser.add_argument('--seed', type=int, default=2026)
+    parser.add_argument('--after', type=Path, help='Require a completed campaign checkpoint before starting.')
+    args = parser.parse_args()
+    if not 1 <= args.attempts <= 10000 or not 3 <= args.seconds <= 90:
+        parser.error('Use 1–10,000 attempts and 3–90 seconds per attempt.')
+    prior = None
+    if args.after:
+        prior = json.loads(args.after.read_bytes())
+        if prior['completed'] != prior['configuration']['attempts']:
+            parser.error('The prior campaign must finish before scaling up.')
+    args.output.mkdir(parents=True, exist_ok=True)
+    with (args.output / 'campaign.lock').open('a+b') as lock:
+        lock.seek(0)
+        try:
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            parser.error('Another trainer is already using this campaign directory.')
+        run(json.loads(args.config.read_bytes()), Campaign(args.output, args.attempts, args.seconds, args.seed, prior))
+
+
+if __name__ == '__main__':
+    main()
