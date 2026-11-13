@@ -2,16 +2,16 @@
 import hashlib
 import json
 
-from compare_map_packages import inventory
+from compare_map_packages import inventory, read_package_manifest
 
 
-def verified_catalog(bundle):
+def verified_catalog(bundle, *, manifest_reader=read_package_manifest):
     """Verify listed files, then fingerprint each map and base manifest.
 
     A digest detects differing packaged content; it does not authenticate the
     client, prove gameplay compatibility, or verify the installed base game.
     """
-    base, groups=inventory(bundle)
+    base, groups=inventory(bundle, manifest_reader=manifest_reader)
     result={}
     for name in groups:
         entries=[[path,size,digest] for path,(size,digest) in sorted(groups[name].items())]

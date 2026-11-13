@@ -34,8 +34,8 @@ def packaged_map_ids(bundle):
     except ValueError as exc: raise CompatibilityError(str(exc)) from exc
 
 
-def inventory(bundle):
-    root,manifest=read_package_manifest(bundle)
+def inventory(bundle, *, manifest_reader=read_package_manifest):
+    root,manifest=manifest_reader(bundle)
     items=manifest.get('files')
     if not isinstance(items,list) or not 1<=len(items)<=10000: raise CompatibilityError('Invalid manifest inventory.')
     try:

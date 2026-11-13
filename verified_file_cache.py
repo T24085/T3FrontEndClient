@@ -125,7 +125,7 @@ def metrics():
     return _PROCESS_CACHE.snapshot()
 
 
-def verify_package(root, *, force=False):
+def verify_package(root, *, force=False, merge_manifest=None):
     """Verify every current manifest member; reuse only this process's hashes.
 
     Callers' content census/ownership checks remain separate. Manifest bytes are
@@ -139,6 +139,8 @@ def verify_package(root, *, force=False):
     if len(raw) > 2 * 1024 * 1024 or identity(manifest_path) != before:
         raise ValueError('Package manifest is too large or changed while reading.')
     result = json.loads(raw)
+    if merge_manifest is not None and isinstance(result, dict):
+        result = merge_manifest(root, result)
     items = result.get('files') if isinstance(result, dict) else None
     if not isinstance(items, list) or not 1 <= len(items) <= 10000:
         raise ValueError('Invalid package inventory.')
@@ -166,4 +168,6 @@ def verify_package(root, *, force=False):
         current_raw = stream.read(2 * 1024 * 1024 + 1)
     if identity(manifest_path) != before or current_raw != raw:
         raise ValueError('Package manifest changed while verifying members.')
+    if merge_manifest is not None and merge_manifest(root, json.loads(raw)) != result:
+        raise ValueError('Map inventory changed while verifying members.')
     return result

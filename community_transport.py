@@ -12,7 +12,7 @@ import ssl
 import threading
 
 from dynamic_destination import destination,isolated_source
-from community_maps import BY_ID, read_options
+from community_maps import BY_ID, MAX_MAPS, valid_id, valid_label
 from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION
 
 MAX_LOBBY_BOTS = 12
@@ -58,6 +58,23 @@ class PinnedHTTPSConnection(http.client.HTTPSConnection):
             raise
 
 
+def read_server_map_options(items):
+    if not isinstance(items, list) or not 1 <= len(items) <= MAX_MAPS:
+        raise ValueError('Invalid lobby map list.')
+    labels, ids, names = {}, set(), set()
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {'id', 'label'}:
+            raise ValueError('Invalid lobby map option.')
+        name, label = item['id'], item['label']
+        if (not valid_id(name) or name.casefold() in ids
+                or not valid_label(label) or label.casefold() in names):
+            raise ValueError('Invalid or duplicate server map option.')
+        ids.add(name.casefold())
+        names.add(label.casefold())
+        labels[name] = label
+    return labels
+
+
 class CommunityClient:
     def __init__(self, hostname, port, server_address, policy, *, ssl_context=None, test_source=None):
         test_source=isolated_source(test_source)
@@ -95,7 +112,7 @@ class CommunityClient:
         return address in ipaddress.ip_network('100.64.0.0/10')
 
     def request_headers(self):
-        return {'Host': self.authority, 'Accept': 'application/json', CATALOG_HEADER: str(CATALOG_VERSION)}
+        return {'Host': self.authority, 'Accept': 'application/json', CATALOG_HEADER: str(CATALOG_VERSION), 'X-T3-Map-Labels': '1'}
 
     def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True):
         headers = self.request_headers()
@@ -144,7 +161,7 @@ class CommunityClient:
         with self.lock:
             caps = self._request('capabilities')
             try:
-                self.server_maps = (read_options(caps['maps'], dynamic=True)
+                self.server_maps = (read_server_map_options(caps['maps'])
                                     if caps.get('mapFileSync') == CATALOG_VERSION else None)
             except (ValueError, KeyError) as exc:
                 raise CommunityError('Invalid server map catalog.') from exc

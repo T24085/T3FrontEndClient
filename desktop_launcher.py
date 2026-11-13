@@ -456,7 +456,11 @@ class Desktop:
         if available is None: available=options(LEGACY_MAPS)
         try:
             dynamic = self.caps.get('mapFileSync') == CATALOG_VERSION
-            labels = read_options(available, dynamic=dynamic)
+            if dynamic:
+                from community_transport import read_server_map_options
+                labels = read_server_map_options(available)
+            else:
+                labels = read_options(available)
             if in_room and room['map'] not in labels:
                 raise ValueError('The selected map is outside the lobby catalog.')
         except ValueError:
