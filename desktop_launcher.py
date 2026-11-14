@@ -110,8 +110,21 @@ class Desktop:
         self.sidebar = side
         side.pack(side='left', fill='y')
         side.pack_propagate(False)
-        self.label(side, 'TRIBES 3', 25, True, bg='#0d1927').pack(anchor='w', padx=24, pady=(36, 0))
-        self.label(side, 'COMMUNITY STARTER', 9, color=ACCENT, bg='#0d1927').pack(anchor='w', padx=26, pady=(4, 32))
+        icon_path = ROOT / 'branding/clan-wars.png'
+        if icon_path.is_file():
+            root.title('Tribes Rivals: Clan Wars (community mod)')
+            self.clan_wars_icon = tk.PhotoImage(master=root, file=str(icon_path))
+            root.iconphoto(True, self.clan_wars_icon)
+            self.clan_wars_logo = self.clan_wars_icon.subsample(8)
+            title = self.label(side, 'Clan Wars', 18, True, bg='#0d1927')
+            title.configure(image=self.clan_wars_logo, compound='left')
+            title.pack(anchor='w', padx=24, pady=(36, 0))
+            caption = self.label(side, 'TRIBES RIVALS  \u00b7  COMMUNITY MOD', 9, color=ACCENT, bg='#0d1927')
+            caption.configure(wraplength=165, justify='left')
+            caption.pack(anchor='w', padx=26, pady=(4, 32))
+        else:
+            self.label(side, 'TRIBES 3', 25, True, bg='#0d1927').pack(anchor='w', padx=24, pady=(36, 0))
+            self.label(side, 'COMMUNITY STARTER', 9, color=ACCENT, bg='#0d1927').pack(anchor='w', padx=26, pady=(4, 32))
         self.lobbies_nav=self.button(side,'Lobbies',lambda:self.show_panel('lobbies'),False)
         self.lobbies_nav.pack(fill='x',padx=18,pady=(0,6))
         self.live_nav=self.button(side,'Live matches',lambda:self.show_panel('live'),False)
