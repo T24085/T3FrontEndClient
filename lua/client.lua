@@ -7,6 +7,7 @@ local SPECTATOR_ROLE=@@SPECTATOR_ROLE@@
 local SPECTATOR_LEASE=@@MATCH_LEASE@@
 local SPECTATOR_WATCH=@@WATCH_ID@@
 local spectatorRuntime=nil
+local nativeSpectatorPresentation
 local MODE="BlueprintGeneratedClass /Game/Topaz/Game/BP_TopazGameMode_CTF_Persistent_BotBackfill.BP_TopazGameMode_CTF_Persistent_BotBackfill_C"
 local joined=false
 local nextHandle=nil
@@ -1332,6 +1333,21 @@ local function client_tick(sys)
         spectatorRuntime.tick(pc,ps,gs);return
     end
     assert(SPECTATOR_ROLE=="player","unknown_client_role")
+    if nativeSpectatorPresentation~=false and (nativeSpectatorPresentation or ps.r_bDead==true) then
+        local ok,why=pcall(function()
+            if not nativeSpectatorPresentation then
+                nativeSpectatorPresentation=assert(loadfile(@@SPECTATOR_RUNTIME@@))()({
+                    valid=valid,scope=scope,signature=signature,report=report,passive=true,
+                    material_factory=assert(loadfile(@@SPECTATOR_MATERIAL_RUNTIME@@))()
+                })
+            end
+            nativeSpectatorPresentation.observe_native(pc,ps,gs)
+        end)
+        if not ok then
+            nativeSpectatorPresentation=false
+            report('NATIVE_SPECTATOR_PRESENTATION_ERROR|'..tostring(why))
+        end
+    end
     local pawnReady=valid(pc.Pawn) and pc.Pawn.bInitialized==true
     local settingsApplied=pawnReady and apply_saved_sound_settings(pc)
     update_match_music(pc,gs,settingsApplied)

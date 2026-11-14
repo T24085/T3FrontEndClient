@@ -3,12 +3,16 @@
 return function(env)
  local valid,scope,signature,report=assert(env.valid),assert(env.scope),assert(env.signature),assert(env.report)
  local pc=assert(env.pc);local ps=pc.PlayerState;local world=pc:GetWorld()
+ local passive=env.passive==true
  local current=nil;local records={};local primed=false
  local function identity(o)return o:GetFullName()..'|'..tostring(o:GetAddress())end
  local function same(a,b)return valid(a)and valid(b)and identity(a)==identity(b)end
  local function context()
   scope();assert(valid(pc)and pc:IsLocalPlayerController()and not pc:HasAuthority()and same(pc:GetWorld(),world),'spectator_material_context_changed')
-  assert(valid(ps)and same(pc.PlayerState,ps)and same(ps:GetWorld(),world)and ps:IsOnlyASpectator()and not valid(pc.Pawn),'spectator_material_observer_only_required')
+  assert(valid(ps)and same(pc.PlayerState,ps)and same(ps:GetWorld(),world),'spectator_material_player_state_required')
+  if not passive then
+   assert(ps:IsOnlyASpectator()and not valid(pc.Pawn),'spectator_material_observer_only_required')
+  end
  end
  local function prime()
   if primed then return end
@@ -96,8 +100,10 @@ return function(env)
   if live=='unknown'then r.cleanup_status='keeper_liveness_unknown';return false end
   local known,owned=pcall(function()
    return identity(r.keeper)==r.keeperIdentity and same(r.keeper:GetOwner(),r.keeperOwner)
-    and same(pc:GetSpectatorPawn(),r.keeperOwner)and same(r.keeperOwner:GetWorld(),world)
-    and same(r.keeperOwner:GetOwner(),pc)and same(r.keeperOwner.Controller,pc)
+    and same(r.keeperOwner:GetWorld(),world)
+    and (passive and same(r.keeperOwner,pc) or not passive
+     and same(pc:GetSpectatorPawn(),r.keeperOwner)
+     and same(r.keeperOwner:GetOwner(),pc)and same(r.keeperOwner.Controller,pc))
   end)
   if not known or owned~=true then
    r.cleanup_status='keeper_scope_changed';return false
@@ -150,7 +156,9 @@ return function(env)
   return value
  end
  local function observe(target)
-  assert(valid(target)and same(target,pc:GetViewTarget())and not target:HasAuthority()and same(target:GetWorld(),world),'spectator_material_exact_remote_target_required')
+  local viewed=pc:GetViewTarget()
+  assert(valid(target)and (same(target,viewed) or same(target.PlayerState,viewed))
+   and not target:HasAuthority()and same(target:GetWorld(),world),'spectator_material_exact_remote_target_required')
   assert(valid(target.PlayerState)and same(target.PlayerState.PawnPrivate,target),'spectator_material_reciprocal_target_required')
   if current and current.identity~=identity(target)then restore(current);current=nil end
   if current then return current end
@@ -173,11 +181,12 @@ return function(env)
   -- SetMaterial stores strong UPROPERTY OverrideMaterials references. A fresh
   -- meshless component has no visual/collision geometry and is owned only by
   -- this local native spectator pawn, never by an ordinary player/server.
-  local owner=pc:GetSpectatorPawn()
+  local owner=passive and pc or pc:GetSpectatorPawn()
   -- UE spawns this non-replicated pawn on the client, so it legitimately has
   -- local authority. Its exact controller/owner establishes observer scope;
   -- the network PlayerController above must still be a non-authority client.
-  assert(valid(owner)and same(owner:GetWorld(),world)and same(owner:GetOwner(),pc)and same(owner.Controller,pc),'spectator_material_keeper_spectator_owner_required')
+  assert(valid(owner)and same(owner:GetWorld(),world)
+   and (passive or same(owner:GetOwner(),pc)and same(owner.Controller,pc)),'spectator_material_keeper_owner_required')
   r.keeperOwner=owner
   r.keeper=owner:AddComponentByClass(StaticFindObject('/Script/Engine.StaticMeshComponent'),false,{Rotation={X=0,Y=0,Z=0,W=1},Translation={X=0,Y=0,Z=0},Scale3D={X=1,Y=1,Z=1}},false)
   assert(valid(r.keeper)and same(r.keeper:GetOwner(),owner),'spectator_material_keeper_creation_failed')
@@ -231,6 +240,12 @@ return function(env)
   if not current or current.identity~=identity(target)then self.apply(target,third)
   else
    assert(same(target:GetMesh3P(),current.mesh)and same(current.mesh:GetWorld(),world),'spectator_material_body_mesh_changed')
+   for _,slot in ipairs(current.slots)do
+    local material=current.mesh:GetMaterial(slot.index)
+    -- Native view updates can reapply the original slot when the watched
+    -- pawn enters or exits first person.
+    if same(material,slot.original)then current.mesh:SetMaterial(slot.index,slot.clone)end
+   end
    weapon(current);write(current,third)
   end
  end

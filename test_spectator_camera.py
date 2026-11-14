@@ -130,7 +130,8 @@ function materials.poll(target,third)
  assert(third==presentations[#presentations],'poll must keep the current presentation')
  polled[#polled+1]=target.name
 end
-function materials.retire()end
+retirements=0
+function materials.retire()retirements=retirements+1 end
 function materials.owned()return {}end
 env={lease_id='lease',watch_id='watch',now=function()return 100 end,
  valid=function(obj)return type(obj)=='table'and obj.alive==true end,
@@ -204,6 +205,34 @@ class SpectatorCameraTests(unittest.TestCase):
         assert(skiValue.visibility==1 and unrelated.visibility==4)
         skiValue.text='DISENGAGED';follow_once()
         assert(skiValue.visibility==4)
+        ''')
+
+    def test_native_death_camera_repairs_only_remote_views_and_stops_at_respawn(self):
+        factory = self.lua.execute((ROOT / 'lua/spectator_client.lua').read_text(encoding='utf-8'))
+        self.lua.globals().factory = factory
+        self.lua.execute(FIXTURE)
+        self.check('''
+        function ps:IsOnlyASpectator()return false end
+        env.passive=true
+        service=factory(env)
+        pc.view=active
+        pc.Pawn=active
+        service.observe_native(pc,ps,gameState)
+        assert(#presentations==0)
+        ps.r_bDead=true
+        service.observe_native(pc,ps,gameState)
+        assert(#presentations==0)
+        pc.Pawn=nil
+        pc.PlayerCameraManager.location.X=-300
+        service.observe_native(pc,ps,gameState)
+        assert(presentations[1]==true and pc.view==active and pc.toggles==0)
+        assert(pc.AFKTimer==10 and not next(keys)and #pc.directions==0)
+        local before=retirements
+        ps.r_bDead=false
+        follow_once()
+        assert(retirements==before+1 and skiValue.visibility==4)
+        assert(pc.view==active and pc.toggles==0)
+        for _,event in ipairs(events)do assert(not event:find('SPECTATOR_READY',1,true))end
         ''')
 
     def test_retiring_restores_the_previous_ski_visibility(self):

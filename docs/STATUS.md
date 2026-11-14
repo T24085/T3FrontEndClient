@@ -1,5 +1,10 @@
 # Spectator camera modes
 
+The client also applies the body presentation and ski-label repair when the
+native death camera follows another player. This path leaves the view target,
+input, AFK policy, and respawn under native control. It restores presentation
+when the player respawns or the remote view ends.
+
 Spectators start in first person. F5 and F6 change targets, F7 selects first
 person, and F8 selects third person. The viewer keeps its selected perspective
 across target changes and respawns. The local body materials follow the camera

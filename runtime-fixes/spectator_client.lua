@@ -2,6 +2,7 @@
 -- gameplay possession, changes the viewed player's server, or creates a pawn.
 return function(env)
  local valid,scope,signature,report=assert(env.valid),assert(env.scope),assert(env.signature),assert(env.report)
+ local passive=env.passive==true
  local pc,ps,world,rig,nextHandle;local stopped=false;local started=false
  local ready=false;local lastNext=0;local lastTarget=nil
  local preferredThird=false
@@ -58,8 +59,12 @@ return function(env)
    end
   end
  end
+ local function local_context()
+  return valid(pc)and valid(ps)and same(pc.PlayerState,ps)and pc:IsLocalPlayerController()
+   and not pc:HasAuthority()and same(pc:GetWorld(),world)and same(ps:GetWorld(),world)
+ end
  local function guard()
-  scope();assert(not stopped and valid(pc)and valid(ps)and same(pc.PlayerState,ps)and pc:IsLocalPlayerController()and not pc:HasAuthority()and same(pc:GetWorld(),world)and same(ps:GetWorld(),world),'spectator_client_context_changed')
+  scope();assert(not stopped and local_context(),'spectator_client_context_changed')
   assert(ps:IsOnlyASpectator()and not valid(pc.Pawn),'spectator_client_observer_only_required')
  end
  local function prime()
@@ -205,11 +210,12 @@ return function(env)
   local stateClass=StaticFindObject('/Script/Engine.PlayerState')
   if valid(target)and target:IsA(stateClass)then target=target.PawnPrivate end
   local characterClass=StaticFindObject('/Script/Valhalla.ValCharacter')
-  if valid(target)and target:IsA(characterClass)and same(target:GetWorld(),world)and target.bInitialized==true then
+  if valid(target)and target:IsA(characterClass)and same(target:GetWorld(),world)and target.bInitialized==true
+   and not same(target,pc.Pawn) then
    -- Replicated initialization can precede the PlayerState's pawn update.
    -- This boundary owns readiness; consumers must not assert through that lag.
    local state=target.PlayerState
-   if valid(state)and same(state:GetWorld(),world)and same(state.PawnPrivate,target)then return target end
+   if valid(state)and not same(state,ps)and same(state:GetWorld(),world)and same(state.PawnPrivate,target)then return target end
   end
   return nil
  end
@@ -263,13 +269,16 @@ return function(env)
    report('SPECTATOR_VIEW|mode='..action)
   else error('spectator_unknown_camera_action')end
  end
- local function follow()
-  guard()
+ local function refresh_ski_hud()
   local hudOk,hudError=pcall(update_ski_hud)
   if not hudOk then
    report('SPECTATOR_HUD_SKIPPED|'..tostring(hudError))
    update_ski_hud=function()end
   end
+ end
+ local function follow()
+  guard()
+  refresh_ski_hud()
   -- The observer's selection survives native resets and target handoffs.
   local perspectiveChanged=select_perspective()
   -- Watching is intentionally passive. The original local AFK clock also
@@ -324,6 +333,7 @@ return function(env)
   end
  end
  function service.tick(controller,state,gameState)
+  assert(not passive,'spectator_lease_runtime_required')
   if not started then
    prime();pc=controller;ps=state;world=pc:GetWorld();guard()
    assert(same(gameState:GetWorld(),world),'spectator_game_state_world_required')
@@ -344,6 +354,56 @@ return function(env)
    schedule()
   end
   guard()
+ end
+ function service.observe_native(controller,state,gameState)
+  scope()
+  assert(passive,'spectator_passive_runtime_required')
+  if stopped or nextHandle then return end
+  if started and (not same(controller,pc)or not same(state,ps)or not same(controller:GetWorld(),world))then
+   started=false;materials=nil;lastTarget=nil;renderedThird=nil
+  end
+  pc,ps,world=controller,state,controller:GetWorld()
+  if not local_context()or not same(gameState:GetWorld(),world)or ps:IsOnlyASpectator()
+   or ps.r_bDead~=true or not current_target()then return end
+  if not started then
+   signature('/Script/Engine.Controller:GetViewTarget',{{'ReturnValue','ObjectProperty',0}})
+   signature('/Script/Valhalla.ValCharacter:GetThirdPersonCameraAlpha',{{'ReturnValue','FloatProperty',0}})
+   signature('/Script/Engine.PlayerCameraManager:GetCameraLocation',{{'ReturnValue','StructProperty',0}})
+   signature('/Script/Engine.SceneComponent:K2_GetComponentLocation',{{'ReturnValue','StructProperty',0}})
+   materials=env.material_factory({pc=pc,valid=valid,scope=scope,signature=signature,report=report,passive=true})
+   started=true
+  end
+  local update
+  update=function()
+   nextHandle=nil
+   if stopped then return end
+   local ok,why=pcall(function()
+    scope()
+    local target
+    if local_context()and not ps:IsOnlyASpectator()and ps.r_bDead==true then target=current_target()end
+    if not target then
+     restore_placeholder()
+     if local_context()then materials.retire()end
+     lastTarget=nil;renderedThird=nil
+     return
+    end
+    if lastTarget~=identity(target)then
+     materials.retire()
+     lastTarget=identity(target);renderedThird=nil
+     report('NATIVE_SPECTATOR_TARGET|'..target:GetFullName())
+    end
+    refresh_ski_hud()
+    update_presentation(target)
+    nextHandle=ExecuteInGameThreadWithDelay(20,update)
+    assert(type(nextHandle)=='number','native_spectator_timer_registration_unknown')
+   end)
+   if not ok then
+    stopped=true
+    if local_context()then pcall(cleanup)end
+    report('NATIVE_SPECTATOR_PRESENTATION_ERROR|'..tostring(why))
+   end
+  end
+  update()
  end
  function service.retire()scope();cleanup();sweep_retired();stopped=true;return #retired==0 and(not materials or #materials.owned()==0)end
  function service.owned()return {rig=rig,retired=retired,materials=materials and materials.owned()or{},pc=pc,world=world,stopped=stopped}end
