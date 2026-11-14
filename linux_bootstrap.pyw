@@ -56,7 +56,10 @@ def launch_starter(root, game_dir, workspace, context):
     from starter_update import DIRECT_CHANNEL, run_startup
 
     def launch(on_ready):
-        from direct_client import main
+        if (root/'clan_wars.py').is_file():
+            from clan_wars import launch as main
+        else:
+            from direct_client import main
         original = startup_paths.installation_options
 
         def steam_options(game_directory=None, explicit_workspace=None):

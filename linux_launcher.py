@@ -26,7 +26,11 @@ ROOT = Path(__file__).resolve().parent
 
 
 def setup_option(root):
-    return shlex.quote(str(Path(root).resolve() / 'Start Community Starter.sh')) + ' --steam-launch %command%'
+    root = Path(root).resolve()
+    clan_wars = root.parent / 'Clan Wars - Linux.sh'
+    if root.name == 'Client Files' and clan_wars.is_file():
+        return 'sh ' + shlex.quote(str(clan_wars)) + ' --steam-launch %command%'
+    return shlex.quote(str(root / 'Start Community Starter.sh')) + ' --steam-launch %command%'
 
 
 def merge_dll_overrides(current):

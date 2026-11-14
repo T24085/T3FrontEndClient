@@ -1,0 +1,17 @@
+Tribes Rivals: Clan Wars (community mod)
+
+Extract the entire ZIP into a permanent folder before launching.
+Both launchers use the bundled maps in "Client Files". Keep the folder beside them.
+
+WINDOWS
+Double-click "Clan Wars - Windows.exe".
+
+LINUX / STEAM PROTON
+Open a terminal in the extracted folder and run:
+    sh "Clan Wars - Linux.sh" --setup
+In Steam, open TRIBES 3: Rivals > Properties.
+Enable Proton under Compatibility, and paste the printed line into General > Launch Options.
+Then click Play in Steam.
+
+Both versions require Steam and an installed copy of TRIBES 3: Rivals.
+The client checks GameServer01 for signed updates when it opens.
