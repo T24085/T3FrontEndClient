@@ -4,11 +4,60 @@ return function(env)
  local valid,scope,signature,report=assert(env.valid),assert(env.scope),assert(env.signature),assert(env.report)
  local pc,ps,world,rig,nextHandle;local stopped=false;local started=false
  local ready=false;local lastNext=0;local lastTarget=nil
+ local preferredThird=false
+ local renderedThird=nil
+ local skiPlaceholder=nil
+ local lastHudScan=nil
  local materials=nil
  local retired={}
  local service={};local now=env.now or os.time
  local function same(a,b)return valid(a)and valid(b)and a:GetAddress()==b:GetAddress()and a:GetFullName()==b:GetFullName()end
  local function identity(a)return a:GetFullName()..'|'..tostring(a:GetAddress())end
+ local function restore_placeholder()
+  local saved=skiPlaceholder
+  skiPlaceholder=nil
+  if saved and valid(saved.widget)and identity(saved.widget)==saved.identity
+   and same(saved.widget:GetWorld(),world)and saved.widget:GetVisibility()==1 then
+   saved.widget:SetVisibility(saved.visibility)
+  end
+ end
+ local function ski_row(widget,textClass)
+  local row=widget:GetParent()
+  if not valid(row)or not row:IsA(StaticFindObject('/Script/UMG.PanelWidget')) then return false end
+  local count=row:GetChildrenCount()
+  if count<2 or count>6 then return false end
+  for index=0,count-1 do
+   local sibling=row:GetChildAt(index)
+   if valid(sibling)and sibling:IsA(textClass)and sibling:GetText():ToString():upper()=='SKI TOGGLE' then return true end
+  end
+  return false
+ end
+ local function update_ski_hud()
+  if skiPlaceholder then
+   local widget=skiPlaceholder.widget
+   if not valid(widget)or identity(widget)~=skiPlaceholder.identity
+    or widget:GetText():ToString()~='Text Block' then restore_placeholder() end
+   if skiPlaceholder then return end
+  end
+  local stamp=now()
+  if stamp==lastHudScan then return end
+  lastHudScan=stamp
+  local textClass=StaticFindObject('/Script/UMG.TextBlock')
+  if not valid(textClass)then return end
+  local blocks=FindAllOf('TextBlock')or{}
+  if #blocks>2048 then return end
+  for _,widget in ipairs(blocks)do
+   if valid(widget)and same(widget:GetWorld(),world)and widget:GetText():ToString()=='Text Block'
+    and ski_row(widget,textClass)then
+    local visibility=widget:GetVisibility()
+    if visibility~=1 then
+     skiPlaceholder={widget=widget,identity=identity(widget),visibility=visibility}
+     widget:SetVisibility(1) -- ESlateVisibility::Collapsed
+    end
+    return
+   end
+  end
+ end
  local function guard()
   scope();assert(not stopped and valid(pc)and valid(ps)and same(pc.PlayerState,ps)and pc:IsLocalPlayerController()and not pc:HasAuthority()and same(pc:GetWorld(),world)and same(ps:GetWorld(),world),'spectator_client_context_changed')
   assert(ps:IsOnlyASpectator()and not valid(pc.Pawn),'spectator_client_observer_only_required')
@@ -18,6 +67,9 @@ return function(env)
   callback:ForEachProperty(function(p)assert(type(p.GetPropertyClass)=='function'and p:GetPropertyClass():GetFullName()=='Class /Script/Topaz.TopGenerator','spectator_client_object_binding_required')end)
   signature('/Script/Engine.PlayerState:IsOnlyASpectator',{{'ReturnValue','BoolProperty',0}})
   signature('/Script/Engine.Controller:GetViewTarget',{{'ReturnValue','ObjectProperty',0}})
+  signature('/Script/Valhalla.ValCharacter:GetThirdPersonCameraAlpha',{{'ReturnValue','FloatProperty',0}})
+  signature('/Script/Engine.PlayerCameraManager:GetCameraLocation',{{'ReturnValue','StructProperty',0}})
+  signature('/Script/Engine.SceneComponent:K2_GetComponentLocation',{{'ReturnValue','StructProperty',0}})
   signature('/Script/Valhalla.ValPlayerController:ServerRequestStartSpectating',{})
   signature('/Script/Valhalla.ValPlayerController:ServerSpectateNext',{{'Direction','IntProperty',0}})
   signature('/Script/Engine.PlayerController:ServerViewSelf',{{'TransitionParams','StructProperty',0}})
@@ -115,6 +167,10 @@ return function(env)
   end
   rig=nil;return true
  end
+ local function cleanup()
+  restore_placeholder()
+  return release_rig()
+ end
  local function sweep_retired()
   for i=#retired,1,-1 do local r=retired[i]
    if not valid(r.target)and not valid(r.camera)and not valid(r.arm)then table.remove(retired,i)end
@@ -158,7 +214,6 @@ return function(env)
   return nil
  end
  local function refresh_camera(target)
-  if not target then return end
   local spectator=pc:GetSpectatorPawn();assert(valid(spectator)and same(spectator:GetWorld(),world),'spectator_native_camera_pawn_required')
   -- Val's camera manager caches its component when the view target changes.
   -- Re-enter the same native target after installing a viewer-local rig or
@@ -166,29 +221,57 @@ return function(env)
   pc:SetViewTargetWithBlend(spectator,0,0,0,false)
   pc:SetViewTargetWithBlend(target,0,0,0,false)
  end
- local function first_person()
-  local changed=pc:IsThirdPerson()
+ local function select_perspective()
+  local changed=pc:IsThirdPerson()~=preferredThird
   if changed then pc:ToggleThirdPerson()end
-  assert(not pc:IsThirdPerson(),'spectator_first_person_required')
+  assert(pc:IsThirdPerson()==preferredThird,'spectator_requested_perspective_required')
   return changed
+ end
+ local function update_presentation(target)
+  -- The mode flag changes before the camera finishes blending. Use its
+  -- distance from the eye camera so a close camera also works at walls.
+  local threshold=renderedThird and 65 or 90
+  local alpha=target:GetThirdPersonCameraAlpha()
+  assert(type(alpha)=='number'and alpha>=0 and alpha<=1,'spectator_camera_alpha_invalid')
+  local third=alpha>=threshold/300
+  local eye=target.FirstPersonCameraComponent
+  local manager=pc.PlayerCameraManager
+  if valid(eye)and valid(manager)and same(eye:GetOwner(),target)then
+   local camera=manager:GetCameraLocation()
+   local origin=eye:K2_GetComponentLocation()
+   local dx,dy,dz=camera.X-origin.X,camera.Y-origin.Y,camera.Z-origin.Z
+   local distanceSquared=dx*dx+dy*dy+dz*dz
+   -- A camera frame from the outgoing target can be one tick behind.
+   if distanceSquared<=600*600 then third=distanceSquared>=threshold*threshold end
+  end
+  if third~=renderedThird then
+   materials.apply(target,third)
+   renderedThird=third
+  else
+   materials.poll(target,third)
+  end
  end
  function service.action(action)
   if stopped or not pc then return end
   guard()
   if action=='next'or action=='previous'then pc:ServerSpectateNext(action=='next'and 1 or -1)
   elseif action=='first'or action=='third'then
-   -- Older callers may still request third person; keep this viewer in first.
-   first_person()
-   local target=current_target();refresh_camera(target)
-   if target then materials.apply(target,false)end
-   report('SPECTATOR_VIEW|mode=first')
+   preferredThird=action=='third'
+   local changed=select_perspective()
+   local target=current_target()
+   if changed and target and same(rig and rig.target,target)then refresh_camera(target)end
+   report('SPECTATOR_VIEW|mode='..action)
   else error('spectator_unknown_camera_action')end
  end
  local function follow()
   guard()
-  -- Native input can also toggle perspective. Restore first person on every
-  -- observer update, including while waiting for a live target to replicate.
-  local perspectiveChanged=first_person()
+  local hudOk,hudError=pcall(update_ski_hud)
+  if not hudOk then
+   report('SPECTATOR_HUD_SKIPPED|'..tostring(hudError))
+   update_ski_hud=function()end
+  end
+  -- The observer's selection survives native resets and target handoffs.
+  local perspectiveChanged=select_perspective()
   -- Watching is intentionally passive. The original local AFK clock also
   -- kicks observer-only controllers; exempt this exact admitted viewer while
   -- its native spectator context remains valid, without manufacturing input
@@ -198,23 +281,22 @@ return function(env)
   pc.AFKTimer=0
   sweep_retired();local target=current_target()
   if not target then
-   release_rig();lastTarget=nil
+   release_rig();lastTarget=nil;renderedThird=nil
    if now()-lastNext>=2 then lastNext=now();pc:ServerSpectateNext(1)end
    return
   end
   local changed=lastTarget~=identity(target)
   if changed then
-   target_rig(target);lastTarget=identity(target)
+   target_rig(target);lastTarget=identity(target);renderedThird=nil
   end
   if changed or perspectiveChanged then
    refresh_camera(target)
-   materials.apply(target,false)
   end
   if changed then
    report('SPECTATOR_TARGET|lease='..env.lease_id..'|watch='..env.watch_id..'|player='..target:GetFullName())
   end
-  materials.poll(target,false)
-  if not ready then ready=true;report('SPECTATOR_READY|lease='..env.lease_id..'|watch='..env.watch_id..'|mode=first')end
+  update_presentation(target)
+  if not ready then ready=true;report('SPECTATOR_READY|lease='..env.lease_id..'|watch='..env.watch_id..'|mode='..(preferredThird and'third'or'first'))end
  end
  local schedule
  schedule=function()
@@ -225,8 +307,8 @@ return function(env)
    if stopped then return end
    local ok,why=pcall(function()assert(owned==nextHandle,'spectator_timer_identity_changed');nextHandle=nil;follow();schedule()end)
    if not ok then
-    stopped=true;local cleaned,cleanup=pcall(release_rig)
-    report('RUNTIME_ERROR|spectator_camera|'..tostring(why)..(cleaned and''or'|cleanup_retained='..tostring(cleanup)))
+    stopped=true;local cleaned,reason=pcall(cleanup)
+    report('RUNTIME_ERROR|spectator_camera|'..tostring(why)..(cleaned and''or'|cleanup_retained='..tostring(reason)))
    end
   end
   owned=ExecuteInGameThreadWithDelay(20,callback)
@@ -237,7 +319,7 @@ return function(env)
    if stopped then return end
    ExecuteInGameThread(function()
     local ok,why=pcall(service.action,action)
-    if not ok then stopped=true;local cleaned,cleanup=pcall(release_rig);report('RUNTIME_ERROR|spectator_input|'..tostring(why)..(cleaned and''or'|cleanup_retained='..tostring(cleanup)))end
+    if not ok then stopped=true;local cleaned,reason=pcall(cleanup);report('RUNTIME_ERROR|spectator_input|'..tostring(why)..(cleaned and''or'|cleanup_retained='..tostring(reason)))end
    end)
   end
  end
@@ -252,18 +334,18 @@ return function(env)
    -- Reset the server's view target through its spectator-only RPC as well;
    -- otherwise a one-player server can suppress the unchanged target update
    -- when this viewer starts again. Reliable RPC order preserves the reset.
-   first_person()
+   select_perspective()
    started=true;pc:ServerViewSelf({BlendTime=0,BlendFunction=0,BlendExp=2,bLockOutgoing=false})
    pc:ServerRequestStartSpectating()
    RegisterKeyBind(Key.F5,key_action('next'));RegisterKeyBind(Key.F6,key_action('previous'))
-   RegisterKeyBind(Key.F7,key_action('first'))
-   report('SPECTATOR_CONTROLS|F5=next_player|F6=previous_player|F7=first_person')
+   RegisterKeyBind(Key.F7,key_action('first'));RegisterKeyBind(Key.F8,key_action('third'))
+   report('SPECTATOR_CONTROLS|F5=next_player|F6=previous_player|F7=first_person|F8=third_person')
    report('SPECTATOR_IDLE_POLICY|scope=local_observer_only')
    schedule()
   end
   guard()
  end
- function service.retire()scope();release_rig();sweep_retired();stopped=true;return #retired==0 and(not materials or #materials.owned()==0)end
+ function service.retire()scope();cleanup();sweep_retired();stopped=true;return #retired==0 and(not materials or #materials.owned()==0)end
  function service.owned()return {rig=rig,retired=retired,materials=materials and materials.owned()or{},pc=pc,world=world,stopped=stopped}end
  return service
 end

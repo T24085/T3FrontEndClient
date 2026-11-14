@@ -51,10 +51,37 @@ function StaticFindObject(name)
  return classes[name]
 end
 function FName(name)return name end
+local skiRow=object('ski_row')
+skiRow.class='/Script/UMG.PanelWidget'
+local widgets={}
+function FindAllOf(class)
+ assert(class=='TextBlock')
+ return widgets
+end
+function make_label(name,value,row)
+ local widget=object(name);widget.class='/Script/UMG.TextBlock'
+ widget.text=value;widget.visibility=4
+ function widget:GetText()return {ToString=function()return self.text end}end
+ function widget:GetParent()return row end
+ function widget:GetVisibility()return self.visibility end
+ function widget:SetVisibility(mode)self.visibility=mode end
+ widgets[#widgets+1]=widget
+ return widget
+end
+skiValue=make_label('ski_value','Text Block',skiRow)
+local skiTitle=make_label('ski_title','SKI TOGGLE',skiRow)
+unrelated=make_label('unrelated','Text Block',nil)
+function skiRow:GetChildrenCount()return 2 end
+function skiRow:GetChildAt(index)return index==0 and skiTitle or skiValue end
 function make_target(name)
  local t=object(name);t.class='/Script/Valhalla.ValCharacter';t.bInitialized=true
  t.PlayerState=object(name..'_state');t.PlayerState.PawnPrivate=t
  t.bForceOnlySpectatorToThirdPerson=true
+ t.alpha=0
+ t.FirstPersonCameraComponent=object(name..'_eye')
+ function t.FirstPersonCameraComponent:GetOwner()return t end
+ function t.FirstPersonCameraComponent:K2_GetComponentLocation()return {X=0,Y=0,Z=64}end
+ function t:GetThirdPersonCameraAlpha()return self.alpha end
  function t:AddComponentByClass(class)
   local component=object(class.name)
   function component:GetOwner()return t end
@@ -70,6 +97,9 @@ pc=object('observer');ps=object('observer_state');pc.PlayerState=ps
 function ps:IsOnlyASpectator()return true end
 local spectator=object('spectator_pawn')
 pc.third=true;pc.AFKTimer=10;pc.directions={};pc.toggles=0
+pc.PlayerCameraManager=object('camera_manager')
+pc.PlayerCameraManager.location={X=0,Y=0,Z=64}
+function pc.PlayerCameraManager:GetCameraLocation()return self.location end
 active=make_target('player_one')
 function pc:IsLocalPlayerController()return true end
 function pc:IsThirdPerson()return self.third end
@@ -90,14 +120,14 @@ function ExecuteInGameThreadWithDelay(delay,callback)
  assert(not pending);pending=callback;handle=handle+1;return handle
 end
 function follow_once()local callback=assert(pending);pending=nil;callback()end
-events={};applied={};polled={}
+events={};applied={};polled={};presentations={}
 local materials={}
 function materials.apply(target,third)
- assert(third==false and not pc.third,'first-person material policy required')
+ presentations[#presentations+1]=third
  applied[#applied+1]=target.name
 end
 function materials.poll(target,third)
- assert(third==false and not pc.third,'first-person material policy required')
+ assert(third==presentations[#presentations],'poll must keep the current presentation')
  polled[#polled+1]=target.name
 end
 function materials.retire()end
@@ -126,40 +156,75 @@ class SpectatorCameraTests(unittest.TestCase):
     def test_starts_first_person_and_only_offers_supported_controls(self):
         self.check('''
         assert(not pc.third and pc.toggles==1)
-        assert(keys.F5 and keys.F6 and keys.F7 and not keys.F8)
+        assert(keys.F5 and keys.F6 and keys.F7 and keys.F8)
         follow_once()
-        assert(applied[1]=='player_one'and polled[1]=='player_one')
+        follow_once()
+        assert(applied[1]=='player_one'and polled[1]=='player_one'and presentations[1]==false)
         assert(pc.AFKTimer==0)
         local ready=false
         for _,event in ipairs(events)do
          if event=='SPECTATOR_READY|lease=lease|watch=watch|mode=first'then ready=true end
-         assert(not event:find('third_person',1,true))
         end
         assert(ready)
         ''')
 
-    def test_native_or_legacy_third_person_requests_cannot_persist(self):
+    def test_camera_blend_keeps_meshes_in_sync_in_both_directions(self):
         self.check('''
         follow_once()
-        pc.third=true;follow_once()
-        assert(not pc.third and #applied==2)
-        pc.third=true;service.action('third')
-        assert(not pc.third and events[#events]=='SPECTATOR_VIEW|mode=first')
-        pc.third=true;keys.F7()
-        assert(not pc.third)
+        keys.F8()
+        assert(pc.third and events[#events]=='SPECTATOR_VIEW|mode=third')
+        follow_once()
+        assert(#presentations==1 and presentations[1]==false)
+        active.alpha=1
+        pc.PlayerCameraManager.location.X=-300
+        follow_once()
+        assert(#presentations==2 and presentations[2]==true)
+        keys.F7();active.alpha=0;follow_once()
+        assert(not pc.third and #presentations==2)
+        pc.PlayerCameraManager.location.X=0
+        follow_once()
+        assert(#presentations==3 and presentations[3]==false)
         ''')
 
-    def test_next_previous_and_target_loss_stay_first_person(self):
+    def test_close_chase_camera_uses_eye_view_materials_until_clear(self):
+        self.check('''
+        follow_once();keys.F8();active.alpha=1
+        pc.PlayerCameraManager.location.X=-42;follow_once()
+        assert(pc.third and #presentations==1)
+        pc.PlayerCameraManager.location.X=-100;follow_once()
+        pc.PlayerCameraManager.location.X=-72;follow_once()
+        assert(#presentations==2 and presentations[2]==true)
+        pc.PlayerCameraManager.location.X=-50;follow_once()
+        assert(#presentations==3 and presentations[3]==false)
+        ''')
+
+    def test_hud_hides_only_ski_placeholder_and_restores_valid_text(self):
         self.check('''
         follow_once()
+        assert(skiValue.visibility==1 and unrelated.visibility==4)
+        skiValue.text='DISENGAGED';follow_once()
+        assert(skiValue.visibility==4)
+        ''')
+
+    def test_retiring_restores_the_previous_ski_visibility(self):
+        self.check('''
+        follow_once()
+        assert(skiValue.visibility==1)
+        service.retire()
+        assert(skiValue.visibility==4)
+        ''')
+
+    def test_next_previous_and_respawn_preserve_selected_perspective(self):
+        self.check('''
+        follow_once();keys.F8()
         active=make_target('player_two');keys.F5();follow_once()
-        assert(pc.directions[1]==1 and applied[#applied]=='player_two'and not pc.third)
+        assert(pc.directions[1]==1 and applied[#applied]=='player_two'and pc.third)
         active=make_target('player_three');keys.F6();follow_once()
-        assert(pc.directions[2]==-1 and applied[#applied]=='player_three'and not pc.third)
-        active=nil;pc.view=nil;pc.third=true;follow_once()
-        assert(not pc.third)
+        assert(pc.directions[2]==-1 and applied[#applied]=='player_three'and pc.third)
+        active=nil;pc.view=nil;pc.third=false;follow_once()
+        assert(pc.third)
         active=make_target('respawned');keys.F5();follow_once()
-        assert(polled[#polled]=='respawned'and not pc.third)
+        assert(applied[#applied]=='respawned'and pc.third)
         ''')
 
     def test_runtime_fix_copy_matches_packaged_source(self):

@@ -208,7 +208,7 @@ options. Remote players and multiple populated matches still need testing.
 SPECTATING
 
 Open Live matches, select a match, then click Spectate.
-Spectating is first person only. F5/F6 switch players; F7 restores first person.
+F5/F6 switch spectated players. F7 selects first person and F8 selects third person.
 Stop watching closes only your viewer. Keep Starter open while watching.
 The leader can disable spectators during lobby setup. Spectators have separate
 seats and do not join either team or count toward the player load-in countdown.

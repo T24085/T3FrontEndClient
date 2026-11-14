@@ -1,3 +1,16 @@
+# Spectator camera modes
+
+Spectators start in first person. F5 and F6 change targets, F7 selects first
+person, and F8 selects third person. The viewer keeps its selected perspective
+across target changes and respawns. The local body materials follow the camera
+distance during the blend. When the chase camera is pushed into the player at a
+wall, the body uses the close-camera presentation until there is clearance again.
+The observer HUD also suppresses the default “Text Block” beside “SKI TOGGLE”
+and restores the label when the native HUD supplies a value.
+
+Lua fixture coverage exercises the blend in both directions, wall clearance,
+player switching, and reacquisition. A rendered multiplayer check is pending.
+
 # Native flag widget callback
 
 Both original flag widgets require the flag actor, current holder info and
