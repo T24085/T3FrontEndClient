@@ -10,6 +10,7 @@ from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
 from build_linux_client import file_sha
 from map_sync import overlay
 from map_sync_contract import map_catalog
+from community_maps import declared_definitions
 from starter_update import DIRECT_CHANNEL, INDEX, decode_index, encoded
 from tools.verify_player_release import safe_name
 
@@ -19,7 +20,8 @@ CLIENT = 'Client Files/'
 TITLE = 'Tribes Rivals: Clan Wars (community mod)'
 
 
-def build(source, proof_path, windows_launcher, output, *, feed=None, catalog=None, assets=None):
+def build(source, proof_path, windows_launcher, output, *, feed=None, catalog=None, assets=None,
+          map_objectives=None):
     proof = json.loads(proof_path.read_bytes())
     if source.stat().st_size != proof['bytes'] or file_sha(source) != proof['sha256']:
         raise ValueError('The original Direct Starter archive failed verification.')
@@ -82,6 +84,28 @@ def build(source, proof_path, windows_launcher, output, *, feed=None, catalog=No
             replace[name] = data
         manifest.update(starter_update_revision=signed['revision'],
                         starter_update_files=sorted(signed['files']))
+    if map_objectives is not None:
+        inventory = json.loads((map_objectives / 'package-manifest.json').read_bytes())
+        rows = {row['path']: row for row in inventory['files']}
+        for definition in declared_definitions(manifest).values():
+            name = f'lua/{definition.id}/objectives.lua'
+            row = rows.get(name)
+            if definition.native or row is None:
+                continue
+            source_path = map_objectives / name
+            if source_path.resolve(strict=True) != source_path or not 0 < row['bytes'] <= 256 * 1024:
+                raise ValueError(f'Invalid packaged objectives file: {name}')
+            with source_path.open('rb') as payload:
+                data = payload.read(row['bytes'] + 1)
+            if len(data) != row['bytes'] or hashlib.sha256(data).hexdigest() != row['sha256']:
+                raise ValueError(f'Packaged map objectives failed verification: {name}')
+            replace[name] = data
+        replace['lua/weather.lua'] = (ROOT / 'lua/weather.lua').read_bytes()
+        # Older hosts fingerprint the original module as shared map runtime.
+        # Ship the stub once the selected host catalog no longer pins that file.
+        if not any('lua/snowblind_weather.lua' in names for names in manifest['map_runtime'].values()):
+            replace['lua/snowblind_weather.lua'] = (ROOT / 'lua/snowblind_weather.lua').read_bytes()
+        replace['client.py'] = (ROOT / 'client_entry.py').read_bytes()
     with tarfile.open(source, 'r|gz') as original, ZipFile(partial, 'x', ZIP_DEFLATED, compresslevel=1) as package:
         for name, data in top.items():
             write_bytes(package, name, data)
@@ -143,11 +167,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('source','source-proof','launcher','output','proof'):
         parser.add_argument('--'+name, required=True, type=Path)
-    for name in ('feed','catalog','assets'):
+    for name in ('feed','catalog','assets','map-objectives'):
         parser.add_argument('--'+name, type=Path)
     args = parser.parse_args()
     result = build(args.source,args.source_proof,args.launcher,args.output,
-                   feed=args.feed,catalog=args.catalog,assets=args.assets)
+                   feed=args.feed,catalog=args.catalog,assets=args.assets,
+                   map_objectives=args.map_objectives.resolve(strict=True) if args.map_objectives else None)
     with args.proof.open('xb') as stream:
         stream.write(encoded(result))
     print(json.dumps(result),flush=True)

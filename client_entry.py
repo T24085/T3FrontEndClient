@@ -28,6 +28,73 @@ STOCK_CLOUD_MAPS = frozenset({
 
 
 
+def write_map_definitions(root, run, definitions, selected, package, *, public=False):
+    """Extend the map catalog using verified client-packaged objective descriptors."""
+    from hashlib import sha256
+    from community_maps import BY_ID, lua_map_definitions
+
+    if public:
+        generated = run / 'public-maps.lua'
+        bundled = root / 'lua/community_maps.lua'
+        lines = [f'local maps=assert(loadfile({json.dumps(bundled.as_posix(), ensure_ascii=False)}))()']
+        for key in sorted(definitions.keys() - BY_ID.keys()):
+            definition = definitions[key]
+            world = f'{definition.package}.{definition.level}:'
+            lines.append(f'maps[{json.dumps(key)}]={{name={json.dumps(key)},package={json.dumps(definition.package)},'
+                         f'world={json.dumps(world)},native=true,'
+                         'native_world_settings_class="/Script/Valhalla.ValWorldSettings"}')
+        generated.write_text('\n'.join([*lines, 'return maps', '']), encoding='utf-8')
+    else:
+        generated = lua_map_definitions(root, run, selected)
+
+    selected_maps = definitions.values() if public else (() if selected is None else (selected,))
+    files = {row['path']: row for row in package['files']}
+    adapters = []
+    for definition in selected_maps:
+        name = f'lua/{definition.id}/objectives.lua'
+        row = files.get(name)
+        if definition.native or row is None:
+            continue
+        path = root / name
+        if path.resolve(strict=True) != path or path.is_symlink() or not 0 < row['bytes'] <= 256 * 1024:
+            raise ValueError(f'Invalid map-local objectives file: {name}')
+        with path.open('rb') as stream:
+            raw = stream.read(row['bytes'] + 1)
+        if len(raw) != row['bytes'] or sha256(raw).hexdigest() != row['sha256']:
+            raise ValueError(f'Map-local objectives failed package verification: {name}')
+        source = run / 'map-descriptors' / definition.id / 'objectives.lua'
+        source.parent.mkdir(parents=True, exist_ok=True)
+        with source.open('xb') as output:
+            output.write(raw)
+        adapters.append((definition.id, source))
+
+    if not adapters:
+        return generated
+    calls = [f'apply_weather({json.dumps(map_id)}, {json.dumps(source.as_posix(), ensure_ascii=False)})'
+             for map_id, source in adapters]
+    result = run / 'catalog-weather.lua'
+    result.write_text(f'local maps=assert(loadfile({json.dumps(generated.as_posix(), ensure_ascii=False)}))()\n'
+                      + _MAP_WEATHER_LUA + '\n'.join([*calls, 'return maps', '']), encoding='utf-8')
+    return result
+
+
+_MAP_WEATHER_LUA = """
+local function apply_weather(id,path)
+ local row=assert(maps[id],'weather_catalog_map_missing')
+ local env={assert=assert,type=type,ipairs=ipairs,pairs=pairs,setmetatable=setmetatable}
+ local adapter=assert(loadfile(path,'t',env))()
+ if type(adapter)~='table' or type(adapter.descriptor)~='function' then return end
+ local authored=adapter.descriptor({name=id,package=row.package,world=row.world})
+ assert(type(authored)=='table' and authored.name==id and authored.package==row.package
+        and authored.world==row.world,'weather_catalog_map_identity')
+ if authored.weather~=nil then
+  row.weather=authored.weather or nil
+  row.weather_authored=true
+ end
+end
+"""
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--endpoint')
@@ -140,7 +207,7 @@ def main():
     loopback_http_failure_preflight()
     from player_profile import ProfileSession
     from client_bootstrap import apply as bootstrap_runtime, map_name as bootstrap_map
-    from community_maps import BY_ID, custom_definitions, lua_map_definitions
+    from community_maps import BY_ID, custom_definitions
     definitions = {**BY_ID, **custom_definitions(package.get('map_definitions', {})),
                    **custom_definitions(prepared.get('custom_maps', {}))}
     bootstrap_contract = package.get('client_bootstrap_contract')
@@ -148,20 +215,8 @@ def main():
     selected_bootstrap = bootstrap_map(bootstrap_contract, bootstrap_id, definitions=definitions)
     template = bootstrap_runtime((ROOT / 'lua/client.lua').read_text(encoding='utf-8'), bootstrap_contract,
                                  bootstrap_id, definitions=definitions)
-    if args.public_session:
-        map_definitions = run / 'public-maps.lua'
-        bundled = ROOT / 'lua/community_maps.lua'
-        quote = lambda value: json.dumps(value, ensure_ascii=False)
-        lines = [f'local maps=assert(loadfile({quote(bundled.as_posix())}))()']
-        for key in sorted(definitions.keys() - BY_ID.keys()):
-            definition = definitions[key]
-            world = f'{definition.package}.{definition.level}:'
-            lines.append(f'maps[{quote(key)}]={{name={quote(key)},package={quote(definition.package)},'
-                         f'world={quote(world)},native=true,'
-                         'native_world_settings_class="/Script/Valhalla.ValWorldSettings"}')
-        map_definitions.write_text('\n'.join([*lines, 'return maps', '']), encoding='utf-8')
-    else:
-        map_definitions = lua_map_definitions(ROOT, run, definitions.get(args.expected_map))
+    map_definitions = write_map_definitions(ROOT, run, definitions, definitions.get(args.expected_map),
+                                            package, public=args.public_session)
     diagnostic_profile = bool(args.headless or args.test_source or args.seconds is not None)
     with ProfileSession(mode=MODE, workspaces=(workspace, source.parent / 'TRIBES3 Client Sessions'),
                         diagnostic=diagnostic_profile, source_game=source, package_root=ROOT,
@@ -194,7 +249,8 @@ def main():
         template = template.replace('@@STOCK_CLOUD_MAP@@', json.dumps(cloud_map))
         settings_path = profile / 'Saved/Config/Windows/GameUserSettings.ini'
         template = template.replace('@@MUSIC_SETTINGS@@', json.dumps(settings_path.as_posix(), ensure_ascii=False))
-        for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=map_definitions.as_posix(), SNOWBLIND_WEATHER=(ROOT/'lua/snowblind_weather.lua').as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
+        weather_module = 'weather.lua' if any(row['path']=='lua/weather.lua' for row in package['files']) else 'snowblind_weather.lua'
+        for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=map_definitions.as_posix(), SNOWBLIND_WEATHER=(ROOT/'lua'/weather_module).as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
             template = template.replace('@@' + key + '@@', json.dumps(value, ensure_ascii=False))
         if '@@' in template:
             raise RuntimeError('Incomplete client runtime template.')

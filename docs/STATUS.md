@@ -1,3 +1,26 @@
+# Map-local weather
+
+The Direct Starter reads weather from each packaged
+`lua/<MapId>/objectives.lua` descriptor. The private catalog uses the selected
+map and the public catalog prepares weather for map rotation. An absent
+descriptor or nil weather uses the existing bundled value, while an explicit
+`weather=false` opts out of scripted weather.
+
+`lua/weather.lua` supports snow, sand, rain, and ash using each map's cooked
+cosmetic actors. The descriptor supplies `kind` and an ordered `actors` list
+with zero-based indices. Optional `density` is the active fraction (0 to 1),
+`speed` is in cm/s, and `color` is three linear RGB values (0 to 1) for the
+cooked material's `WeatherColor` vector parameter. Rain and ash require cooked
+actors with their own meshes or materials. The source retains
+`snowblind_weather.lua` as a compatibility stub. Packages targeting a host
+that still fingerprints the original weather file preserve those bytes and
+load `weather.lua` for the newer client.
+
+The Windows and Steam Proton wrapper accepts a verified host objectives
+snapshot through `--map-objectives`. These descriptors are shipped as
+inventoried client files, outside the cooked-map download feed. Existing
+clients need a package that includes the new files.
+
 # Native flag widget callback
 
 Both original flag widgets require the flag actor, current holder info and
