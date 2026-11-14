@@ -27,7 +27,7 @@ def launch(root, *, on_ready):
                     label.configure(text='Clan Wars', image=self.clan_wars_logo, compound='left',
                                     font=('Segoe UI', 18, 'bold'))
                 elif label.cget('text') == 'COMMUNITY STARTER':
-                    label.configure(text='TRIBES RIVALS  Â·  COMMUNITY MOD')
+                    label.configure(text='TRIBES RIVALS  \u00b7  COMMUNITY MOD')
 
     desktop_launcher.Desktop = ClanWarsDesktop
     try:
