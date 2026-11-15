@@ -131,6 +131,50 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
  emit('CLIENT_PREPARED|'+json.dumps(result,separators=(',',':')))
  return result
 
+
+def staged_session(workspace, path):
+    """Accept only an immediate, real client session directory."""
+    workspace = Path(workspace).resolve(strict=True)
+    run = Path(path)
+    if (run.parent != workspace or not re.fullmatch(r'client-[0-9a-f]{12}', run.name)
+            or run.is_symlink() or run.is_junction()
+            or run.resolve(strict=True) != run or not run.is_dir()):
+        raise ValueError('Unexpected staged client session.')
+    return run
+
+
+def remove_staged_game(workspace, run):
+    """Reclaim the owned payload after callers confirm that it is inactive."""
+    run = staged_session(workspace, run)
+    game = run / 'game'
+    if game.is_symlink() or game.is_junction():
+        raise ValueError('The staged game directory is a link.')
+    deadline = time.monotonic() + 5
+    while game.exists():
+        if game.resolve(strict=True) != game or not game.is_dir():
+            raise ValueError('The staged game escaped its session directory.')
+        try:
+            shutil.rmtree(game)
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            # Never change attributes on files that can be hardlinked to Steam.
+            time.sleep(.25)
+
+
+def logged_stage(lines):
+    """Return the one explicit run announced by an owned launch or preparer."""
+    runs = {line[len('Session: '):] for line in lines if line.startswith('Session: ')}
+    if len(runs) > 1:
+        raise ValueError('The client Job reported more than one session.')
+    return Path(runs.pop()) if runs else None
+
+
+def empty_client_job(result):
+    active = result.get('job_active_processes_after_cleanup', result.get('job_active_processes_at_parent_exit'))
+    return type(active) is int and active == 0
+
+
 def consume(root,source,workspace,descriptor,expected_sha,*,expected_map=None,expected_content_hash=None,clock=time.time):
  """Freshly validate a completed stage and claim it once before profile/native use."""
  root=Path(root).resolve(strict=True);source=Path(source).resolve(strict=True);workspace=Path(workspace).resolve(strict=True)

@@ -1,3 +1,16 @@
+# Client staging cleanup
+
+Starter retires the private `game` folder when a session's owned Job reports zero
+processes. It also retires cancelled or replaced preparations and descriptors
+whose join was abandoned before launch. Session logs, saved profiles, the game
+install, and shared caches stay in place. A Job without a confirmed empty state
+keeps its staging data for investigation.
+
+Run `python tools/cleanup_client_sessions.py --workspace <workspace> --package
+<installed-Starter>` for a dry run of historical cleanup. Add `--apply` with
+Starter closed to reclaim expired payloads with confirmed terminal Job records.
+The command keeps the evidence and reports how many payloads need manual review.
+
 # Map-local weather
 
 The Direct Starter reads weather from each packaged

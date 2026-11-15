@@ -8,6 +8,7 @@ from pathlib import Path
 import threading
 import uuid
 
+from client_preparation import empty_client_job, logged_stage, remove_staged_game
 from community_transport import CommunityError
 from map_catalog import verified_catalog
 from runtime_health import runtime_failure
@@ -115,22 +116,24 @@ class CommunityGame:
                   '--prepare-only','--game-dir',str(self.game_source),'--workspace',str(self.workspace)]
             if revision is not None:
                 argv += ['--map-revision', revision]
-            self.preparation_thread=threading.Thread(target=self._prepare,args=(argv,artifacts),name='client-preparation',daemon=True)
+            self.preparation_thread=threading.Thread(target=self._prepare,args=(argv,artifacts),name='client-preparation',daemon=False)
             self.preparation_thread.start()
             return True
 
     def _prepare(self, argv, artifacts):
         failure_status='quarantined'
+        unused = None
         try:
             result=self.owner.run_owned_job(argv,self.package,dict(os.environ),artifacts/'owner',
                                            budget=900,cancellation_path=artifacts/'stop.json')
-            active=result.get('job_active_processes_after_cleanup',result.get('job_active_processes_at_parent_exit'))
+            if not empty_client_job(result):
+                raise CommunityError('Client preparation cleanup could not be confirmed.')
+            failure_status='failed'
             log=artifacts/'owner/stdout.log'
             if log.is_file() and log.stat().st_size>1048576: raise CommunityError('Preparation output exceeded its bound.')
             lines=log.read_text(errors='replace').splitlines() if log.is_file() else []
             descriptors=[line[len('CLIENT_PREPARED|'):]for line in lines if line.startswith('CLIENT_PREPARED|')]
-            if active!=0: raise CommunityError('Client preparation cleanup could not be confirmed.')
-            failure_status='failed'
+            unused = logged_stage(lines)
             with self.lock:
                 if self.preparation_stop_requested:
                     self.preparation_status='stopped';return
@@ -141,11 +144,28 @@ class CommunityGame:
                     or path.resolve(strict=True)!=path or path.stat().st_size>4*1024*1024
                     or hashlib.sha256(path.read_bytes()).hexdigest()!=descriptor['sha256']):
                 raise CommunityError('Client preparation returned an invalid owned descriptor.')
+            if unused is not None and unused != path.parent:
+                raise CommunityError('The prepared descriptor did not match its owned session.')
             with self.lock:
-                if self.preparation_stop_requested:self.preparation_status='stopped'
-                else:self.preparation_descriptor=descriptor;self.preparation_status='ready'
+                if self.preparation_stop_requested:
+                    self.preparation_status='stopped'
+                else:
+                    self.preparation_descriptor=descriptor
+                    self.preparation_status='ready'
+                    unused = None
         except Exception as exc:
             with self.lock:self.preparation_status=failure_status;self.preparation_error=str(exc)
+        finally:
+            self._retire_payload(unused)
+
+    def _retire_payload(self, run):
+        if run is None:
+            return
+        try:
+            remove_staged_game(self.workspace, run)
+        except (OSError, ValueError) as exc:
+            # A locked or unsafe payload remains available to the offline cleanup tool.
+            print(f'CLIENT_STORAGE_CLEANUP_DEFERRED|{exc}', flush=True)
 
     def _prepared_for_join(self, revision=None):
         with self.lock:
@@ -195,6 +215,7 @@ class CommunityGame:
             self.failure_reason, self.cancellation_written = None, False
             self.startup_phase = 'checking_match'
             self.startup_failure = None
+        prepared = None
         try:
             begin_attempt = getattr(self.lobby, 'begin_game_attempt', None)
             if begin_attempt is not None:
@@ -227,7 +248,6 @@ class CommunityGame:
                     raise CommunityError('Client map files could not be verified.') from exc
                 if catalog.get(target['map']) != target['contentHash']:
                     raise CommunityError('Your map files do not match this match. Update the community client.')
-            prepared=None
             if startup_contract=='prepared-client-v1':
                 revision = None
                 if self.map_sync is not None:
@@ -282,8 +302,9 @@ class CommunityGame:
                     artifacts.mkdir(exist_ok=False)
                     self.current_artifacts = artifacts
                     self.startup_phase = 'launching_client'
-                    self.thread = threading.Thread(target=self._run, args=(argv, artifacts), name='community-client-' + ident[:8], daemon=True)
+                    self.thread = threading.Thread(target=self._run, args=(argv, artifacts), name='community-client-' + ident[:8], daemon=False)
                     self.thread.start()
+                    prepared = None  # The owned join worker now owns the payload.
                     return self.status
             self._release_watch()
             return self.status
@@ -292,6 +313,9 @@ class CommunityGame:
                 self.status, self.error = ('stopped', None) if self.stop_requested else ('failed', str(exc))
             self._release_watch()
             raise
+        finally:
+            if prepared is not None:
+                self._retire_payload(Path(prepared['path']).parent)
 
     def _session(self, artifacts):
         log = artifacts / 'owner/stdout.log'
@@ -313,12 +337,20 @@ class CommunityGame:
         return self.run
 
     def _run(self, argv, artifacts):
+        retire = None
         try:
             result = self.owner.run_owned_job(argv, self.package, dict(os.environ), artifacts / 'owner',
                                               budget=None, cancellation_path=artifacts / 'stop.json')
-            active = result.get('job_active_processes_after_cleanup', result.get('job_active_processes_at_parent_exit'))
+            empty = empty_client_job(result)
+            if empty:
+                if '--prepared' in argv:
+                    retire = Path(argv[argv.index('--prepared') + 1]).parent
+                else:
+                    log = artifacts / 'owner/stdout.log'
+                    if log.is_file() and log.stat().st_size <= 1048576:
+                        retire = logged_stage(log.read_text(errors='replace').splitlines())
             with self.lock:
-                if active != 0:
+                if not empty:
                     self.status, self.error = 'quarantined', 'Client process cleanup could not be confirmed.'
                 elif self.failure_reason is not None:
                     self.status, self.error = 'failed', self.failure_reason
@@ -338,6 +370,8 @@ class CommunityGame:
         except Exception as exc:
             with self.lock:
                 self.status, self.error = 'quarantined', 'Client ownership or cleanup failed: ' + repr(exc)
+        finally:
+            self._retire_payload(retire)
         # A native Job with unknown cleanup keeps its watcher grant and ownership.
         try:
             self._release_watch()
@@ -421,6 +455,11 @@ class CommunityGame:
 
     def _cancel_preparation(self):
         self.preparation_stop_requested=True
+        if self.preparation_status == 'ready' and self.preparation_descriptor:
+            run = Path(self.preparation_descriptor['path']).parent
+            self.preparation_descriptor = None
+            self.preparation_status = 'stopped'
+            threading.Thread(target=self._retire_payload, args=(run,), name='client-storage-cleanup', daemon=False).start()
         if self.preparation_status=='preparing' and self.preparation_artifacts:
             path=self.preparation_artifacts/'stop.json'
             temporary=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')

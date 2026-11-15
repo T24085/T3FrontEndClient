@@ -1,3 +1,4 @@
+import os
 """Real file staging/consumption boundaries without a native game process."""
 import hashlib
 import importlib.util
@@ -171,3 +172,37 @@ class ClientPreparationTest(unittest.TestCase):
   self.assertFalse((Path(record['run'])/'profile').exists())
 
 if __name__=='__main__':unittest.main()
+
+
+
+class StorageCleanupTests(unittest.TestCase):
+    def test_payload_removal_preserves_hardlink_source_and_evidence(self):
+        from client_preparation import remove_staged_game
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / 'original-steam-file'
+            source.write_bytes(b'original')
+            workspace = root / 'workspace'
+            run = workspace / 'client-0123456789ab'
+            game = run / 'game'
+            game.mkdir(parents=True)
+            os.link(source, game / 'staged-link')
+            receipt = run / 'game.log'
+            receipt.write_text('game evidence')
+            remove_staged_game(workspace, run)
+            remove_staged_game(workspace, run)
+            self.assertFalse(game.exists())
+            self.assertEqual(source.read_bytes(), b'original')
+            self.assertEqual(receipt.read_text(), 'game evidence')
+
+    def test_cleanup_rejects_unowned_paths(self):
+        from client_preparation import remove_staged_game
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace = root / 'workspace'
+            workspace.mkdir()
+            outside = root / 'client-0123456789ab'
+            (outside / 'game').mkdir(parents=True)
+            with self.assertRaises(ValueError):
+                remove_staged_game(workspace, outside)
+            self.assertTrue((outside / 'game').is_dir())
