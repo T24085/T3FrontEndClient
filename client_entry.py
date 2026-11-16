@@ -26,7 +26,20 @@ STOCK_CLOUD_MAPS = frozenset({
     'Scarabrae2026', 'Snowblind2026', 'SnowblindBlizzard2026', 'Stonehenge2026',
 })
 
+# The signed Direct release can supply weather for installations whose
+# inventory predates map-local descriptors. Full archives use packaged files.
+_SIGNED_WEATHER_MODULE = None
+_SIGNED_MAP_OBJECTIVES = {}
 
+def weather_runtime_path(root, run, package):
+    if any(row['path'] == 'lua/weather.lua' for row in package['files']):
+        return root / 'lua/weather.lua'
+    if _SIGNED_WEATHER_MODULE is not None:
+        path = run / 'weather.lua'
+        with path.open('xb') as output:
+            output.write(_SIGNED_WEATHER_MODULE)
+        return path
+    return root / 'lua/snowblind_weather.lua'
 
 def write_map_definitions(root, run, definitions, selected, package, *, public=False):
     """Extend the map catalog using verified client-packaged objective descriptors."""
@@ -53,15 +66,20 @@ def write_map_definitions(root, run, definitions, selected, package, *, public=F
     for definition in selected_maps:
         name = f'lua/{definition.id}/objectives.lua'
         row = files.get(name)
-        if definition.native or row is None:
+        if definition.native:
             continue
-        path = root / name
-        if path.resolve(strict=True) != path or path.is_symlink() or not 0 < row['bytes'] <= 256 * 1024:
-            raise ValueError(f'Invalid map-local objectives file: {name}')
-        with path.open('rb') as stream:
-            raw = stream.read(row['bytes'] + 1)
-        if len(raw) != row['bytes'] or sha256(raw).hexdigest() != row['sha256']:
-            raise ValueError(f'Map-local objectives failed package verification: {name}')
+        if row is None:
+            raw = _SIGNED_MAP_OBJECTIVES.get(definition.id)
+            if raw is None:
+                continue
+        else:
+            path = root / name
+            if path.resolve(strict=True) != path or path.is_symlink() or not 0 < row['bytes'] <= 256 * 1024:
+                raise ValueError(f'Invalid map-local objectives file: {name}')
+            with path.open('rb') as stream:
+                raw = stream.read(row['bytes'] + 1)
+            if len(raw) != row['bytes'] or sha256(raw).hexdigest() != row['sha256']:
+                raise ValueError(f'Map-local objectives failed package verification: {name}')
         source = run / 'map-descriptors' / definition.id / 'objectives.lua'
         source.parent.mkdir(parents=True, exist_ok=True)
         with source.open('xb') as output:
@@ -83,11 +101,19 @@ local function apply_weather(id,path)
  local row=assert(maps[id],'weather_catalog_map_missing')
  local env={assert=assert,type=type,ipairs=ipairs,pairs=pairs,setmetatable=setmetatable}
  local adapter=assert(loadfile(path,'t',env))()
- if type(adapter)~='table' or type(adapter.descriptor)~='function' then return end
- local authored=adapter.descriptor({name=id,package=row.package,world=row.world})
- assert(type(authored)=='table' and authored.name==id and authored.package==row.package
-        and authored.world==row.world,'weather_catalog_map_identity')
+ if type(adapter)~='table' then return end
+ local authored=adapter.descriptor
+ if type(authored)=='function' then
+  authored=authored({name=id,package=row.package,world=row.world})
+  assert(type(authored)=='table' and authored.name==id and authored.package==row.package
+         and authored.world==row.world,'weather_catalog_map_identity')
+ elseif adapter.format==1 and adapter.weather~=nil then
+  assert(adapter.map_id==id and adapter.package==row.package and adapter.world==row.world,
+         'weather_catalog_map_identity')
+  authored=adapter
+ else return end
  if authored.weather~=nil then
+  assert(authored.weather==false or type(authored.weather)=='table','weather_catalog_config_required')
   row.weather=authored.weather or nil
   row.weather_authored=true
  end
@@ -249,8 +275,8 @@ def main():
         template = template.replace('@@STOCK_CLOUD_MAP@@', json.dumps(cloud_map))
         settings_path = profile / 'Saved/Config/Windows/GameUserSettings.ini'
         template = template.replace('@@MUSIC_SETTINGS@@', json.dumps(settings_path.as_posix(), ensure_ascii=False))
-        weather_module = 'weather.lua' if any(row['path']=='lua/weather.lua' for row in package['files']) else 'snowblind_weather.lua'
-        for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=map_definitions.as_posix(), SNOWBLIND_WEATHER=(ROOT/'lua'/weather_module).as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
+        weather_module = weather_runtime_path(ROOT, run, package)
+        for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=map_definitions.as_posix(), SNOWBLIND_WEATHER=weather_module.as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
             template = template.replace('@@' + key + '@@', json.dumps(value, ensure_ascii=False))
         if '@@' in template:
             raise RuntimeError('Incomplete client runtime template.')

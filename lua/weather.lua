@@ -79,6 +79,34 @@ local function number(value,min,max,default)
  return value
 end
 
+local function configure_lighting(config,descriptor,world,valid)
+ if config==nil then return end
+ assert(type(config)=='table' and type(config.actors)=='table'
+        and #config.actors>=1 and #config.actors<=16,'weather_lighting_actor_contract')
+ local intensity=number(config.intensity,0,1000000)
+ assert(intensity~=nil,'weather_lighting_intensity_required')
+ local wanted,lights={},{}
+ for _,name in ipairs(config.actors)do
+  assert(type(name)=='string' and name:match('^[%w_]+$'),'weather_lighting_actor_identity')
+  local full='PointLight '..descriptor.world..'PersistentLevel.'..name
+  assert(not wanted[full],'weather_lighting_repeated_actor')
+  wanted[full]=true
+ end
+ for _,actor in ipairs(FindAllOf('PointLight') or {})do
+  if valid(actor) and actor:GetWorld():GetAddress()==world:GetAddress() then
+   local name=actor:GetFullName()
+   if wanted[name] then
+    local light=actor.LightComponent
+    assert(not actor.bReplicates and valid(light) and light.Mobility==2,'weather_lighting_requires_local_movable_light')
+    lights[#lights+1]=light
+    wanted[name]=nil
+   end
+  end
+ end
+ assert(#lights==#config.actors,'weather_lighting_missing_cooked_actors')
+ for _,light in ipairs(lights)do light:SetIntensity(intensity) end
+end
+
 return function(env)
  local valid,report=assert(env.valid),assert(env.report)
  local descriptors=assert(env.descriptors)
@@ -98,20 +126,37 @@ return function(env)
   assert(type(weather)=='table','weather_2026_invalid_descriptor')
   local kind=weather.kind
   local sand=kind=='sand'
-  assert(sand or kind=='snow' or kind=='rain' or kind=='ash','weather_2026_unknown_kind')
+  local windOnly=kind=='wind'
+  local lightingOnly=kind=='lighting'
+  assert(sand or windOnly or lightingOnly or kind=='snow' or kind=='rain' or kind=='ash','weather_2026_unknown_kind')
   local count=type(weather.actors)=='table' and #weather.actors or 0
-  assert(count>=1 and count<=64,'weather_2026_actor_contract')
-  local density=number(weather.density,0,1,1)
-  local active=math.floor(count*density+.5)
-  local speed=number(weather.speed,0,10000,sand and 600 or kind=='rain' and 1600 or kind=='ash' and 110 or 280)
-  local tint
-  if weather.color~=nil then
-   assert(type(weather.color)=='table' and #weather.color==3,'weather_color_requires_linear_rgb')
-   local c=weather.color
-   tint={X=number(c[1],0,1),Y=number(c[2],0,1),Z=number(c[3],0,1)}
-  end
+  assert((lightingOnly and count==0 and weather.lighting~=nil) or
+         (not lightingOnly and count>=1 and count<=64),'weather_2026_actor_contract')
   local key=descriptor.world..'|'..string.format('%x',world:GetAddress())
   if states[key]then return end
+  if lightingOnly then
+   configure_lighting(weather.lighting,descriptor,world,valid)
+   states[key]=true
+   report('WEATHER_2026_READY|kind=lighting|groups=0|local_cosmetic=true')
+   return
+  end
+  local density=number(weather.density,0,1,1)
+  local active=math.floor(count*density+.5)
+  local speed=number(weather.speed,0,10000,sand and 600 or kind=='rain' and 1600 or kind=='ash' and 110 or windOnly and 240 or 280)
+  local windX,windY
+  if weather.wind~=nil then
+   local wind=weather.wind
+   assert(type(wind)=='table' and #wind==2,'weather_wind_requires_xy')
+   windX=number(wind[1],-10000,10000)
+   windY=number(wind[2],-10000,10000)
+  end
+  local tint
+  local c=weather.tint
+  if c==nil then c=weather.color end
+  if c~=nil then
+   assert(type(c)=='table' and #c==3,'weather_color_requires_linear_rgb')
+   tint={X=number(c[1],0,1),Y=number(c[2],0,1),Z=number(c[3],0,1)}
+  end
   local wanted={}
   for n,row in ipairs(weather.actors)do
    assert(type(row)=='table' and type(row.actor)=='string' and row.actor:match('^[%w_]+$')
@@ -138,6 +183,7 @@ return function(env)
    report('WEATHER_2026_UNAVAILABLE|map='..descriptor.name..'|reason=missing_cooked_actors')
    return
   end
+  configure_lighting(weather.lighting,descriptor,world,valid)
   for _,cloud in ipairs(clouds)do
    local enabled=math.floor((cloud.index+1)*active/count)>math.floor(cloud.index*active/count)
    if not enabled then cloud.actor:SetActorHiddenInGame(true) end
@@ -163,15 +209,16 @@ return function(env)
       local x,y,z,yaw
       if not sand then
        local old=cloud.z or(p.Z-1900+(cloud.index+.5)*4500/count)
-       local fall=speed*(180+(cloud.index*37)%201)/280
+       local fall=windOnly and 0 or speed*(180+(cloud.index*37)%201)/280
        z=p.Z-1900+((old-fall*dt-(p.Z-1900))%4500);cloud.z=z
-       local dx=now*(240+(cloud.index*7)%220)+(cloud.index*317)%8000
-       local dy=now*(-110+(cloud.index*11)%180)+(cloud.index*683)%8000
+       local dx=now*(windX or (windOnly and speed or 240+(cloud.index*7)%220))+(cloud.index*317)%8000
+       local dy=now*(windY or (windOnly and 0 or -110+(cloud.index*11)%180))+(cloud.index*683)%8000
        x=math.floor((p.X-dx)/8000+.5)*8000+dx;y=math.floor((p.Y-dy)/8000+.5)*8000+dy;yaw=(cloud.index%4)*90
       else
-       local drift=now*speed
+       local drift=now*(windX or speed)
+       local crosswind=now*(windY or 0)
        x=math.floor((p.X-drift)/25000)*25000+drift+(cloud.index-3)*25000
-       y=math.floor(p.Y/100000+.5)*100000;z=p.Z-5000;yaw=0
+       y=math.floor((p.Y-crosswind)/100000+.5)*100000+crosswind;z=p.Z-5000;yaw=0
       end
       assert(cloud.actor:K2_TeleportTo({X=x,Y=y,Z=z},{Pitch=sand and 90 or 0,Yaw=yaw,Roll=0}),'weather_2026_move_failed')
       end

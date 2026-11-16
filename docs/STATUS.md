@@ -19,20 +19,30 @@ map and the public catalog prepares weather for map rotation. An absent
 descriptor or nil weather uses the existing bundled value, while an explicit
 `weather=false` opts out of scripted weather.
 
-`lua/weather.lua` supports snow, sand, rain, and ash using each map's cooked
-cosmetic actors. The descriptor supplies `kind` and an ordered `actors` list
-with zero-based indices. Optional `density` is the active fraction (0 to 1),
-`speed` is in cm/s, and `color` is three linear RGB values (0 to 1) for the
-cooked material's `WeatherColor` vector parameter. Rain and ash require cooked
-actors with their own meshes or materials. The source retains
+`lua/weather.lua` animates cooked cosmetic actors for snow, sand, rain, ash
+and wind. Set `weather` on the table returned by `descriptor(row)` or on the
+top level of a format-1 placement file. Supply `kind` and an ordered
+`actors` list with zero-based indices. Optional `density` is the active
+fraction (0 to 1), `speed` is in cm/s, and `wind={x,y}` sets world-space
+horizontal velocities in cm/s. `tint` and its original alias `color` accept
+three linear RGB values (0 to 1) for the cooked material's `WeatherColor`
+parameter. Rain and ash need their own cooked meshes or materials.
+
+For local lighting, set `lighting={actors={"StormLight"},intensity=2500}`
+with the names of cooked, movable, non-replicated PointLights and the
+intensity in each light's authored units. Use `kind="lighting"` for a
+lighting-only descriptor with no particle actors. The source retains
 `snowblind_weather.lua` as a compatibility stub. Packages targeting a host
 that still fingerprints the original weather file preserve those bytes and
 load `weather.lua` for the newer client.
 
 The Windows and Steam Proton wrapper accepts a verified host objectives
 snapshot through `--map-objectives`. These descriptors are shipped as
-inventoried client files, outside the cooked-map download feed. Existing
-clients need a package that includes the new files.
+inventoried client files, outside the cooked-map download feed. The signed
+Direct Starter release can also stage the tested weather runtime and
+Katabatic T2 descriptor in the owned session directory on older installs.
+Verified packaged descriptors take precedence over this fallback, including
+an explicit request to disable weather.
 
 # Native flag widget callback
 
