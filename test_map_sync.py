@@ -1,11 +1,12 @@
 import gzip
 import hashlib
+from http.client import HTTPResponse
 from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from map_sync import MapSync, load_overlay, overlay
 from map_sync_contract import map_catalog
@@ -39,6 +40,38 @@ class MapSyncTest(unittest.TestCase):
     def remote_for(self, rows):
         catalog = map_catalog(dict(self.bundled, files=[self.bundled['files'][0], *rows]))
         return {'format': 1, 'maps': catalog, 'shared_content': {}, 'files': rows}
+
+    def inventory_connection(self, body, length):
+        wire = (f'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+                f'Content-Length: {length}\r\n\r\n').encode('ascii') + body
+        response = HTTPResponse(Mock(makefile=Mock(return_value=BytesIO(wire))))
+        response.begin()
+        return Mock(getresponse=Mock(return_value=response))
+
+    def test_inventory_retries_truncated_http_body(self):
+        body = json.dumps(self.remote).encode()
+        truncated = self.inventory_connection(body[:-12], len(body))
+        complete = self.inventory_connection(body, len(body))
+        with (
+            patch.object(self.sync, 'lobby', Mock()),
+            patch.object(self.sync, '_connection', side_effect=[truncated, complete]) as connect,
+            patch.object(self.sync.cancelled, 'wait') as wait,
+        ):
+            self.assertEqual(MapSync._inventory(self.sync), self.remote)
+        self.assertEqual(connect.call_count, 2)
+        wait.assert_called_once_with(1)
+        truncated.close.assert_called_once()
+        complete.close.assert_called_once()
+
+    def test_inventory_reports_interruption_after_repeated_truncation(self):
+        with (
+            patch.object(self.sync, 'lobby', Mock()),
+            patch.object(self.sync, '_connection', side_effect=lambda: self.inventory_connection(b'{}', 12)) as connect,
+            patch.object(self.sync.cancelled, 'wait'),
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'map catalog download was interrupted'):
+                MapSync._inventory(self.sync)
+        self.assertEqual(connect.call_count, 3)
 
     def test_matching_package_checks_metadata_without_downloading(self):
         self.remote = self.remote_for(self.bundled['files'][1:])
