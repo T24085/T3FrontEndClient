@@ -55,6 +55,95 @@ do
 end
 local configure_geometry=assert(loadfile(@@GEOMETRY@@))()({valid=valid,report=report,signature=signature,settings=assert(loadfile(@@LEVEL_SETTINGS@@))(),descriptors=mapDefinitions})
 local configure_weather=assert(loadfile(@@SNOWBLIND_WEATHER@@))()({valid=valid,report=report,scope=scope,descriptors=mapDefinitions})
+local configure_base_lighting=(function()
+ local current
+ local tags
+ local function same_world(actor,world)
+  if not valid(actor) then return false end
+  local own=actor:GetWorld()
+  return valid(own) and own:GetAddress()==world:GetAddress()
+ end
+ local function scan(gs,world)
+  local teams={{normal={},alarm={}},{normal={},alarm={}}}
+  local prefix=gs:GetFullName():match(' (/Game/.+:)PersistentLevel%.')
+  if not prefix then return teams,false end
+  for _,row in pairs(mapDefinitions) do
+   if row.world==prefix and row.emergency_lighting==false then return teams,false end
+  end
+  tags=tags or {{FName('CwPwr_T1_Normal'),1,'normal'},{FName('CwPwr_T1_Alarm'),1,'alarm'},
+                {FName('CwPwr_T2_Normal'),2,'normal'},{FName('CwPwr_T2_Alarm'),2,'alarm'}}
+  local any=false
+  for _,actor in ipairs(FindAllOf('Actor') or {}) do
+   if same_world(actor,world) and actor:GetFullName():find(prefix..'PersistentLevel.',1,true) then
+    local group
+    for _,match in ipairs(tags) do
+     if actor:ActorHasTag(match[1]) then
+      if group then group=nil;break end
+      group=match
+     end
+    end
+    if group and valid(actor.LightComponent) then
+     local set=teams[group[2]][group[3]]
+     set[#set+1]=actor
+     any=true
+    end
+   end
+  end
+  return teams,any
+ end
+ local function power(gs,world)
+  local generators=gs.r_Generators
+  if not generators then return end
+  local count=generators:GetArrayNum()
+  if count>64 then return end
+  local totals,online={0,0},{false,false}
+  local seen={}
+  for i=1,count do
+   -- An unresolved weak reference can arrive before its generator on late join.
+   local weak=generators[i]
+   local actor=weak and weak:Get()
+   if not same_world(actor,world) then return end
+   local team,active=actor.r_TeamId,actor:IsOnline()
+   if (team~=1 and team~=2) or type(active)~='boolean' then return end
+   local id=actor:GetAddress()
+   if not seen[id] then
+    totals[team]=totals[team]+1
+    online[team]=online[team] or active
+    seen[id]=true
+   end
+  end
+  return {totals[1]==0 or online[1],totals[2]==0 or online[2]}
+ end
+ local function show(set,world,visible)
+  for _,actor in ipairs(set) do
+   if same_world(actor,world) and valid(actor.LightComponent) then
+    actor:SetActorHiddenInGame(not visible)
+    actor.LightComponent:SetVisibility(visible,true)
+   end
+  end
+ end
+ return function(gs)
+  local world=gs:GetWorld()
+  if not valid(world) then return end
+  local context=gs:GetAddress()
+  if not current or current.address~=world:GetAddress() or current.context~=context then
+   local teams,any=scan(gs,world)
+   current={address=world:GetAddress(),context=context,teams=teams,any=any}
+  end
+  if not current.any then return end
+  local states=power(gs,world)
+  if not states then return end
+  for team,lights in ipairs(current.teams) do
+   local powered=states[team]
+   if lights.powered~=powered and (#lights.normal>0 or #lights.alarm>0) then
+    show(lights.normal,world,powered)
+    show(lights.alarm,world,not powered)
+    lights.powered=powered
+    report('BASE_LIGHTING|team='..team..'|powered='..tostring(powered))
+   end
+  end
+ end
+end)()
 local configure_water=assert(loadfile(@@DAMNATION_WATER@@))()({valid=valid,report=report})
 local allowedMaps={}
 for name,row in pairs(mapDefinitions)do
@@ -1325,6 +1414,7 @@ local function client_tick(sys)
     local pcs=FindAllOf("ValPlayerController") or {};if #pcs~=1 or not valid(pcs[1]) then return end
     local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() or not valid(pc.PlayerState) then return end
     configure_weather(gs,pc)
+    configure_base_lighting(gs)
     configure_water(gs)
     local ps=pc.PlayerState
     if SPECTATOR_ROLE=="spectator" then

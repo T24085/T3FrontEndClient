@@ -174,3 +174,12 @@ return {{format=1,map_id="{KATA.id}",package="{KATA.package}",world="{world}",
     def test_adapter_has_no_engine_or_filesystem_globals(self):
         with self.assertRaises(LuaError):
             self.catalog([self.add_adapter('return io.open("unexpected")')])
+
+    def test_packaged_lighting_opt_out_without_weather(self):
+        descriptor = '''return {descriptor=function(row)
+            row.emergency_lighting=false
+            return row
+        end}'''
+        maps = self.catalog([self.add_adapter(descriptor)])
+        self.assertIs(maps[KATA.id].emergency_lighting, False)
+        self.assertIsNone(maps[KATA.id].weather)
