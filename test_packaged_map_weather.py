@@ -39,7 +39,7 @@ class PackagedMapWeatherTest(unittest.TestCase):
     def add_adapter(self, source, definition=KATA):
         name = f'lua/{definition.id}/objectives.lua'
         path = self.root / name
-        path.parent.mkdir()
+        path.parent.mkdir(exist_ok=True)
         raw = source.encode()
         path.write_bytes(raw)
         return dict(path=name, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
@@ -85,10 +85,11 @@ class PackagedMapWeatherTest(unittest.TestCase):
             self.run.mkdir()
             authored_off = self.add_adapter(DESCRIPTOR.replace('row.objectives=', 'row.weather=false;row.objectives='))
             self.assertIsNone(self.catalog([authored_off])[KATA.id].weather)
-            self.assertEqual(
-                weather_runtime_path(self.root, self.run, {'files': [{'path': 'lua/weather.lua'}]}),
-                self.root / 'lua/weather.lua',
-            )
+            package = {'files': [{'path': 'lua/weather.lua'}]}
+            replacement = weather_runtime_path(self.root, self.run, package)
+            self.assertEqual(replacement, self.run / 'weather.lua')
+            self.assertEqual(replacement.read_bytes(), module)
+        self.assertEqual(weather_runtime_path(self.root, self.run, package), self.root / 'lua/weather.lua')
 
     def test_legacy_stub_loads_generic_runtime_and_options_affect_cooked_actors(self):
         for kind in ('snow', 'rain', 'ash', 'wind'):
@@ -141,6 +142,110 @@ class PackagedMapWeatherTest(unittest.TestCase):
           assert(after.X-before.X==125 and after.Y-before.Y==-60)
           local fall=row.weather.kind=='wind' and 0 or 325*217/280
           assert(math.abs(before.Z-after.Z-fall)<.001)
+        ''')
+
+    def test_exclusion_material_setup_and_opt_in_camera_fade(self):
+        self.lua.globals().runtime = (ROOT / 'lua/weather.lua').as_posix()
+        for count, fade in ((0, 'true'), (1, 'false'), (16, 'true')):
+            with self.subTest(count=count, fade=fade):
+                self.run = self.root / str(count)
+                self.run.mkdir()
+                boxes = ['{center_cm={100,-200,250},half_cm={5,20,30},yaw=90}']
+                boxes += ['{center_cm={10000,10000,10000},half_cm={1,2,3},yaw=0}'] * 15
+                descriptor = DESCRIPTOR.replace('row.objectives=',
+                    f'row.weather.exclusions={{{",".join(boxes[:count])}}};'
+                    f'row.weather.fade_when_camera_inside={fade};row.objectives=')
+                self.lua.globals().maps = self.catalog([self.add_adapter(descriptor)])
+                self.lua.execute('''
+          local row=maps.KatabaticT22026
+          local world={GetAddress=function()return 1 end}
+          local getWorld=function()return world end
+          local gs={GetWorld=getWorld,HasAuthority=function()return false end,
+                    GetFullName=function()return row.world..'PersistentLevel.GS' end}
+          local position={X=100,Y=-185,Z=250}
+          local pc={GetWorld=getWorld,IsLocalPlayerController=function()return true end,
+                    PlayerCameraManager={GetCameraLocation=function()return position end}}
+          local actors={}
+          for i=0,1 do
+            local body={vectors={},writes=0,opacity={}}
+            function body:GetCollisionEnabled()return 0 end
+            function body:SetVectorParameterValueOnMaterials(name,value)
+              assert(not self.vectors[name]);self.vectors[name]=value;self.writes=self.writes+1
+            end
+            function body:SetScalarParameterValueOnMaterials(name,value)
+              assert(name=='WeatherOpacity');self.opacity[#self.opacity+1]=value
+            end
+            local actor={StaticMeshComponent=body,GetWorld=getWorld,
+                         GetFullName=function()return 'StaticMeshActor '..row.world..'PersistentLevel.Snow0'..i end}
+            function actor:SetActorHiddenInGame(hidden)self.hidden=hidden end
+            function actor:K2_TeleportTo()return true end
+            actors[i+1]=actor
+          end
+          local t,nextTick=0,nil
+          function FindAllOf()return actors end
+          function FName(name)return name end
+          function StaticFindObject()return {GetTimeSeconds=function()return t end} end
+          function ExecuteInGameThreadWithDelay(_,callback)nextTick=callback end
+          local function step(delta)t=t+delta;nextTick() end
+          local scan=assert(loadfile(runtime))()({descriptors=maps,valid=function(x)return x~=nil end,
+                      scope=function()end,report=function(line)assert(not line:find('_ERROR'),line)end})
+          scan(gs,pc);scan(gs,pc)
+          local disabled,active=actors[1].StaticMeshComponent,actors[2].StaticMeshComponent
+          assert(actors[1].hidden and disabled.writes==0 and #disabled.opacity==0)
+          local count=#row.weather.exclusions
+          local expectedWrites=1+3*count
+          assert(active.writes==expectedWrites and not active.vectors['WeatherBox'..(count+1)..'_Center'])
+          assert(active.vectors.WeatherColor.Z==1)
+          if count>0 then
+            local center=active.vectors.WeatherBox1_Center
+            local half=active.vectors.WeatherBox1_Half
+            local axis=active.vectors.WeatherBox1_Axis
+            assert(center.X==100 and center.Y==-200 and center.Z==250)
+            assert(half.X==5 and half.Y==20 and half.Z==30)
+            assert(math.abs(axis.X)<1e-12 and axis.Y==1 and axis.Z==0)
+          end
+          if count==16 then assert(active.vectors.WeatherBox16_Half.Z==3) end
+          step(0);step(.25)
+          position={X=115,Y=-200,Z=250};step(.25);step(.25);step(.25)
+          position.Z=281;step(.25);step(.25);step(.25)
+          assert(active.writes==expectedWrites and not actors[2].hidden)
+          if count>0 and row.weather.fade_when_camera_inside then
+            local expected={1,.5,0,.5,1}
+            assert(#active.opacity==#expected)
+            for i,value in ipairs(expected)do assert(active.opacity[i]==value) end
+          else
+            assert(#active.opacity==0)
+          end
+                ''')
+
+    def test_exclusions_reject_malformed_values_before_actor_setup(self):
+        self.lua.globals().runtime = (ROOT / 'lua/weather.lua').as_posix()
+        self.lua.execute('''
+          local world={GetAddress=function()return 1 end}
+          local gs={GetWorld=function()return world end,HasAuthority=function()return false end,
+                    GetFullName=function()return 'Test:PersistentLevel.GS' end}
+          local pc={GetWorld=gs.GetWorld,IsLocalPlayerController=function()return true end}
+          function FindAllOf()error('unexpected actor setup') end
+          local weather={kind='snow',actors={{actor='Snow00',index=0}}}
+          local env={descriptors={{world='Test:',weather=weather}},valid=function(value)return value~=nil end,
+                     report=function()end}
+          local scan=assert(loadfile(runtime))()(env)
+          local box={center_cm={0,0,0},half_cm={1,2,3},yaw=0}
+          local function rejects(exclusions,fade,message)
+            weather.exclusions=exclusions;weather.fade_when_camera_inside=fade
+            local ok,err=pcall(scan,gs,pc)
+            assert(not ok and err:find(message,1,true),err)
+          end
+          rejects('room',nil,'ordered_boxes')
+          rejects({box,[3]=box},nil,'ordered_boxes')
+          local tooMany={};for i=1,17 do tooMany[i]=box end
+          rejects(tooMany,nil,'ordered_boxes')
+          rejects({{center_cm={0/0,0,0},half_cm={1,2,3},yaw=0}},nil,'center_xyz')
+          rejects({{center_cm={0,0,0},half_cm={1,2},yaw=0}},nil,'half_xyz')
+          rejects({{center_cm={0,0,0},half_cm={1,2,math.huge},yaw=0}},nil,'half_xyz')
+          rejects({{center_cm={0,0,0},half_cm={1,0,3},yaw=0}},nil,'positive_half_extents')
+          rejects({{center_cm={0,0,0},half_cm={1,2,3},yaw='90'}},nil,'requires_yaw')
+          rejects({},1,'fade_requires_boolean')
         ''')
 
     def test_static_descriptor_can_own_lighting_without_precipitation(self):

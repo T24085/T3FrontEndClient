@@ -79,6 +79,73 @@ local function number(value,min,max,default)
  return value
 end
 
+local function ordered_count(values,max,error_name)
+ assert(type(values)=='table',error_name)
+ local count=0
+ for i in pairs(values)do
+  assert(type(i)=='number' and i%1==0 and i>=1 and i<=max,error_name)
+  count=count+1
+ end
+ for i=1,count do assert(values[i]~=nil,error_name) end
+ return count
+end
+
+local function finite(value)
+ return type(value)=='number' and value>-math.huge and value<math.huge
+end
+
+local function box_vector(values,error_name)
+ assert(ordered_count(values,3,error_name)==3
+        and finite(values[1]) and finite(values[2]) and finite(values[3]),error_name)
+ return {X=values[1],Y=values[2],Z=values[3]}
+end
+
+local function exclusion_boxes(values)
+ local boxes={}
+ if values==nil then return boxes end
+ local count=ordered_count(values,16,'weather_exclusions_require_ordered_boxes')
+ for i=1,count do
+  local row=values[i]
+  assert(type(row)=='table' and finite(row.yaw),'weather_exclusion_requires_yaw')
+  local center=box_vector(row.center_cm,'weather_exclusion_requires_center_xyz')
+  local half=box_vector(row.half_cm,'weather_exclusion_requires_half_xyz')
+  assert(half.X>0 and half.Y>0 and half.Z>0,'weather_exclusion_requires_positive_half_extents')
+  local angle=math.rad(row.yaw%360)
+  boxes[i]={center=center,half=half,axis={X=math.cos(angle),Y=math.sin(angle),Z=0}}
+ end
+ return boxes
+end
+
+local function camera_fade(boxes,clouds,valid)
+ local parameter=FName('WeatherOpacity')
+ local opacity=1
+ local function apply(value)
+  for _,cloud in ipairs(clouds)do
+   if cloud.enabled then
+    assert(valid(cloud.actor),'weather_2026_owned_actor_lost')
+    cloud.actor.StaticMeshComponent:SetScalarParameterValueOnMaterials(parameter,value)
+   end
+  end
+ end
+ apply(opacity)
+ return function(p,dt)
+  local inside=false
+  for _,box in ipairs(boxes)do
+   local x,y=p.X-box.center.X,p.Y-box.center.Y
+   local axis,half=box.axis,box.half
+   if math.abs(x*axis.X+y*axis.Y)<=half.X and math.abs(y*axis.X-x*axis.Y)<=half.Y
+      and math.abs(p.Z-box.center.Z)<=half.Z then
+    inside=true;break
+   end
+  end
+  local nextOpacity=inside and math.max(0,opacity-2*dt) or math.min(1,opacity+2*dt)
+  if nextOpacity~=opacity then
+   apply(nextOpacity)
+   opacity=nextOpacity
+  end
+ end
+end
+
 local function configure_lighting(config,descriptor,world,valid)
  if config==nil then return end
  assert(type(config)=='table' and type(config.actors)=='table'
@@ -134,6 +201,9 @@ return function(env)
          (not lightingOnly and count>=1 and count<=64),'weather_2026_actor_contract')
   local key=descriptor.world..'|'..string.format('%x',world:GetAddress())
   if states[key]then return end
+  local boxes=exclusion_boxes(weather.exclusions)
+  assert(weather.fade_when_camera_inside==nil or type(weather.fade_when_camera_inside)=='boolean',
+         'weather_camera_fade_requires_boolean')
   if lightingOnly then
    configure_lighting(weather.lighting,descriptor,world,valid)
    states[key]=true
@@ -184,14 +254,28 @@ return function(env)
    return
   end
   configure_lighting(weather.lighting,descriptor,world,valid)
+  local parameters={}
+  for i in ipairs(boxes)do
+   local prefix='WeatherBox'..i..'_'
+   parameters[i]={center=FName(prefix..'Center'),half=FName(prefix..'Half'),axis=FName(prefix..'Axis')}
+  end
   for _,cloud in ipairs(clouds)do
    local enabled=math.floor((cloud.index+1)*active/count)>math.floor(cloud.index*active/count)
-   if not enabled then cloud.actor:SetActorHiddenInGame(true) end
-   if enabled and tint then
-    cloud.actor.StaticMeshComponent:SetVectorParameterValueOnMaterials(FName('WeatherColor'),tint)
+   if enabled then
+    local mesh=cloud.actor.StaticMeshComponent
+    if tint then mesh:SetVectorParameterValueOnMaterials(FName('WeatherColor'),tint) end
+    for i,box in ipairs(boxes)do
+     local names=parameters[i]
+     mesh:SetVectorParameterValueOnMaterials(names.center,box.center)
+     mesh:SetVectorParameterValueOnMaterials(names.half,box.half)
+     mesh:SetVectorParameterValueOnMaterials(names.axis,box.axis)
+    end
+   else
+    cloud.actor:SetActorHiddenInGame(true)
    end
    cloud.enabled=enabled
   end
+  local fade=weather.fade_when_camera_inside and #boxes>0 and active>0 and camera_fade(boxes,clouds,valid)
   local statics=StaticFindObject('/Script/Engine.Default__GameplayStatics');assert(valid(statics))
   states[key]=true;local last=nil;local ticks=0
   local function tick()
@@ -203,6 +287,7 @@ return function(env)
      local manager=pc.PlayerCameraManager;if not valid(manager)then return end
      local p=manager:GetCameraLocation();local now=statics:GetTimeSeconds(context)
      local dt=last and math.max(0,math.min(now-last,1))or 0;last=now
+     if fade then fade(p,dt) end
      for _,cloud in ipairs(clouds)do
       assert(valid(cloud.actor),'weather_2026_owned_actor_lost')
       if cloud.enabled then

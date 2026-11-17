@@ -28,6 +28,23 @@ horizontal velocities in cm/s. `tint` and its original alias `color` accept
 three linear RGB values (0 to 1) for the cooked material's `WeatherColor`
 parameter. Rain and ash need their own cooked meshes or materials.
 
+For rooms and tunnels, add `exclusions={{center_cm={100,-200,250},
+half_cm={500,800,300},yaw=90}}` to `weather`. Supply up to 16 boxes with
+world-space centers, positive half extents along the box's local axes, and
+yaw in degrees about world Z. Each enabled mesh receives the vector
+parameters `WeatherBox1_Center`, `WeatherBox1_Half`, and
+`WeatherBox1_Axis`, continuing through `WeatherBox16`. `Axis` is the box's
+local X direction in world space. The material masks each flake against the
+boxes in world space. Author unused slots with zero half extents and ignore
+them in the material. The runtime writes the box parameters once at setup.
+
+For the optional whole-weather fade, set `fade_when_camera_inside=true`
+and have the material apply its scalar `WeatherOpacity` (default `1`).
+The client fades between `1` and `0` in about half a second as the camera
+leaves or enters an exclusion. This also fades visible outdoor weather
+while the camera is indoors. Use the box mask alone to keep snow visible
+outside doors and windows.
+
 For local lighting, set `lighting={actors={"StormLight"},intensity=2500}`
 with the names of cooked, movable, non-replicated PointLights and the
 intensity in each light's authored units. Use `kind="lighting"` for a
@@ -40,9 +57,9 @@ The Windows and Steam Proton wrapper accepts a verified host objectives
 snapshot through `--map-objectives`. These descriptors are shipped as
 inventoried client files, outside the cooked-map download feed. The signed
 Direct Starter release can also stage the tested weather runtime and
-Katabatic T2 descriptor in the owned session directory on older installs.
-Verified packaged descriptors take precedence over this fallback, including
-an explicit request to disable weather.
+Katabatic T2 descriptor in the owned session directory. A signed runtime
+takes precedence over the archive's runtime. Verified packaged map descriptors
+take precedence over fallback descriptors, including an explicit opt-out.
 
 # Native flag widget callback
 

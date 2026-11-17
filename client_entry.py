@@ -26,19 +26,19 @@ STOCK_CLOUD_MAPS = frozenset({
     'Scarabrae2026', 'Snowblind2026', 'SnowblindBlizzard2026', 'Stonehenge2026',
 })
 
-# The signed Direct release can supply weather for installations whose
-# inventory predates map-local descriptors. Full archives use packaged files.
+# The signed Direct release can refresh weather independently of the archive.
+# A full archive can also supply the runtime and map descriptors on its own.
 _SIGNED_WEATHER_MODULE = None
 _SIGNED_MAP_OBJECTIVES = {}
 
 def weather_runtime_path(root, run, package):
-    if any(row['path'] == 'lua/weather.lua' for row in package['files']):
-        return root / 'lua/weather.lua'
     if _SIGNED_WEATHER_MODULE is not None:
         path = run / 'weather.lua'
         with path.open('xb') as output:
             output.write(_SIGNED_WEATHER_MODULE)
         return path
+    if any(row['path'] == 'lua/weather.lua' for row in package['files']):
+        return root / 'lua/weather.lua'
     return root / 'lua/snowblind_weather.lua'
 
 def write_map_definitions(root, run, definitions, selected, package, *, public=False):
