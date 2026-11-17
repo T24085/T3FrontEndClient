@@ -1321,6 +1321,78 @@ local function configure_shield_wall_preview()
  end)
  if not ok then report('SHIELD_WALL_PREVIEW_ERROR|'..tostring(why)) end
 end
+local configure_community_lighting=(function()
+    -- Preserve the tuned properties when a newer cook supplies its own values.
+    local profiles={
+        ['/Game/Maps/Community/MinotaurT2/Arena_MinotaurT2_2026_P.Arena_MinotaurT2_2026_P:']={
+            map='MinotaurT22026', sky=6, targetSky=3,
+        },
+        ['/Game/Maps/Community/BeggarsRunTWLT2/Arena_BeggarsRunTWLT2_2026_P.Arena_BeggarsRunTWLT2_2026_P:']={
+            map='BeggarsRunTWLT22026', sky=9, targetSky=4,
+        },
+        ['/Game/Maps/Community/QuagmireTWLT2/Arena_QuagmireTWLT2_2026_P.Arena_QuagmireTWLT2_2026_P:']={
+            map='QuagmireTWLT22026', sky=6, targetSky=3,
+            fog={
+                {field='FogDensity', setter='SetFogDensity', authored=0.45, target=0.14},
+                {field='StartDistance', setter='SetStartDistance', authored=1575, target=3000},
+                {field='FogMaxOpacity', setter='SetFogMaxOpacity', authored=1, target=0.82},
+            },
+        },
+    }
+    local attemptedWorld
+    local function near(value,expected)
+        return type(value)=='number' and math.abs(value-expected)<0.0001
+    end
+    local function component(world,prefix,kind,property)
+        local path=prefix..'PersistentLevel.'..kind..'_0'
+        local actor=StaticFindObject(path)
+        if valid(actor) and actor:GetFullName()==kind..' '..path and same_object(actor:GetWorld(),world) then
+            local owned=actor[property]
+            if valid(owned) then return owned end
+        end
+    end
+    return function(gs)
+        local prefix=gs:GetFullName():match(' (/Game/[^ ]+:)PersistentLevel%.')
+        local profile=profiles[prefix]
+        if not profile then return end
+        local world=gs:GetWorld()
+        if not valid(world) or same_object(world,attemptedWorld) then return end
+        local ok,why=pcall(function()
+            local sky=component(world,prefix,'SkyLight','LightComponent')
+            if not sky then return end
+            local fog
+            if profile.fog then
+                fog=component(world,prefix,'ExponentialHeightFog','Component')
+                if not fog then return end
+            end
+            attemptedWorld=world
+            local matchesCook=near(sky.Intensity,profile.sky)
+            for _,setting in ipairs(profile.fog or {}) do
+                matchesCook=matchesCook and near(fog[setting.field],setting.authored)
+            end
+            if not matchesCook then
+                report('COMMUNITY_MAP_LIGHTING_SKIPPED|map='..profile.map..'|authored_values_changed')
+                return
+            end
+            signature('/Script/Engine.SkyLightComponent:SetIntensity',{{'NewIntensity','FloatProperty',0}})
+            for _,setting in ipairs(profile.fog or {}) do
+                signature('/Script/Engine.ExponentialHeightFogComponent:'..setting.setter,{{'Value','FloatProperty',0}})
+            end
+            sky:SetIntensity(profile.targetSky)
+            assert(near(sky.Intensity,profile.targetSky),'skylight_intensity_readback_failed')
+            for _,setting in ipairs(profile.fog or {}) do
+                fog[setting.setter](fog,setting.target)
+                assert(near(fog[setting.field],setting.target),setting.field..'_readback_failed')
+            end
+            report('COMMUNITY_MAP_LIGHTING_APPLIED|map='..profile.map)
+        end)
+        if not ok then
+            attemptedWorld=world
+            report('COMMUNITY_MAP_LIGHTING_UNAVAILABLE|map='..profile.map..'|'..tostring(why):sub(1,300))
+        end
+    end
+end)()
+
 local configure_stock_clouds=(function()
     local descriptor=mapDefinitions[@@STOCK_CLOUD_MAP@@]
     local attemptedWorld
@@ -1401,6 +1473,7 @@ local function client_tick(sys)
     end
     local gs=state();if not gs or gs:HasAuthority() then return end
     configure_geometry(gs)
+    configure_community_lighting(gs)
     configure_stock_clouds(gs,sys)
     if clientWorld~=gs:GetFullName() then clientWorld=gs:GetFullName();report("CLIENT_WORLD|"..clientWorld) end
     local pcs=FindAllOf("ValPlayerController") or {};if #pcs~=1 or not valid(pcs[1]) then return end

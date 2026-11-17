@@ -1,3 +1,12 @@
+# Community map lighting
+
+The client reduces the ambient skylight on the current cooked Minotaur,
+Beggar's Run TWL and Quagmire TWL 2026 maps. Quagmire also uses lighter fog
+starting 30 meters out. The change uses the loaded map's sky and fog actors.
+Base fixtures, emergency lighting, and the weapon materials retain their
+authored settings. A rebuild that changes the tuned properties takes precedence.
+The adjustment is a local candidate pending a rendered in-game comparison.
+
 # Community minimap capture
 
 Starter matches the loaded level against the community package path. The
