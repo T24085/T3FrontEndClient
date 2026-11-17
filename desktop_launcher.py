@@ -102,6 +102,7 @@ class Desktop:
         self.preparation = tk.StringVar(value='')
         self.allow_spectators = tk.BooleanVar(value=True)
         self.flag_indicators = tk.BooleanVar(value=False)
+        self.fall_damage = tk.BooleanVar(value=False)
         self.allow_bots = tk.BooleanVar(value=False)
         self.bot_count = tk.StringVar(value='2')
         self.retail_capture_point = tk.BooleanVar(value=True)
@@ -191,6 +192,8 @@ class Desktop:
         self.flag_toggle = tk.Checkbutton(self.rules_row,text='Flag indicators',variable=self.flag_indicators,
             command=lambda:self.call_action('rules',flagIndicators=self.flag_indicators.get()),**check_style)
         self.flag_toggle.pack(side='left')
+        self.fall_toggle = tk.Checkbutton(self.rules_row, text='Fall damage', variable=self.fall_damage,
+            command=lambda: self.call_action('rules', fallDamage=self.fall_damage.get()), **check_style)
         self.bot_toggle = tk.Checkbutton(self.rules_row,text='Allow bots',variable=self.allow_bots,
             command=self.change_bots,**check_style)
         self.bot_toggle.pack(side='left',padx=(10,0))
@@ -642,6 +645,13 @@ class Desktop:
             self.rules_row.pack(fill='x',before=self.roster_frame,pady=(6,0))
         rules = room.get('rules', DEFAULT_LOBBY_RULES) if room else DEFAULT_LOBBY_RULES
         self.flag_indicators.set(rules['flagIndicators'])
+        self.fall_damage.set(rules.get('fallDamage') is True)
+        if self.caps.get('fallDamageEnabled') is True:
+            if not self.fall_toggle.winfo_manager():
+                self.fall_toggle.pack(side='left', after=self.flag_toggle)
+            self.fall_toggle.configure(state='normal' if editable else 'disabled')
+        else:
+            self.fall_toggle.pack_forget()
         count = rules['botCount']
         self.allow_bots.set(count > 0)
         if count:

@@ -1,3 +1,10 @@
+# Private-match fall damage
+
+Starter shows **Fall damage** beside **Flag indicators** when a host
+advertises the rule. The lobby leader can change it while setting up the
+match, and the lobby reads back the host's selection. It defaults to off.
+Damage is calculated and applied by the host. This client candidate remains local.
+
 # Spectator camera modes
 
 The client also applies the body presentation and ski-label repair when the

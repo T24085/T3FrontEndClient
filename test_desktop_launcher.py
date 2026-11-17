@@ -61,6 +61,19 @@ class DesktopTest(unittest.TestCase):
             })
             app.render(lobby.room)
             self.assertEqual(app.rules_row.winfo_manager(), 'pack')
+            self.assertFalse(app.fall_toggle.winfo_manager())
+            app.caps['fallDamageEnabled'] = True
+            lobby.room['rules']['fallDamage'] = True
+            app.render(lobby.room)
+            self.assertEqual(app.fall_toggle.winfo_manager(), 'pack')
+            self.assertEqual(app.fall_toggle.cget('state'), 'normal')
+            self.assertTrue(app.fall_damage.get())
+            calls = []
+            original_action = app.call_action
+            app.call_action = lambda op, **changes: calls.append((op, changes))
+            app.fall_toggle.invoke()
+            self.assertEqual(calls, [('rules', {'fallDamage': False})])
+            app.call_action = original_action
             self.assertTrue(app.flag_indicators.get())
             self.assertEqual(app.bot_count.get(), '4')
             self.assertEqual(str(app.bot_spinner.cget('state')), 'readonly')
@@ -79,6 +92,7 @@ class DesktopTest(unittest.TestCase):
             lobby.room['playerId'] = 'two'
             app.render(lobby.room)
             self.assertEqual(app.flag_toggle.cget('state'), 'disabled')
+            self.assertEqual(app.fall_toggle.cget('state'), 'disabled')
             self.assertEqual(app.bot_toggle.cget('state'), 'disabled')
             self.assertEqual(str(app.side_combo.cget('state')), 'disabled')
         finally:

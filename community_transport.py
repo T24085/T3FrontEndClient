@@ -16,13 +16,13 @@ from community_maps import BY_ID, MAX_MAPS, valid_id, valid_label
 from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION
 
 MAX_LOBBY_BOTS = 12
-DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True}
+DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True, 'fallDamage': False}
 
 
 def validated_lobby_rules(value, *, partial=False):
     keys = DEFAULT_LOBBY_RULES.keys()
     if (not isinstance(value, dict) or not value or not value.keys() <= keys
-            or not partial and value.keys() != keys):
+            or not partial and not keys - {'fallDamage'} <= value.keys()):
         raise ValueError('Invalid match rules.')
     for name, selected in value.items():
         if name == 'botCount':
