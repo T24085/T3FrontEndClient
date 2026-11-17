@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import ssl
 import threading
 import uuid
 import zlib
@@ -117,19 +118,31 @@ class MapSync:
                                      timeout=15, source_address=(lobby.test_source, 0) if lobby.test_source else None)
 
     def _inventory(self):
-        try:
-            with closing(self._connection()) as connection:
-                path = CATALOG_ROUTE if self.version == CATALOG_VERSION else MANIFEST_ROUTE
-                headers = self.lobby.request_headers()
-                if self.version == CATALOG_VERSION:
-                    headers[OBJECTIVES_HEADER] = '1'
-                connection.request('GET', path, headers=headers)
-                with connection.getresponse() as response:
-                    if response.status != 200 or response.getheader('Content-Type', '').split(';')[0] != 'application/json':
-                        raise CommunityError('Server map inventory is unavailable.')
-                    return json.loads(bounded_read(response))
-        except (http.client.HTTPException, OSError) as exc:
-            raise CommunityError('Could not securely download the map inventory.') from exc
+        path = CATALOG_ROUTE if self.version == CATALOG_VERSION else MANIFEST_ROUTE
+        for attempt in range(3):
+            self._check_cancelled()
+            try:
+                with closing(self._connection()) as connection:
+                    headers = self.lobby.request_headers()
+                    if self.version == CATALOG_VERSION:
+                        headers[OBJECTIVES_HEADER] = '1'
+                    connection.request('GET', path, headers=headers)
+                    with connection.getresponse() as response:
+                        if response.status != 200 or response.getheader('Content-Type', '').split(';')[0] != 'application/json':
+                            raise CommunityError('Server map inventory is unavailable.')
+                        remaining = response.length
+                        if remaining is not None and remaining > MAX_MANIFEST:
+                            raise ValueError('Map inventory exceeds its size limit.')
+                        raw = bounded_read(response)
+                        if remaining is not None and len(raw) < remaining:
+                            raise http.client.IncompleteRead(raw, remaining - len(raw))
+                return json.loads(raw)
+            except ssl.SSLError as exc:
+                raise CommunityError('Could not securely download the map inventory.') from exc
+            except (http.client.HTTPException, OSError) as exc:
+                if attempt == 2:
+                    raise CommunityError('The map catalog download was interrupted. Try again shortly.') from exc
+                self.cancelled.wait(attempt + 1)
 
     def _download(self, row, output):
         sha, length = row['sha256'], row['bytes']
