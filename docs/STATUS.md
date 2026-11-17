@@ -13,11 +13,12 @@ The command keeps the evidence and reports how many payloads need manual review.
 
 # Map-local weather
 
-The Direct Starter reads weather from each packaged
-`lua/<MapId>/objectives.lua` descriptor. The private catalog uses the selected
-map and the public catalog prepares weather for map rotation. An absent
-descriptor or nil weather uses the existing bundled value, while an explicit
-`weather=false` opts out of scripted weather.
+The Direct Starter requests verified `lua/<MapId>/objectives.lua` descriptors
+with its map inventory. A weather-only edit refreshes the cached revision before
+joining, even when the cooked files are identical. The private catalog uses the
+selected map and the public catalog prepares weather for map rotation. Omitted
+weather uses the existing built-in Lua default. Explicit `weather=false` opts out
+of scripted weather. Older hosts can still use descriptors from a full archive.
 
 `lua/weather.lua` animates cooked cosmetic actors for snow, sand, rain, ash
 and wind. Set `weather` on the table returned by `descriptor(row)` or on the

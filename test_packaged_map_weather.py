@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from lupa.lua54 import LuaError, LuaRuntime
+from lupa.lua54 import LuaRuntime
 
 from client_entry import weather_runtime_path, write_map_definitions
 from community_maps import BY_ID, MapDefinition
@@ -72,19 +72,24 @@ class PackagedMapWeatherTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'failed package verification'):
             self.catalog([row])
 
-    def test_signed_weather_supplies_missing_files_and_preserves_packaged_precedence(self):
+    def test_downloaded_objectives_override_bundled_and_signed_runtime_is_independent(self):
         module = (ROOT / 'lua/weather.lua').read_bytes()
-        with patch('client_entry._SIGNED_WEATHER_MODULE', module), patch(
-            'client_entry._SIGNED_MAP_OBJECTIVES', {KATA.id: DESCRIPTOR.encode()}
-        ):
-            self.assertEqual(self.catalog([])[KATA.id].weather.kind, 'snow')
+        with patch('client_entry._SIGNED_WEATHER_MODULE', module):
             runtime = weather_runtime_path(self.root, self.run, {'files': []})
             self.assertEqual(runtime, self.run / 'weather.lua')
             self.assertEqual(runtime.read_bytes(), module)
             self.run = self.root / 'packaged'
             self.run.mkdir()
             authored_off = self.add_adapter(DESCRIPTOR.replace('row.objectives=', 'row.weather=false;row.objectives='))
-            self.assertIsNone(self.catalog([authored_off])[KATA.id].weather)
+            name = authored_off['path']
+            path = self.run / 'downloaded-objectives' / name
+            path.parent.mkdir(parents=True)
+            raw = DESCRIPTOR.encode()
+            path.write_bytes(raw)
+            downloaded = dict(path=name, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+            output = write_map_definitions(self.root, self.run, self.definitions, KATA,
+                                           {'files': [authored_off]}, objectives=[downloaded])
+            self.assertEqual(self.lua.execute(output.read_text())[KATA.id].weather.kind, 'snow')
             package = {'files': [{'path': 'lua/weather.lua'}]}
             replacement = weather_runtime_path(self.root, self.run, package)
             self.assertEqual(replacement, self.run / 'weather.lua')
@@ -277,8 +282,10 @@ return {{format=1,map_id="{KATA.id}",package="{KATA.package}",world="{world}",
         ''')
 
     def test_adapter_has_no_engine_or_filesystem_globals(self):
-        with self.assertRaises(LuaError):
-            self.catalog([self.add_adapter('return io.open("unexpected")')])
+        adapter = self.add_adapter('return io.open("unexpected")')
+        maps = self.catalog([adapter])
+        self.assertIsNone(maps[KATA.id].weather)
+        self.assertEqual(maps[BLIZZARD.id].weather.kind, 'snow')
 
     def test_packaged_lighting_opt_out_without_weather(self):
         descriptor = '''return {descriptor=function(row)

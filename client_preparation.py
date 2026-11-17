@@ -64,7 +64,8 @@ def _copy_private(source,destination):
  with destination.open('xb')as output,source.open('rb')as stream:shutil.copyfileobj(stream,output,1024*1024)
 
 def stage(root,source,workspace,package,original,original_identities,verification,*,catalog,
-          emit=print,cache_factory=BulkStageCache,patches=PATCHES,map_overlay=None,custom_maps=None):
+          emit=print,cache_factory=BulkStageCache,patches=PATCHES,map_overlay=None,custom_maps=None,
+          objectives_downloaded=False):
  """Stage exactly the verified inventories into a fresh private directory."""
  root=Path(root).resolve(strict=True);source=Path(source).resolve(strict=True);workspace=Path(workspace).resolve(strict=True)
  if workspace==source or source in workspace.parents:raise ValueError('Client workspace must be outside the original game.')
@@ -102,10 +103,19 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
    if digest(dst)!=item['sha256']:raise ValueError('Prepared runtime copy differs: '+name)
   elif name.startswith('content/') and map_overlay is None:
    jobs.append((_member(root,name),game/'Topaz/Content'/_relative(name[len('content/'):]),item['sha256'],item['bytes'],None))
+ map_objectives=[]
  if map_overlay is not None:
   for item,bundled,download in map_overlay:
    name=item['path']
    src=_member(root,bundled) if bundled is not None else _member(workspace,download.relative_to(workspace).as_posix())
+   if name.startswith('lua/'):
+    target=run/'downloaded-objectives'/_relative(name)
+    target.parent.mkdir(parents=True,exist_ok=True)
+    _copy_private(src,target)
+    if target.stat().st_size!=item['bytes'] or digest(target)!=item['sha256']:
+     raise ValueError('Prepared map objectives differ: '+name)
+    map_objectives.append(item)
+    continue
    jobs.append((src,game/'Topaz/Content'/_relative(name[len('content/'):]),item['sha256'],item['bytes'],None))
  def stage_bulk(job):
   src,dst,expected,size,source_identity=job
@@ -125,6 +135,7 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
          'game_outputs':outputs,'catalog':catalog,'verification':verification,'private_executable_sha256':digest(exe),
          'bulk_stage':cache.snapshot(),'native_started':False,'profile_created':False}
  if custom_maps:record['custom_maps']=custom_maps
+ if objectives_downloaded:record['map_objectives']=map_objectives
  path=run/'prepared.json';sha=_write(path,record)
  emit('BULK_STAGE_SUMMARY|'+json.dumps(cache.snapshot(),separators=(',',':')))
  result={'path':str(path),'sha256':sha}
