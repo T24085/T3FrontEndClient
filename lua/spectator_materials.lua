@@ -3,6 +3,7 @@
 return function(env)
  local valid,scope,signature,report=assert(env.valid),assert(env.scope),assert(env.signature),assert(env.report)
  local pc=assert(env.pc);local ps=pc.PlayerState;local world=pc:GetWorld()
+ local now=env.now or os.time
  local passive=env.passive==true
  local current=nil;local records={};local primed=false
  local function identity(o)return o:GetFullName()..'|'..tostring(o:GetAddress())end
@@ -111,13 +112,13 @@ return function(env)
   r.keeper:K2_DestroyComponent(r.keeper);r.keeper=nil;return true
  end
  local function restore(r)
-  -- Once both original presentation owners are explicitly invalid, no live
-  -- slot remains to restore. Unknown wrappers/errors do not establish death.
+  -- Once the original mesh is explicitly invalid, no live slot remains
+  -- to restore. Unknown wrappers and errors do not establish that.
   -- Release only our exact native reference holder; never query the dead mesh.
-  if liveness(r.target)=='invalid'and liveness(r.mesh)=='invalid'then
+  if liveness(r.mesh)=='invalid'then
    for _,slot in ipairs(r.slots or{})do slot.status='owner_destroyed'end
    r.cleanup_status='owner_destroyed'
-   return release_keeper(r)
+   return restore_gun(r)and release_keeper(r)
   end
   if not r.slots then return release_keeper(r)end
   local all=true
@@ -125,11 +126,12 @@ return function(env)
    if not slot.restored then
     if not usable(r.mesh)then slot.status='unavailable_mesh'
     elseif not same(r.mesh:GetWorld(),world)or identity(r.mesh)~=r.meshIdentity then slot.status='scope_changed'
-    elseif not usable(slot.original)or identity(slot.original)~=slot.originalIdentity then slot.status='unavailable_original'
     else
-     local present=r.mesh:GetMaterial(slot.index)
-     if same(present,slot.original)then slot.restored=true;slot.status='restored'
-     elseif not same(present,slot.clone)or identity(slot.clone)~=slot.cloneIdentity then slot.status='conflict_preserved'
+     local present=slot.index<r.mesh:GetNumMaterials()and r.mesh:GetMaterial(slot.index)or nil
+     if not same(present,slot.clone)then
+      slot.restored=true;slot.status='native_slot_preserved'
+     elseif not usable(slot.original)or identity(slot.original)~=slot.originalIdentity then
+      slot.status='unavailable_original'
      else
       r.mesh:SetMaterial(slot.index,slot.original)
       assert(same(r.mesh:GetMaterial(slot.index),slot.original),'spectator_material_restore_not_observed')
@@ -155,15 +157,14 @@ return function(env)
   assert(type(value)=='number'and value==value and math.abs(value)<math.huge,'spectator_material_scalar_number_required')
   return value
  end
- local function observe(target)
-  local viewed=pc:GetViewTarget()
-  assert(valid(target)and (same(target,viewed) or same(target.PlayerState,viewed))
-   and not target:HasAuthority()and same(target:GetWorld(),world),'spectator_material_exact_remote_target_required')
-  assert(valid(target.PlayerState)and same(target.PlayerState.PawnPrivate,target),'spectator_material_reciprocal_target_required')
-  if current and current.identity~=identity(target)then restore(current);current=nil end
+ local function observe(target,body)
+  if current and (current.identity~=identity(target)or not same(current.mesh,body))then
+   current=nil
+   sweep()
+  end
+  if not valid(body)then return nil end
   if current then return current end
   sweep();assert(#records<32,'spectator_material_retained_target_bound')
-  local body=target:GetMesh3P()
   assert(valid(body)and same(body:GetWorld(),world)and same(body:GetOwner(),target),'spectator_material_body_mesh_required')
   local param=target.IsLocallyViewed1pParam;local name=param:ToString()
   assert(type(name)=='string'and #name>0 and #name<=256 and name~='None','spectator_material_native_parameter_required')
@@ -171,12 +172,22 @@ return function(env)
   current=r;records[#records+1]=r
   return r
  end
- local function clone_slots(r)
+ local function material_count(mesh)
+  local count=mesh:GetNumMaterials()
+  assert(type(count)=='number'and count%1==0 and count>=0 and count<=64,'spectator_material_slot_resource_bound')
+  return count
+ end
+ local function clone_slots(r,count)
   assert(not r.originals,'spectator_material_clones_already_present')
   local library=StaticFindObject('/Script/Engine.Default__KismetMaterialLibrary');assert(valid(library),'spectator_material_library_required')
-  local count=r.mesh:GetNumMaterials();assert(type(count)=='number'and count%1==0 and count>=0 and count<=64,'spectator_material_slot_resource_bound')
-  r.originals={}
-  for index=0,count-1 do r.originals[index+1]=r.mesh:GetMaterial(index);assert(valid(r.originals[index+1]),'spectator_material_original_required')end
+  if count==0 then return end
+  local originals={}
+  for index=0,count-1 do
+   local material=r.mesh:GetMaterial(index)
+   if not valid(material)then return end
+   originals[index+1]=material
+  end
+  r.originals=originals
   -- Lua wrappers do not retain native objects for UE garbage collection.
   -- SetMaterial stores strong UPROPERTY OverrideMaterials references. A fresh
   -- meshless component has no visual/collision geometry and is owned only by
@@ -210,44 +221,66 @@ return function(env)
    end
    assert(same(clone.Parent,parent),'spectator_material_clone_parent_required')
    if originalIsMid then clone:CopyParameterOverrides(original)end
-   local slot={index=index,original=original,originalIdentity=identity(original),clone=clone,cloneIdentity=identity(clone)}
+   local slot={index=index,original=original,originalIdentity=identity(original),clone=clone,isDynamic=originalIsMid}
    r.slots[#r.slots+1]=slot -- Ownership precedes either partially failing assignment.
    r.keeper:SetMaterial(index*2+1,clone)
    assert(same(r.keeper:GetMaterial(index*2+1),clone),'spectator_material_clone_reference_not_observed')
    r.mesh:SetMaterial(index,clone);assert(same(r.mesh:GetMaterial(index),clone),'spectator_material_clone_assignment_required')
   end
+  r.refreshAt=now()+1
   report('SPECTATOR_MATERIAL_BOUND|target='..r.identity..'|slots='..count)
  end
  local function write(r,third)
   local desired=third and 0 or 1
+  local refresh=now()>=r.refreshAt
   for _,slot in ipairs(r.slots)do
-   assert(same(r.mesh:GetMaterial(slot.index),slot.clone)and identity(slot.clone)==slot.cloneIdentity,'spectator_material_slot_changed_externally')
+   -- The native cosmetic owner can update the original instance in place.
+   if refresh and slot.isDynamic then slot.clone:CopyParameterOverrides(slot.original)end
    if scalar(slot.clone,r.param)~=desired then
     slot.clone:SetScalarParameterValue(r.param,desired)
     assert(scalar(slot.clone,r.param)==desired,'spectator_material_scalar_write_not_observed')
    end
   end
+  if refresh then r.refreshAt=now()+1 end
  end
  local self={}
- function self.apply(target,third)
+ local function update(target,third,perspectiveChanged)
   context();prime();assert(type(third)=='boolean','spectator_material_mode_required')
-  local r=observe(target);target:UpdateMeshVisibility()
-  if not r.originals then clone_slots(r)end
-  weapon(r);write(r,third)
- end
- function self.poll(target,third)
-  context();assert(type(third)=='boolean','spectator_material_mode_required')
-  if not current or current.identity~=identity(target)then self.apply(target,third)
-  else
-   assert(same(target:GetMesh3P(),current.mesh)and same(current.mesh:GetWorld(),world),'spectator_material_body_mesh_changed')
-   for _,slot in ipairs(current.slots)do
-    local material=current.mesh:GetMaterial(slot.index)
-    -- Native view updates can reapply the original slot when the watched
-    -- pawn enters or exits first person.
-    if same(material,slot.original)then current.mesh:SetMaterial(slot.index,slot.clone)end
+  local viewed=pc:GetViewTarget()
+  assert(valid(target)and (same(target,viewed) or same(target.PlayerState,viewed))
+   and not target:HasAuthority()and same(target:GetWorld(),world),'spectator_material_exact_remote_target_required')
+  assert(valid(target.PlayerState)and same(target.PlayerState.PawnPrivate,target),'spectator_material_reciprocal_target_required')
+  if perspectiveChanged then target:UpdateMeshVisibility()end
+  local body=target:GetMesh3P()
+  local r=observe(target,body)
+  if not r then return end
+  local count=material_count(body)
+  if r.originals then
+   local changed=count~=#r.slots
+   for _,slot in ipairs(r.slots)do
+    if changed then break end
+    local material=body:GetMaterial(slot.index)
+    if same(material,slot.original)then
+     body:SetMaterial(slot.index,slot.clone)
+    elseif not same(material,slot.clone)then
+     changed=true
+    end
    end
-   weapon(current);write(current,third)
+   if changed then
+    -- Let the newly arrived native slots win and restore only our other slots.
+    -- Reacquire all material parents as one set before resuming the override.
+    current=nil;sweep()
+    if r.keeper then return end
+    r=observe(target,body)
+   end
   end
+  if not r.originals then clone_slots(r,count)end
+  weapon(r)
+  if r.originals then write(r,third)end
+ end
+ function self.apply(target,third)update(target,third,true)end
+ function self.poll(target,third)
+  update(target,third,false)
  end
  function self.retire()
   context();current=nil;sweep();return #records==0

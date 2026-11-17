@@ -96,7 +96,7 @@ end
 pc=object('observer');ps=object('observer_state');pc.PlayerState=ps
 function ps:IsOnlyASpectator()return true end
 local spectator=object('spectator_pawn')
-pc.third=true;pc.AFKTimer=10;pc.directions={};pc.toggles=0
+pc.third=false;pc.AFKTimer=10;pc.directions={};pc.toggles=0
 pc.PlayerCameraManager=object('camera_manager')
 pc.PlayerCameraManager.location={X=0,Y=0,Z=64}
 function pc.PlayerCameraManager:GetCameraLocation()return self.location end
@@ -112,7 +112,7 @@ function pc:ServerRequestStartSpectating()self.view=active end
 function pc:ServerSpectateNext(direction)
  self.directions[#self.directions+1]=direction;self.view=active
 end
-keys={};Key={F5='F5',F6='F6',F7='F7',F8='F8'}
+keys={};Key={LEFT_MOUSE_BUTTON='left',RIGHT_MOUSE_BUTTON='right',MIDDLE_MOUSE_BUTTON='middle'}
 function RegisterKeyBind(key,callback)keys[key]=callback end
 function ExecuteInGameThread(callback)callback()end
 local pending=nil;local handle=0
@@ -154,25 +154,27 @@ class SpectatorCameraTests(unittest.TestCase):
         self.lua.execute(code)
         self.lua.execute("for _,event in ipairs(events)do assert(not event:find('RUNTIME_ERROR',1,true),event)end")
 
-    def test_starts_first_person_and_only_offers_supported_controls(self):
+    def test_starts_in_chase_view_and_uses_mouse_controls(self):
         self.check('''
-        assert(not pc.third and pc.toggles==1)
-        assert(keys.F5 and keys.F6 and keys.F7 and keys.F8)
+        assert(pc.third and pc.toggles==1)
+        assert(keys.left and keys.right and keys.middle)
+        assert(not (keys.F5 or keys.F6 or keys.F7 or keys.F8))
+        active.alpha=1;pc.PlayerCameraManager.location.X=-300
         follow_once()
         follow_once()
-        assert(applied[1]=='player_one'and polled[1]=='player_one'and presentations[1]==false)
+        assert(applied[1]=='player_one'and polled[1]=='player_one'and presentations[1]==true)
         assert(pc.AFKTimer==0)
         local ready=false
         for _,event in ipairs(events)do
-         if event=='SPECTATOR_READY|lease=lease|watch=watch|mode=first'then ready=true end
+         if event=='SPECTATOR_READY|lease=lease|watch=watch|mode=third'then ready=true end
         end
         assert(ready)
         ''')
 
     def test_camera_blend_keeps_meshes_in_sync_in_both_directions(self):
         self.check('''
-        follow_once()
-        keys.F8()
+        keys.middle();follow_once()
+        keys.middle()
         assert(pc.third and events[#events]=='SPECTATOR_VIEW|mode=third')
         follow_once()
         assert(#presentations==1 and presentations[1]==false)
@@ -180,7 +182,7 @@ class SpectatorCameraTests(unittest.TestCase):
         pc.PlayerCameraManager.location.X=-300
         follow_once()
         assert(#presentations==2 and presentations[2]==true)
-        keys.F7();active.alpha=0;follow_once()
+        keys.middle();active.alpha=0;follow_once()
         assert(not pc.third and #presentations==2)
         pc.PlayerCameraManager.location.X=0
         follow_once()
@@ -189,7 +191,7 @@ class SpectatorCameraTests(unittest.TestCase):
 
     def test_close_chase_camera_uses_eye_view_materials_until_clear(self):
         self.check('''
-        follow_once();keys.F8();active.alpha=1
+        follow_once();active.alpha=1
         pc.PlayerCameraManager.location.X=-42;follow_once()
         assert(pc.third and #presentations==1)
         pc.PlayerCameraManager.location.X=-100;follow_once()
@@ -245,15 +247,25 @@ class SpectatorCameraTests(unittest.TestCase):
 
     def test_next_previous_and_respawn_preserve_selected_perspective(self):
         self.check('''
-        follow_once();keys.F8()
-        active=make_target('player_two');keys.F5();follow_once()
+        follow_once()
+        active=make_target('player_two');keys.left();follow_once()
         assert(pc.directions[1]==1 and applied[#applied]=='player_two'and pc.third)
-        active=make_target('player_three');keys.F6();follow_once()
+        active=make_target('player_three');keys.right();follow_once()
         assert(pc.directions[2]==-1 and applied[#applied]=='player_three'and pc.third)
         active=nil;pc.view=nil;pc.third=false;follow_once()
         assert(pc.third)
-        active=make_target('respawned');keys.F5();follow_once()
+        active=make_target('respawned');keys.left();follow_once()
         assert(applied[#applied]=='respawned'and pc.third)
+        ''')
+
+    def test_clicks_leave_menus_alone(self):
+        self.check('''
+        pc.bShowMouseCursor=true
+        keys.left();keys.right();keys.middle()
+        assert(#pc.directions==0 and pc.third)
+        pc.bShowMouseCursor=false
+        keys.left();keys.right();keys.middle()
+        assert(pc.directions[1]==1 and pc.directions[2]==-1 and not pc.third)
         ''')
 
     def test_runtime_fix_copy_matches_packaged_source(self):

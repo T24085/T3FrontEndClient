@@ -5,11 +5,14 @@ native death camera follows another player. This path leaves the view target,
 input, AFK policy, and respawn under native control. It restores presentation
 when the player respawns or the remote view ends.
 
-Spectators start in first person. F5 and F6 change targets, F7 selects first
-person, and F8 selects third person. The viewer keeps its selected perspective
+Spectators start with the chase camera so the watched player's full armor can
+render. Left click selects the next player, right click selects the previous
+player, and middle click changes perspective. The selected perspective persists
 across target changes and respawns. The local body materials follow the camera
 distance during the blend. When the chase camera is pushed into the player at a
 wall, the body uses the close-camera presentation until there is clearance again.
+The spectator follows native mesh and material replacements and refreshes
+cosmetic overrides that arrive on the original material after the view opens.
 The observer HUD also suppresses the default “Text Block” beside “SKI TOGGLE”
 and restores the label when the native HUD supplies a value.
 

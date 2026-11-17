@@ -5,7 +5,7 @@ return function(env)
  local passive=env.passive==true
  local pc,ps,world,rig,nextHandle;local stopped=false;local started=false
  local ready=false;local lastNext=0;local lastTarget=nil
- local preferredThird=false
+ local preferredThird=true
  local renderedThird=nil
  local skiPlaceholder=nil
  local lastHudScan=nil
@@ -327,7 +327,14 @@ return function(env)
   return function()
    if stopped then return end
    ExecuteInGameThread(function()
-    local ok,why=pcall(service.action,action)
+    if stopped then return end
+    local ok,why=pcall(function()
+     guard()
+     if pc.bShowMouseCursor==true then return end
+     local selected=action
+     if action=='toggle'then selected=preferredThird and 'first' or 'third'end
+     service.action(selected)
+    end)
     if not ok then stopped=true;local cleaned,reason=pcall(cleanup);report('RUNTIME_ERROR|spectator_input|'..tostring(why)..(cleaned and''or'|cleanup_retained='..tostring(reason)))end
    end)
   end
@@ -347,9 +354,10 @@ return function(env)
    select_perspective()
    started=true;pc:ServerViewSelf({BlendTime=0,BlendFunction=0,BlendExp=2,bLockOutgoing=false})
    pc:ServerRequestStartSpectating()
-   RegisterKeyBind(Key.F5,key_action('next'));RegisterKeyBind(Key.F6,key_action('previous'))
-   RegisterKeyBind(Key.F7,key_action('first'));RegisterKeyBind(Key.F8,key_action('third'))
-   report('SPECTATOR_CONTROLS|F5=next_player|F6=previous_player|F7=first_person|F8=third_person')
+   RegisterKeyBind(Key.LEFT_MOUSE_BUTTON,key_action('next'))
+   RegisterKeyBind(Key.RIGHT_MOUSE_BUTTON,key_action('previous'))
+   RegisterKeyBind(Key.MIDDLE_MOUSE_BUTTON,key_action('toggle'))
+   report('SPECTATOR_CONTROLS|left_click=next_player|right_click=previous_player|middle_click=toggle_camera')
    report('SPECTATOR_IDLE_POLICY|scope=local_observer_only')
    schedule()
   end

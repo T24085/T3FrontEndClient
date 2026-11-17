@@ -235,7 +235,7 @@ class Desktop:
         tk.Label(main,textvariable=self.status,bg=BG,fg=MUTED,font=('Segoe UI',10),anchor='w',wraplength=700).pack(side='bottom',before=actions,fill='x',pady=(12,0))
         self.live_panel=tk.Frame(root,bg=BG)
         self.label(self.live_panel,'Watch live matches.',27,True).pack(anchor='w')
-        self.live_summary=self.label(self.live_panel,'Spectate a running community match. F5/F6 switch players, F7 selects first person, and F8 selects third person.',
+        self.live_summary=self.label(self.live_panel,'Left click for next player, right click for previous, and middle click to change the camera.',
                    11,color=MUTED)
         self.live_summary.configure(wraplength=500,justify='left')
         self.live_summary.pack(anchor='w',pady=(4,18))
