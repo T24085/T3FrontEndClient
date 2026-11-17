@@ -20,7 +20,7 @@ CLIENT = 'Client Files/'
 TITLE = 'Tribes Rivals: Clan Wars (community mod)'
 
 
-def build(source, proof_path, windows_launcher, output, *, feed=None, catalog=None, assets=None,
+def build(source, proof_path, output, *, feed=None, catalog=None, assets=None,
           map_objectives=None):
     proof = json.loads(proof_path.read_bytes())
     if source.stat().st_size != proof['bytes'] or file_sha(source) != proof['sha256']:
@@ -28,7 +28,7 @@ def build(source, proof_path, windows_launcher, output, *, feed=None, catalog=No
     branding = ROOT/'branding'
     top = {
         'START HERE.txt': (branding/'START-HERE.txt').read_bytes(),
-        'Clan Wars - Windows.exe': windows_launcher.read_bytes(),
+        'Start Clan Wars.bat': (branding/'Start Clan Wars.bat').read_text(encoding='ascii').replace('\n', '\r\n').encode('ascii'),
         'Clan Wars - Linux.sh': (branding/'clan-wars-linux.sh').read_text(encoding='utf8').encode('utf8'),
     }
     additions = {
@@ -165,12 +165,12 @@ def build(source, proof_path, windows_launcher, output, *, feed=None, catalog=No
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('source','source-proof','launcher','output','proof'):
+    for name in ('source','source-proof','output','proof'):
         parser.add_argument('--'+name, required=True, type=Path)
     for name in ('feed','catalog','assets','map-objectives'):
         parser.add_argument('--'+name, type=Path)
     args = parser.parse_args()
-    result = build(args.source,args.source_proof,args.launcher,args.output,
+    result = build(args.source,args.source_proof,args.output,
                    feed=args.feed,catalog=args.catalog,assets=args.assets,
                    map_objectives=args.map_objectives.resolve(strict=True) if args.map_objectives else None)
     with args.proof.open('xb') as stream:

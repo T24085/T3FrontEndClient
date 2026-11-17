@@ -4,7 +4,7 @@ Extract the entire ZIP into a permanent folder before launching.
 Both launchers use the bundled maps in "Client Files". Keep the folder beside them.
 
 WINDOWS
-Double-click "Clan Wars - Windows.exe".
+Double-click "Start Clan Wars.bat".
 
 LINUX / STEAM PROTON
 Open a terminal in the extracted folder and run:
