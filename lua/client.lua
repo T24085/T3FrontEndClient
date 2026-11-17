@@ -737,29 +737,9 @@ end
 
 local clientWorld=nil
 local lastJoin=0
--- Widths enclose the authored playable bounds about the native world origin,
--- with ten percent padding. The same width owns both texture and coordinates.
-local radar_playable_width={
- Damnation=155000,Damnation2026=155000,
- HighOctane=109000,HighOctane2026=109000,
- Rollercoaster=240000,Rollercoaster2026=240000,
- Scarabrae=207000,Scarabrae2026=207000,
- Snowblind=159000,Snowblind2026=159000,SnowblindBlizzard=159000,SnowblindBlizzard2026=159000,
- Stonehenge=188000,Stonehenge2026=188000,
- KatabaticMyrkwood=99000,
-}
-local function radar_projection_width(map,authored)
- return math.min(radar_playable_width[map] or authored,authored)
-end
-local function initialize_radar_projection(widget,settings,width)
- -- The original widget owns scale, map translation, native zoom and texture
- -- setup. Supply the capture width only during this synchronous call.
- local authored=settings.MapSize
- if width==authored then widget:UpdateSublevel();return end
- settings.MapSize=width
- local ok,reason=pcall(widget.UpdateSublevel,widget)
- settings.MapSize=authored
- assert(ok,reason)
+local function community_radar_group(descriptor)
+ local package=descriptor and descriptor.package
+ return type(package)=='string' and package:match('^/Game/Maps/Community/([^/]+)/') or nil
 end
 -- Production network-client radar binding.
 local releaseRadarGuardFactory=(function()
@@ -787,7 +767,6 @@ local releaseRadarHelperFactory=(function()
 return function(env)
  local valid,report,scope,signature=assert(env.valid),assert(env.report),assert(env.scope),assert(env.signature)
  local contracts=assert(env.blueprint_contracts);local prefix=assert(env.world_prefix)
- local projection=assert(env.projection,'radar_client_explicit_projection_contract_required')
  if env.allow_standalone then assert(type(env.client_context_guard)=='function','radar_standalone_requires_native_context_guard') end
  local state=nil;local retired=false;local checkedBlueprints=false
  local capturePath='/Game/Common/Blueprints/Cameras/BP_MinimapCapture.BP_MinimapCapture_C'
@@ -821,35 +800,31 @@ return function(env)
   if state then assert(same(pc,state.pc) and same(gs,state.gs) and same(pc:GetWorld(),state.world),'radar_client_world_changed') end
  end
  local function setup(pc,gs)
-  own_world(pc,gs);verify_blueprints()
-  local settings=original_settings(pc);local size=settings.MapSize;local world=pc:GetWorld()
-  local ratio=projection.orthographic_width_per_map_size
-  assert(finite(ratio) and ratio>0 and type(projection.source_reference)=='string' and projection.source_reference~='','radar_client_projection_source_required')
-  local captureWidth=radar_projection_width(env.descriptor.name,size)*ratio
-  assert(finite(captureWidth),'radar_client_finite_capture_width_required')
-  signature('/Script/Engine.Actor:GetActorBounds',{{'bOnlyCollidingComponents','BoolProperty',0},{'Origin','StructProperty',8},{'BoxExtent','StructProperty',32},{'bIncludeFromChildActors','BoolProperty',56}})
+  own_world(pc,gs)
+  local settings=original_settings(pc)
+  if not settings then return end
+  local size,world=settings.MapSize,pc:GetWorld()
+  for _,actor in ipairs(FindAllOf('BP_MinimapCapture_C') or {}) do
+   if valid(actor) and same(actor:GetWorld(),world) then
+    state={pc=pc,gs=gs,world=world,map_owned_capture=true}
+    report('BASE_RADAR_CLIENT_MAP_CAPTURE_PRESENT|map='..env.descriptor.name)
+    return
+   end
+  end
+  verify_blueprints()
   signature('/Script/UMG.Widget:GetOwningPlayer',{{'ReturnValue','ObjectProperty',0}})
   signature('/Script/UMG.PanelWidget:GetChildrenCount',{{'ReturnValue','IntProperty',0}})
-  local assembly=assert(env.find_assembly)(pc,gs)
-  assert(valid(assembly) and same(assembly:GetWorld(),world),'radar_client_owned_map_assembly_required')
-  local origin,extent={},{};assembly:GetActorBounds(true,origin,extent,false)
-  for _,axis in ipairs({'X','Y','Z'}) do assert(finite(origin[axis]) and finite(extent[axis]) and extent[axis]>=0,'radar_client_finite_geometry_bounds_required') end
-  local halfWidth=math.max(math.abs(origin.X)+extent.X,math.abs(origin.Y)+extent.Y)
-  if captureWidth==size then
-   assert(captureWidth>=2*halfWidth,'radar_client_authored_capture_does_not_cover_map_bounds')
-  end
-  local captures={};for _,a in ipairs(FindAllOf('BP_MinimapCapture_C') or {}) do if valid(a) and same(a:GetWorld(),world) then captures[#captures+1]=a end end
-  assert(#captures==0,'radar_client_existing_capture_requires_map_owner_adoption')
+  local bottom,top,meshes=env.capture_bounds(gs,env.descriptor,size)
   local class=StaticFindObject(capturePath);if not valid(class) then class=LoadAsset(capturePath) end
   assert(valid(class) and class:GetFullName()=='BlueprintGeneratedClass '..capturePath,'radar_client_original_capture_class_required')
-  local height=math.max(100000,origin.Z+extent.Z+11000)
+  local height=math.max(100000,top+11000)
   -- Exact original Pitch=-90,Yaw=0,Roll=-90 converted by UE5.3's FRotator
   -- quaternion formula (UnrealMath.cpp530), avoiding opaque transform locals.
   local transform={Rotation={X=.5,Y=.5,Z=-.5,W=.5},Translation={X=0,Y=0,Z=height},Scale3D={X=1,Y=1,Z=1}}
   local api=loaded('/Script/Engine.Default__GameplayStatics','GameplayStatics /Script/Engine.Default__GameplayStatics')
   local actor=api:BeginDeferredActorSpawnFromClass(pc,class,transform,1,nil,0)
   assert(valid(actor),'radar_client_capture_begin_failed')
-  state={pc=pc,gs=gs,world=world,settings=settings,map_size=size,capture_width=captureWidth,capture=actor,capture_name=actor:GetFullName(),widgets={},created=true,manual_capture=false}
+  state={pc=pc,gs=gs,world=world,settings=settings,map_size=size,capture_width=size,capture=actor,capture_name=actor:GetFullName(),widgets={},created=true,manual_capture=false}
   local finished=api:FinishSpawningActor(actor,transform,0);assert(same(actor,finished),'radar_client_capture_finish_identity')
   local component=actor.SceneCaptureComponent2D
   assert(valid(component) and same(component:GetOwner(),actor),'radar_client_original_capture_component_required')
@@ -857,10 +832,10 @@ return function(env)
   assert(valid(target) and target:GetFullName()==targetName,'radar_client_original_material_target_required')
   assert(type(target.SizeX)=='number' and target.SizeX>0 and target.SizeX==target.SizeY,'radar_client_square_render_target_required')
   assert(component.ProjectionType==1,'radar_client_orthographic_projection_required')
-  component.OrthoWidth=captureWidth
-  component.MaxViewDistanceOverride=math.max(200000,math.sqrt(2*halfWidth*halfWidth+(height-origin.Z+extent.Z)^2)+1000)
+  component.OrthoWidth=size
+  component.MaxViewDistanceOverride=math.max(200000,math.sqrt(size*size/2+(height-bottom)^2)+1000)
   state.component=component;state.target=target
-  report('BASE_RADAR_CLIENT_CAPTURE_CREATED|mapSize='..size..'|width='..component.OrthoWidth..'|projectionSource='..projection.source_reference..'|height='..height..'|target='..target:GetFullName()..'|pixels='..target.SizeX..'x'..target.SizeY)
+  report('BASE_RADAR_CLIENT_CAPTURE_CREATED|mapSize='..size..'|width='..component.OrthoWidth..'|projectionSource=ValWorldSettings.MapSize|height='..height..'|mapMeshes='..meshes..'|target='..target:GetFullName()..'|pixels='..target.SizeX..'x'..target.SizeY)
  end
  local function bind_native_radars(widget,record)
   local canvas=widget.RadarSensors
@@ -894,9 +869,11 @@ return function(env)
  function service.tick(pc,gs)
   own_world(pc,gs)
   if not state then setup(pc,gs) end
+  if not state then return false end
+  if state.map_owned_capture then return true end
   assert(valid(state.capture) and state.capture:GetFullName()==state.capture_name and same(state.capture:GetWorld(),state.world),'radar_client_capture_identity_changed')
   assert(same(original_settings(pc),state.settings) and state.settings.MapSize==state.map_size,'radar_client_authored_map_contract_changed')
-  local count,bound=0,0
+  local count,projected,bound=0,0,0
   for _,widget in ipairs(FindAllOf('UI_Game_Map_C') or {}) do
    if valid(widget) and same(widget:GetWorld(),state.world) and same(widget:GetOwningPlayer(),pc) then
     count=count+1;local key=widget:GetAddress()
@@ -907,7 +884,7 @@ return function(env)
      assert(not valid(prior) or same(prior,state.capture),'radar_client_foreign_widget_capture')
      state.widgets[key]={widget=widget,name=widget:GetFullName(),prior=prior}
      widget.MinimapCapture=state.capture
-     initialize_radar_projection(widget,state.settings,state.capture_width)
+     widget:UpdateSublevel()
      assert(finite(widget.CachedMapScale) and math.abs(widget.CachedMapScale-1024/state.capture_width)<1e-8,
             'radar_client_native_widget_scale_mismatch')
      assert(finite(widget.MapScale) and math.abs(widget.MapScale-widget.CachedMapScale)<1e-8,
@@ -917,18 +894,19 @@ return function(env)
     end
     if state.widgets[key] then
      assert(same(widget.MinimapCapture,state.capture) and same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_widget_binding_changed')
+     projected=projected+1
+     if not state.manual_capture then
+      signature('/Script/Engine.SceneCaptureComponent2D:CaptureScene',{})
+      state.component:CaptureScene()
+      state.manual_capture=true
+      report('BASE_RADAR_CLIENT_CAPTURE_REQUESTED|source=bound_community_map')
+     end
      if bind_native_radars(widget,state.widgets[key]) then bound=bound+1 end
     end
    end
   end
   state.widgets_seen=count;state.widgets_bound=bound
-  if count>0 and bound==count and not state.manual_capture then
-   signature('/Script/Engine.SceneCaptureComponent2D:CaptureScene',{})
-   state.component:CaptureScene()
-   state.manual_capture=true
-   report('BASE_RADAR_CLIENT_CAPTURE_REQUESTED|source=bound_community_map')
-  end
-  return count>0 and bound==count
+  return projected>0
  end
  function service.owned() return state end
  function service.retire(reason)
@@ -950,34 +928,52 @@ local releaseRadarBlueprintContracts=(function()
 return {["UpdateTexture"]={["path"]="/Game/UI/Components/Game/UI_Game_Map.UI_Game_Map_C:UpdateTexture",["parameters"]=0,["fields"]={["CallFunc_GetLevelTexture_Texture"]="ObjectProperty",["CallFunc_IsValid_ReturnValue"]="BoolProperty",["CallFunc_IsValid_ReturnValue_1"]="BoolProperty"}},["UpdateSublevel"]={["path"]="/Game/UI/Components/Game/UI_Game_Map.UI_Game_Map_C:UpdateSublevel",["parameters"]=0,["fields"]={["CallFunc_GetWorldSettings_ReturnValue"]="ObjectProperty",["CallFunc_Divide_DoubleDouble_ReturnValue"]="DoubleProperty",["CallFunc_Multiply_DoubleDouble_ReturnValue"]="DoubleProperty",["CallFunc_GetGameState_ReturnValue"]="ObjectProperty",["CallFunc_SelectFloat_ReturnValue"]="DoubleProperty",["CallFunc_Multiply_VectorFloat_ReturnValue"]="StructProperty",["CallFunc_Conv_VectorToVector2D_ReturnValue"]="StructProperty",["CallFunc_Add_Vector2DVector2D_ReturnValue"]="StructProperty",["CallFunc_Divide_DoubleDouble_B_ImplicitCast"]="DoubleProperty",["K2Node_VariableSet_DefaultMaxZoom_ImplicitCast"]="DoubleProperty",["CallFunc_SelectFloat_B_ImplicitCast"]="DoubleProperty",["CallFunc_SelectFloat_A_ImplicitCast"]="DoubleProperty",["CallFunc_Multiply_VectorFloat_B_ImplicitCast"]="DoubleProperty"}},["BindRadarSensors"]={["path"]="/Game/UI/Components/Game/UI_Game_Map.UI_Game_Map_C:BindRadarSensors",["parameters"]=0,["fields"]={["Temp_int_Array_Index_Variable"]="IntProperty",["CallFunc_Create_ReturnValue"]="ObjectProperty",["Temp_int_Loop_Counter_Variable"]="IntProperty",["CallFunc_AddChildToCanvas_ReturnValue"]="ObjectProperty",["CallFunc_Add_IntInt_ReturnValue"]="IntProperty",["CallFunc_GetObjectClass_ReturnValue"]="ClassProperty",["CallFunc_Map_Find_Value"]="DoubleProperty",["CallFunc_Map_Find_ReturnValue"]="BoolProperty",["Temp_real_Variable"]="DoubleProperty",["CallFunc_Conv_DoubleToVector_ReturnValue"]="StructProperty",["Temp_bool_Variable"]="BoolProperty",["CallFunc_GetAllActorsOfClass_OutActors"]="ArrayProperty",["CallFunc_Array_Get_Item"]="ObjectProperty",["K2Node_Select_Default"]="DoubleProperty",["CallFunc_MakeVector2D_ReturnValue"]="StructProperty",["CallFunc_K2_GetActorLocation_ReturnValue"]="StructProperty",["CallFunc_IsValid_ReturnValue"]="BoolProperty",["CallFunc_Multiply_VectorVector_ReturnValue"]="StructProperty",["CallFunc_Conv_VectorToVector2D_ReturnValue"]="StructProperty",["CallFunc_Array_Length_ReturnValue"]="IntProperty",["CallFunc_Add_Vector2DVector2D_ReturnValue"]="StructProperty",["CallFunc_Less_IntInt_ReturnValue"]="BoolProperty",["CallFunc_Conv_DoubleToVector_InDouble_ImplicitCast"]="DoubleProperty"}}}
 
 end)()
-local releasePrimaryAssemblyFactory=(function()
--- Exact map assembly owner, from the canonical shared map descriptor.
+local releaseRadarBoundsFactory=(function()
+-- The cooked world supplies its own structures and terrain, including maps
+-- with multiple meshes. Bounds choose camera height and clipping only.
 return function(env)
  local valid,signature,scope=assert(env.valid),assert(env.signature),assert(env.scope)
- return function(context,descriptor)
-  scope();assert(valid(context) and type(descriptor)=='table' and type(descriptor.world)=='string' and type(descriptor.assembly_asset)=='string','primary_assembly_explicit_descriptor_required')
-  assert(context:GetFullName():find(descriptor.world,1,true),'primary_assembly_selected_world_required')
+ local function same(a,b) return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() end
+ local function finite(n) return type(n)=='number' and n==n and n>-math.huge and n<math.huge end
+ return function(context,descriptor,size)
+  scope();assert(valid(context) and context:GetFullName():find(descriptor.world,1,true),'radar_bounds_selected_world_required')
+  local group=assert(community_radar_group(descriptor),'radar_bounds_community_package_required')
+  local assetPrefix='StaticMesh /Game/Community/'..group..'/'
+  local levelPrefix='StaticMesh /Game/Maps/Community/'..group..'/'
+  signature('/Script/Engine.Actor:GetActorBounds',{{'bOnlyCollidingComponents','BoolProperty',0},{'Origin','StructProperty',8},{'BoxExtent','StructProperty',32},{'bIncludeFromChildActors','BoolProperty',56}})
   signature('/Script/Engine.PrimitiveComponent:GetCollisionEnabled',{{'ReturnValue','ByteProperty',0}})
   signature('/Script/Engine.PrimitiveComponent:GetCollisionObjectType',{{'ReturnValue','ByteProperty',0}})
-  local world=context:GetWorld();local selected,component=nil,nil
+  local world=context:GetWorld();local half=size/2
+  local owned={bottom=math.huge,top=-math.huge,count=0}
+  local shared={bottom=math.huge,top=-math.huge,count=0}
   for _,actor in ipairs(FindAllOf('StaticMeshActor') or {}) do
-   if valid(actor) and actor:GetWorld():GetAddress()==world:GetAddress() then
+   if valid(actor) and same(actor:GetWorld(),world) and not actor.bHidden then
     local c=actor.StaticMeshComponent;local mesh=valid(c) and c.StaticMesh or nil
-    if valid(mesh) and mesh:GetFullName()=='StaticMesh '..descriptor.assembly_asset then
-     assert(not selected,'primary_assembly_duplicate_exact_asset')
-     assert(c:GetOwner():GetAddress()==actor:GetAddress() and c:GetWorld():GetAddress()==world:GetAddress() and c:GetCollisionEnabled()~=0 and c:GetCollisionObjectType()==0,'primary_assembly_native_static_collision_required')
-     selected,component=actor,c
+    if valid(mesh) and same(c:GetOwner(),actor) and same(c:GetWorld(),world)
+     and not c.bHiddenInGame and c:GetCollisionEnabled()~=0 and c:GetCollisionObjectType()==0 then
+     local origin,extent={},{};actor:GetActorBounds(true,origin,extent,false)
+     if finite(origin.X) and finite(extent.X) and extent.X>=0 and math.abs(origin.X)<=half+extent.X
+      and finite(origin.Y) and finite(extent.Y) and extent.Y>=0 and math.abs(origin.Y)<=half+extent.Y
+      and finite(origin.Z) and finite(extent.Z) and extent.Z>=0 then
+      local name=mesh:GetFullName()
+      local bounds=(name:sub(1,#assetPrefix)==assetPrefix or name:sub(1,#levelPrefix)==levelPrefix) and owned or shared
+      bounds.bottom=math.min(bounds.bottom,origin.Z-extent.Z)
+      bounds.top=math.max(bounds.top,origin.Z+extent.Z)
+      bounds.count=bounds.count+1
+     end
     end
    end
   end
-  assert(selected,'primary_assembly_exact_asset_not_found');return selected,component
+  local bounds=owned.count>0 and owned or shared
+  if bounds.count==0 then return 0,0,0 end
+  return bounds.bottom,bounds.top,bounds.count
  end
 end
 
 end)()
 local releaseNativeWorldSettingsFactory=(function()
 -- The original UILibrary selects UWorld's actual native settings object.
--- One production owner for host and client descriptor/readback checks.
+-- The client reads the capture width from the loaded level.
 return function(env)
  local valid,signature,scope,report=assert(env.valid),assert(env.signature),assert(env.scope),assert(env.report)
  local library=nil;local emitted={}
@@ -987,17 +983,17 @@ return function(env)
   if not valid(library) then library=StaticFindObject('/Script/ValhallaUI.Default__UILibrary') end
   assert(valid(library) and library:GetFullName()=='UILibrary /Script/ValhallaUI.Default__UILibrary','native_settings_original_library_required')
   local settings=library:GetWorldSettings(context);local world=context:GetWorld()
-  assert(valid(settings) and valid(world) and settings:GetWorld():GetAddress()==world:GetAddress(),'native_settings_actual_same_world_owner_required')
-  assert(descriptor.native_world_settings_class=='/Script/Valhalla.ValWorldSettings' and settings:GetClass():GetFullName()=='Class '..descriptor.native_world_settings_class,'native_settings_original_class_differs_from_descriptor')
+  local settingsClass='/Script/Valhalla.ValWorldSettings'
+  if not valid(settings) or settings:GetClass():GetFullName()~='Class '..settingsClass then return nil end
+  assert(valid(world) and valid(settings:GetWorld()) and settings:GetWorld():GetAddress()==world:GetAddress(),'native_settings_actual_same_world_owner_required')
   local size=settings.MapSize
-  assert(type(size)=='number' and size==size and size>0 and size<math.huge and (descriptor.native==true or size==descriptor.map_size_cm),'native_settings_map_size_differs_from_descriptor')
+  if not (type(size)=='number' and size>0 and size<math.huge) then return nil end
   local read,name=pcall(function() return settings.MapName:ToString() end)
-  if descriptor.native and (not read or type(name)~='string' or not name:match('%S'))then name=descriptor.name;read=true end
-  if read then assert(type(name)=='string' and name:match('%S'),'native_settings_authored_map_name_empty') else name='unknown_native_text_readback' end
+  if not read or type(name)~='string' or not name:match('%S') then name=descriptor.name end
   local key=world:GetAddress()..'|'..settings:GetAddress()..'|'..settings:GetFullName()
   if not emitted[key] then
    emitted[key]=true
-   report('BASE_WORLD_SETTINGS_NATIVE|map='..descriptor.name..'|size='..size..'|class='..descriptor.native_world_settings_class..'|mapName='..name:gsub('[\r\n|]',' '))
+   report('BASE_WORLD_SETTINGS_NATIVE|map='..descriptor.name..'|size='..size..'|class='..settingsClass..'|mapName='..name:gsub('[\r\n|]',' '))
   end
   return settings
  end
@@ -1006,43 +1002,39 @@ end
 end)()
 local releaseRadarRuntimeFactory=(function()
 -- Normal network clients only. Actual remote world owns map selection.
-local function radar_descriptor(selected)
- if not selected.native then return selected end
- if selected.name~='KatabaticT22026' or selected.package~='/Game/Maps/Community/KatabaticT2/Arena_KatabaticT2_2026_P' then return nil end
- -- This catalog map uses authored world settings and has its own structures mesh.
- local descriptor={}
- for key,value in pairs(selected) do descriptor[key]=value end
- descriptor.assembly_asset='/Game/Community/KatabaticT2/Edition2026/SM_Structures2026.SM_Structures2026'
- return descriptor
-end
 return function(env)
  local valid,report,scope=assert(env.valid),assert(env.report),assert(env.scope)
  local descriptors=assert(env.map_descriptors);local service=nil;local identity=nil;local retired={}
- local selectAssembly=assert(env.primary_assembly_factory)(env)
+ local captureBounds=assert(env.capture_bounds_factory)(env)
  local guard=assert(env.guard_factory)(env)
  local nativeSettings=assert(env.world_settings_guard_factory)(env)
  local runtime={}
  function runtime.tick(pc,gs)
   scope();guard(pc,gs)
   assert(not pc:HasAuthority() and not gs:HasAuthority(),'radar_runtime_network_client_required')
-  local selected;local count=0
-  for _,descriptor in pairs(descriptors) do
-   if gs:GetFullName():find(descriptor.world,1,true) then selected=descriptor;count=count+1 end
-  end
-  assert(count==1,'radar_runtime_exactly_one_actual_remote_map_required')
-  selected=radar_descriptor(selected)
-  if not selected then return true end
-  assert(selected.native_world_settings_class=='/Script/Valhalla.ValWorldSettings','radar_runtime_original_authored_settings_contract_required')
-  local world=pc:GetWorld();local key=gs:GetFullName()..'|'..gs:GetAddress()..'|'..world:GetAddress()
+  local world=pc:GetWorld();local name=gs:GetFullName();local key=name..'|'..gs:GetAddress()..'|'..world:GetAddress()
   if identity~=key then
    if service then service.retire('remote_world_changed');retired[#retired+1]=service end
+   service=nil;identity=key
+   local selected
+   for _,descriptor in pairs(descriptors) do
+    if community_radar_group(descriptor) and name:find(descriptor.world,1,true) then
+     assert(not selected,'radar_runtime_ambiguous_actual_remote_map')
+     selected=descriptor
+    end
+   end
+   if not selected then return true end
    local e={};for k,v in pairs(env) do e[k]=v end
    e.world_prefix=selected.world;e.client_context_guard=guard;e.descriptor=selected;e.world_settings_guard=nativeSettings
-   e.projection={orthographic_width_per_map_size=1,source_reference='Original UI_Game_Map MapScale1024/MapSize and authored native ValWorldSettings; shared release source provenance'}
-   e.find_assembly=function(context,state) return selectAssembly(state,selected) end
-   service=assert(env.helper_factory)(e);identity=key
+   e.capture_bounds=captureBounds
+   service=assert(env.helper_factory)(e)
   end
-  return service.tick(pc,gs)
+  if not service then return true end
+  local ok,result=pcall(service.tick,pc,gs)
+  if ok then return result end
+  report('BASE_RADAR_CLIENT_ERROR|'..tostring(result):sub(1,500))
+  service.retire('capture_failed');retired[#retired+1]=service;service=nil
+  return false
  end
  function runtime.owned() return {current=service,identity=identity,retired=retired} end
  return runtime
@@ -1051,7 +1043,7 @@ end
 end)()
 local releaseRadarRuntime=releaseRadarRuntimeFactory({valid=valid,report=report,scope=scope,signature=signature,
  map_descriptors=mapDefinitions,guard_factory=releaseRadarGuardFactory,helper_factory=releaseRadarHelperFactory,
- primary_assembly_factory=releasePrimaryAssemblyFactory,world_settings_guard_factory=releaseNativeWorldSettingsFactory,blueprint_contracts=releaseRadarBlueprintContracts})
+ capture_bounds_factory=releaseRadarBoundsFactory,world_settings_guard_factory=releaseNativeWorldSettingsFactory,blueprint_contracts=releaseRadarBlueprintContracts})
 
 local postMatchEscapeBound=false
 local observe_post_match_result

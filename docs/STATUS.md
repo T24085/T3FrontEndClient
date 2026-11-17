@@ -1,3 +1,17 @@
+# Community minimap capture
+
+Starter matches the loaded level against the community package path. The
+capture uses the loaded `ValWorldSettings.MapSize` for its orthographic width
+and calls the original widget to use that same scale for markers and zoom.
+Same-world cooked meshes from the map's asset group set camera height and
+clipping. Maps that already provide a capture use it normally.
+
+The background is captured as soon as the HUD texture is bound. Radar icons
+can attach later when both native sensors are available. Regression tests
+exercise generated catalog rows for Kata, Minotaur, Beggar's Run and Quagmire,
+plus retail and authored-capture controls. This is a local client candidate.
+Rendered minimap verification is pending.
+
 # Client staging cleanup
 
 Starter retires the private `game` folder when a session's owned Job reports zero
