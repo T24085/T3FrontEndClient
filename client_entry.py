@@ -105,16 +105,26 @@ local function apply_weather(id,path)
             string={format=string.format}}
  local adapter=assert(loadfile(path,'t',env))()
  if type(adapter)~='table' then return end
- local authored=adapter.descriptor
+ local authored,layout=adapter.descriptor
  if type(authored)=='function' then
   authored=authored({name=id,package=row.package,world=row.world})
   assert(type(authored)=='table' and authored.name==id and authored.package==row.package
          and authored.world==row.world,'weather_catalog_map_identity')
- elseif adapter.format==1 and (adapter.weather~=nil or adapter.emergency_lighting~=nil) then
+  layout=authored.base_layout
+ elseif adapter.format==1 and (adapter.weather~=nil or adapter.emergency_lighting~=nil or adapter.hide_minimap~=nil
+     or (type(adapter.layout)=='table' and adapter.layout.radars_per_team~=nil)) then
   assert(adapter.map_id==id and adapter.package==row.package and adapter.world==row.world,
          'weather_catalog_map_identity')
   authored=adapter
+  layout=authored.layout
  else return end
+ local radars
+ if type(layout)=='table' then radars=layout.radars_per_team end
+ assert(radars==nil or radars==0 or radars==1,'radar_catalog_count_required')
+ local hide=authored.hide_minimap
+ assert(hide==nil or hide==false or (hide==true and radars==0),'radar_catalog_hide_requires_no_radars')
+ row.radars_per_team=radars
+ row.hide_minimap=hide
  if authored.weather~=nil then
   assert(authored.weather==false or type(authored.weather)=='table','weather_catalog_config_required')
   row.weather=authored.weather or nil
@@ -127,7 +137,7 @@ local function apply_weather(id,path)
 end
 local function load_weather(id,path)
  local ok,err=pcall(apply_weather,id,path)
- if not ok then print('Map objectives could not configure weather for '..id..': '..tostring(err)) end
+ if not ok then print('Map objectives could not configure client options for '..id..': '..tostring(err)) end
 end
 """
 

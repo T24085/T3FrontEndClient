@@ -82,6 +82,9 @@ function StaticFindObject(path)
     end
 end
 local widget=object('UI_Game_Map');widget.world=world
+widget.visibility=0
+function widget:GetVisibility() return self.visibility end
+function widget:SetVisibility(value) self.visibility=value end
 widget.Material=object('Map material')
 widget.MapTexture={Brush={ResourceObject=widget.Material}}
 widget.CachedZoom,widget.TargetZoom=1,1
@@ -89,8 +92,14 @@ widget.RadarSensors={children=0,GetChildrenCount=function(self) return self.chil
 function widget:GetOwningPlayer() return pc end
 function widget:UpdateSublevel() self.CachedMapScale=1024/settings.MapSize;self.MapScale=self.CachedMapScale end
 function widget:BindRadarSensors() self.RadarSensors.children=2 end
+local foreignWidget=object('Foreign map widget');foreignWidget.world=foreign
+foreignWidget.GetOwningPlayer=widget.GetOwningPlayer
+function foreignWidget:SetVisibility() error('foreign minimap changed') end
+local otherPlayerWidget=object('Other player map widget');otherPlayerWidget.world=world
+function otherPlayerWidget:GetOwningPlayer() return otherPlayerWidget end
+otherPlayerWidget.SetVisibility=foreignWidget.SetVisibility
 function FindAllOf(klass)
-    return ({BP_MinimapCapture_C=f.captures,StaticMeshActor=f.meshes,UI_Game_Map_C={widget},
+    return ({BP_MinimapCapture_C=f.captures,StaticMeshActor=f.meshes,UI_Game_Map_C={widget,foreignWidget,otherPlayerWidget},
         BP_Objective_RadarSensor_C=f.radars})[klass]
 end
 function f.add_mesh(asset,x,z,half_z,elsewhere,hidden,collision)
@@ -132,7 +141,7 @@ return f
 
 
 class RadarProjectionTest(unittest.TestCase):
-    def fixture(self, map_id, group, level, size, *, retail=False):
+    def fixture(self, map_id, group, level, size, *, retail=False, radar_count=None, hide=False):
         lua = LuaRuntime()
         if retail:
             package = f'/Game/Maps/Active/{group}/{level}'
@@ -146,6 +155,8 @@ class RadarProjectionTest(unittest.TestCase):
                 row = lua.execute(path.read_text(encoding='utf-8'))[map_id]
             self.assertTrue(row.native)
             self.assertIsNone(row.assembly_asset)
+        row.radars_per_team = radar_count
+        row.hide_minimap = hide
         lua.globals().descriptor = row
         lua.globals().authored = size
         start = SOURCE.index('local function community_radar_group(')
@@ -178,6 +189,23 @@ class RadarProjectionTest(unittest.TestCase):
         self.assertTrue(f.tick())
         self.assertEqual(f.widget.RadarSensors.children, 2)
         self.assertEqual((f.requests, f.spawns), (1, 1))
+
+    def test_no_radar_map_keeps_the_minimap_by_default(self):
+        f = self.fixture(*MAPS[-1], radar_count=0)
+        f.add_radars()
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.visibility, 0)
+        self.assertEqual(f.widget.RadarSensors.children, 0)
+        self.assertEqual((f.requests, f.spawns), (1, 1))
+
+    def test_only_local_minimap_is_collapsed_when_requested(self):
+        f = self.fixture(*MAPS[-1], radar_count=0, hide=True)
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.visibility, 1)
+        self.assertEqual((f.requests, f.spawns), (0, 0))
+        f.widget.visibility = 0  # Native UI can reset the widget after initial setup.
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.visibility, 1)
 
     def test_retail_and_map_owned_capture_keep_native_behavior(self):
         retail = self.fixture('Katabatic', 'Katabatic', 'Arena_Katabatic_P', 172000, retail=True)

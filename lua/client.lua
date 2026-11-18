@@ -868,6 +868,23 @@ return function(env)
  local service={}
  function service.tick(pc,gs)
   own_world(pc,gs)
+  if env.descriptor.hide_minimap==true then
+   if not state then
+    signature('/Script/UMG.Widget:GetOwningPlayer',{{'ReturnValue','ObjectProperty',0}})
+    state={pc=pc,gs=gs,world=pc:GetWorld()}
+   end
+   local hidden=false
+   for _,widget in ipairs(FindAllOf('UI_Game_Map_C') or {}) do
+    if valid(widget) and same(widget:GetWorld(),state.world) and same(widget:GetOwningPlayer(),pc) then
+     if widget:GetVisibility()~=1 then widget:SetVisibility(1) end -- ESlateVisibility::Collapsed
+     hidden=true
+    end
+   end
+   if hidden and not state.reported then
+    state.reported=true;report('BASE_RADAR_CLIENT_MINIMAP_HIDDEN|map='..env.descriptor.name)
+   end
+   return hidden
+  end
   if not state then setup(pc,gs) end
   if not state then return false end
   if state.map_owned_capture then return true end
@@ -901,7 +918,7 @@ return function(env)
       state.manual_capture=true
       report('BASE_RADAR_CLIENT_CAPTURE_REQUESTED|source=bound_community_map')
      end
-     if bind_native_radars(widget,state.widgets[key]) then bound=bound+1 end
+     if env.descriptor.radars_per_team~=0 and bind_native_radars(widget,state.widgets[key]) then bound=bound+1 end
     end
    end
   end

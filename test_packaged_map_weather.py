@@ -63,6 +63,28 @@ class PackagedMapWeatherTest(unittest.TestCase):
                 self.assertIsNone(kata.objectives)
                 self.assertEqual(maps[BLIZZARD.id].weather.kind, 'snow')
 
+    def test_minimap_option_uses_the_same_verified_descriptors(self):
+        for public in (False, True):
+            with self.subTest(public=public):
+                self.run = self.root / str(public)
+                self.run.mkdir()
+                if public:
+                    source = f'''return {{format=1,map_id={KATA.id!r},package={KATA.package!r},
+                      world={(KATA.package + '.' + KATA.level + ':')!r},
+                      layout={{radars_per_team=0}},hide_minimap=true}}'''
+                else:
+                    source = '''return {descriptor=function(row)
+                      row.base_layout={radars_per_team=0};row.hide_minimap=true;return row end}'''
+                maps = self.catalog([self.add_adapter(source)], public=public)
+                self.assertEqual(maps[KATA.id].radars_per_team, 0)
+                self.assertTrue(maps[KATA.id].hide_minimap)
+                self.assertIsNone(maps[BLIZZARD.id].hide_minimap)
+
+    def test_hiding_is_ignored_when_descriptor_does_not_omit_radars(self):
+        source = '''return {descriptor=function(row)
+          row.base_layout={radars_per_team=1};row.hide_minimap=true;return row end}'''
+        self.assertIsNone(self.catalog([self.add_adapter(source)])[KATA.id].hide_minimap)
+
     def test_uninventoried_adapter_is_ignored_and_changed_bytes_are_rejected(self):
         row = self.add_adapter(DESCRIPTOR)
         self.assertIsNone(self.catalog([])[KATA.id].weather)
