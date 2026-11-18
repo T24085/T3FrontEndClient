@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from community_game import CommunityGame
 from community_transport import CommunityError
 
@@ -32,7 +33,7 @@ class CommunityPreparationTest(unittest.TestCase):
   self.calls.append(argv)
   if '--prepare-only'in argv:
    self.entered.set();self.gate.wait(5)
-   run=self.game.workspace/'client-123456abcdef';run.mkdir();path=run/'prepared.json';path.write_text('{}')
+   run=self.game.workspace/f'client-{len(self.calls):012x}';run.mkdir();path=run/'prepared.json';path.write_text('{}')
    descriptor={'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
    artifacts.mkdir(parents=True);(artifacts/'stdout.log').write_text('CLIENT_PREPARED|'+json.dumps(descriptor)+'\n')
    return {'status':'terminal','exit_code':0,'job_active_processes_after_cleanup':0}
@@ -56,6 +57,16 @@ class CommunityPreparationTest(unittest.TestCase):
   self.assertEqual(self.game.preparation_status,'stopped')
   self.assertTrue((self.game.preparation_artifacts/'stop.json').is_file())
   self.assertEqual(len(self.calls),1);self.assertIsNone(self.game.thread)
+ def test_join_replaces_prewarmed_files_when_match_requires_downloaded_revision(self):
+  revision='b'*64
+  self.game.map_sync=SimpleNamespace(current=(None,{}),status='',revision_for=lambda *_:revision)
+  self.game.owner.run_owned_job=self.ready_owner
+  self.game.prepare();self.assertTrue(self.entered.wait(2));self.gate.set();self.game.preparation_thread.join(3)
+  self.game.start();self.game.wait(3)
+  self.assertEqual(len(self.calls),3)
+  self.assertNotIn('--map-revision',self.calls[0])
+  self.assertEqual(self.calls[1][self.calls[1].index('--map-revision')+1],revision)
+  self.assertIn('client-000000000002',self.calls[2][self.calls[2].index('--prepared')+1])
  def test_unconfirmed_preparer_cleanup_retains_quarantine_and_blocks_retries(self):
   self.game.owner.run_owned_job=lambda *a,**k:{'status':'terminal','exit_code':0,'job_active_processes_after_cleanup':1}
   self.game.prepare();self.game.preparation_thread.join(3)

@@ -15,9 +15,10 @@ from startup_progress import PHASES, observed_phase, observed_failure, runtime_p
 
 
 class CommunityGame:
-    def __init__(self, lobby, package, game_source, workspace, artifacts, *, catalog_loader=verified_catalog):
+    def __init__(self, lobby, package, game_source, workspace, artifacts, *, catalog_loader=verified_catalog, map_sync=None):
         self.lobby = lobby
         self.catalog_loader = catalog_loader
+        self.map_sync = map_sync
         self.package = Path(package).resolve(strict=True)
         self.game_source = Path(game_source).resolve(strict=True)
         self.workspace = Path(workspace).resolve()
@@ -36,6 +37,7 @@ class CommunityGame:
         self.current_artifacts = None
         self.thread = None
         self.stop_requested = False
+        self.scoreboard_return = False
         self.failure_reason = None
         self.cancellation_written = False
         self.startup_phase = None
@@ -46,7 +48,9 @@ class CommunityGame:
         self.preparation_thread = None
         self.preparation_descriptor = None
         self.preparation_stop_requested = False
+        self.preparation_revision = None
         self.role = 'player'
+        self.public_round = None
         self.watch_id = None
         self.match_id = None
         self.watch_releasing = False
@@ -88,7 +92,7 @@ class CommunityGame:
         path=self.package/'package-manifest.json'
         return json.loads(path.read_text(encoding='utf-8')).get('startup_contract') if path.is_file() else None
 
-    def prepare(self, *, for_start=False):
+    def prepare(self, *, for_start=False, revision=None):
         """Prepare files only; no match endpoint, profile or native game yet."""
         if self._startup_contract() != 'prepared-client-v1': return False
         with self.lock:
@@ -98,14 +102,19 @@ class CommunityGame:
                 return False
             if self.preparation_status in ('preparing','ready'): return True
             if self.preparation_thread and self.preparation_thread.is_alive(): return False
+            if self.map_sync is not None and not for_start:
+                revision = self.map_sync.current[0]
             artifacts=self.artifacts/('prepare-'+uuid.uuid4().hex)
             artifacts.mkdir(exist_ok=False)
             self.preparation_artifacts=artifacts
             self.preparation_status,self.preparation_error='preparing',None
             self.preparation_descriptor=None
             self.preparation_stop_requested=False
+            self.preparation_revision=revision
             argv=[str(self.package/'python/python.exe'),'-B','-u',str(self.package/'client.py'),
                   '--prepare-only','--game-dir',str(self.game_source),'--workspace',str(self.workspace)]
+            if revision is not None:
+                argv += ['--map-revision', revision]
             self.preparation_thread=threading.Thread(target=self._prepare,args=(argv,artifacts),name='client-preparation',daemon=True)
             self.preparation_thread.start()
             return True
@@ -138,8 +147,21 @@ class CommunityGame:
         except Exception as exc:
             with self.lock:self.preparation_status=failure_status;self.preparation_error=str(exc)
 
-    def _prepared_for_join(self):
-        if not self.prepare(for_start=True): raise CommunityError(self.preparation_error or 'Client preparation is unavailable.')
+    def _prepared_for_join(self, revision=None):
+        with self.lock:
+            stale = self.preparation_revision != revision
+            previous = self.preparation_thread if stale else None
+            if stale:
+                self._cancel_preparation()
+        if previous:
+            previous.join()
+        with self.lock:
+            if self.stop_requested:
+                return None
+            if stale and self.preparation_status != 'quarantined':
+                self.preparation_status = 'idle'
+            if not self.prepare(for_start=True, revision=revision):
+                raise CommunityError(self.preparation_error or 'Client preparation is unavailable.')
         with self.lock:thread=self.preparation_thread
         if thread:thread.join()
         with self.lock:
@@ -150,27 +172,43 @@ class CommunityGame:
             self.preparation_descriptor=None;self.preparation_status='spent'
             return result
 
-    def start(self):
-        return self._start()
+    def start(self, *, expected_map=None, expected_match_id=None):
+        return self._start(expected_map=expected_map, expected_match_id=expected_match_id)
 
-    def _start(self, *, watch_id=None):
+    def _start(self, *, watch_id=None, expected_map=None, expected_match_id=None, public_name=None,
+               public_cancel=None):
         self._release_watch()
         # Desktop calls this on a worker. Reserve the session briefly, then keep
         # expensive verification outside the snapshot lock used by the Tk loop.
         with self.lock:
+            if public_cancel is not None and public_cancel.is_set():
+                return 'stopped'
             if self.status not in ('idle', 'stopped', 'finished', 'failed') or self.watch_id is not None:
                 raise CommunityError('A game session is already active.')
-            self.role = 'spectator' if watch_id is not None else 'player'
+            self.role = 'spectator' if watch_id is not None else 'public' if public_name is not None else 'player'
+            self.public_round = None
             self.watch_id, self.match_id = watch_id, None
             self.status, self.error, self.run = 'starting', None, None
             self.current_artifacts, self.thread = None, None
             self.stop_requested = False
+            self.scoreboard_return = False
             self.failure_reason, self.cancellation_written = None, False
             self.startup_phase = 'checking_match'
             self.startup_failure = None
         try:
-            target_loader = (lambda: self.lobby.spectator_target(watch_id)) if watch_id is not None else self.lobby.match_target
-            target = target_loader()
+            begin_attempt = getattr(self.lobby, 'begin_game_attempt', None)
+            if begin_attempt is not None:
+                begin_attempt()
+            if public_name is not None:
+                target_loader = self.lobby.public_target
+                target = self.lobby.public_map()
+            else:
+                target_loader = (lambda: self.lobby.spectator_target(watch_id)) if watch_id is not None else self.lobby.match_target
+                target = target_loader()
+            if expected_match_id is not None and target.get('matchId') != expected_match_id:
+                raise CommunityError('The match changed. Refresh the lobby before joining.')
+            if expected_map is not None and target.get('map') != expected_map:
+                raise CommunityError('The selected map changed. Refresh the lobby before joining.')
             if watch_id is not None:
                 if (target.get('role') != 'spectator' or target.get('watchId') != watch_id
                         or not re.fullmatch('[0-9a-f]{32}', target.get('matchId', ''))):
@@ -191,13 +229,31 @@ class CommunityGame:
                     raise CommunityError('Your map files do not match this match. Update the community client.')
             prepared=None
             if startup_contract=='prepared-client-v1':
+                revision = None
+                if self.map_sync is not None:
+                    with self.lock:self.startup_phase='checking_maps'
+                    revision = self.map_sync.revision_for(target['map'], target['contentHash'])
                 with self.lock:self.startup_phase='preparing_client'
-                prepared=self._prepared_for_join()
+                prepared=self._prepared_for_join(revision)
                 if prepared is None:
                     with self.lock:self.status='stopped'
                     self._release_watch()
                     return self.status
-            if target_loader() != target:
+            if public_name is not None:
+                # Preparing a cold install can outlast a seat reservation or
+                # a round. Stage the catalog before removing a live bot.
+                with self.lock:
+                    if self.stop_requested:
+                        self.status = 'stopped'
+                        return self.status
+                    self.startup_phase = 'checking_match'
+                self.lobby.public_map()
+                self.lobby.public_join(public_name)
+                target = target_loader()
+                self.public_round = target.get('publicRound')
+                if startup_contract is None and catalog.get(target['map']) != target['contentHash']:
+                    raise CommunityError('Your map files do not match this match. Update the community client.')
+            elif target_loader() != target:
                 raise CommunityError('The match changed while verifying your map. Please try again.')
             endpoint = target['endpoint']
             ident = uuid.uuid4().hex
@@ -205,6 +261,10 @@ class CommunityGame:
                     '--endpoint', endpoint, '--game-dir', str(self.game_source), '--workspace', str(self.workspace)]
             if startup_contract in ('verified-child-map-v1','prepared-client-v1') or watch_id is not None:
                 argv += ['--expected-map', target['map'], '--expected-content-hash', target['contentHash']]
+            if target.get('flagIndicators') is True:
+                argv.append('--show-flag-indicators')
+            if public_name is not None:
+                argv.append('--public-session')
             if watch_id is not None:
                 argv += ['--spectate', '--match-id', target['matchId'], '--watch-id=' + watch_id]
             if prepared is not None:
@@ -262,6 +322,8 @@ class CommunityGame:
                     self.status, self.error = 'quarantined', 'Client process cleanup could not be confirmed.'
                 elif self.failure_reason is not None:
                     self.status, self.error = 'failed', self.failure_reason
+                elif self.scoreboard_return:
+                    self.status = 'finished'
                 elif self.stop_requested and result['status'] == 'cancelled_by_owner_request':
                     self.status = 'stopped'
                 else:
@@ -292,10 +354,22 @@ class CommunityGame:
                     if event_file.stat().st_size > 1048576:
                         raise CommunityError('Client evidence exceeded its bound.')
                     lines = event_file.read_text(errors='replace').splitlines()
-                    phase = runtime_phase(lines, role=self.role, match_id=self.match_id, watch_id=self.watch_id)
+                    phase = runtime_phase(lines, role='player' if self.role == 'public' else self.role,
+                                          match_id=self.match_id, watch_id=self.watch_id)
                     if phase is not None: self.startup_phase = phase
                     if runtime_failure(lines):
                         self.failure_reason = self.error = 'The game client runtime reported an error.'
+                        self.status = 'stopping'
+                    elif self.role == 'player' and 'POST_MATCH_RETURN_READY' in lines:
+                        self.scoreboard_return = self.stop_requested = True
+                        self.status = 'stopping'
+                    elif (self.status == 'playing' and self.role == 'player'
+                          and getattr(self.lobby, 'reconnect_requires_new_game', False)
+                          and 'POST_MATCH_SCOREBOARD_VISIBLE' not in lines
+                          and next((line for line in reversed(lines) if line in
+                                    ('REMOTE_PAWN_READY|role=client', 'RECONNECTING_TO_FIXED_SERVER')), None)
+                          == 'RECONNECTING_TO_FIXED_SERVER'):
+                        self.failure_reason = self.error = 'Disconnected from the match. Use Join game to reconnect.'
                         self.status = 'stopping'
                     elif self.status == 'starting' and phase == 'playing':
                         self.status = 'playing'
@@ -304,10 +378,18 @@ class CommunityGame:
                     raise CommunityError('Game client status evidence is unavailable.')
             if self.status == 'stopping' and self.current_artifacts is not None and not self.cancellation_written:
                 self._request_cancel()
+            preparation=self.preparation_snapshot()
+            progress=PHASES.get(self.startup_phase) if self.status=='starting' else None
+            if self.status == 'finished' and self.scoreboard_return:
+                progress = 'Match ended. Back in the lobby.'
+            if self.status=='starting' and self.startup_phase=='preparing_client' and preparation['status']=='preparing':
+                progress=preparation['progress']
+            if self.status=='starting' and self.startup_phase=='checking_maps':
+                progress=self.map_sync.status or 'Checking map files…'
             return {'status':self.status, 'error':self.error, 'run':str(self.run) if self.run else None,
                     'role':self.role, 'watchId':self.watch_id,
-                    'progress':PHASES.get(self.startup_phase) if self.status == 'starting' else None,
-                    'preparation':self.preparation_snapshot()}
+                    'progress':progress,
+                    'preparation':preparation}
 
     def preparation_snapshot(self):
         with self.lock:
@@ -316,23 +398,34 @@ class CommunityGame:
                 log=self.preparation_artifacts/'owner/stdout.log'
                 if log.is_file():
                     if log.stat().st_size>1048576:raise CommunityError('Preparation output exceeded its bound.')
-                    progress=PHASES.get(observed_phase(log.read_text(errors='replace').splitlines()))
+                    lines=log.read_text(errors='replace').splitlines()
+                    progress=PHASES.get(observed_phase(lines))
+                    for line in reversed(lines):
+                        match=re.fullmatch(r'CLIENT_PREPARATION_PROGRESS\|([0-9]{1,5})/([0-9]{1,5})',line)
+                        if match:
+                            done,total=map(int,match.groups())
+                            if 0<=done<=total<=10000 and total>0:
+                                progress=f'Preparing game files: {done:,} / {total:,} files…'
+                                break
             return {'status':self.preparation_status,'error':self.preparation_error,
                     'progress':progress or ('Game files ready.' if self.preparation_status=='ready' else 'Preparing game files in the background…')}
 
     def stop(self):
         with self.lock:
-            self.preparation_stop_requested=True
-            if self.preparation_status=='preparing' and self.preparation_artifacts:
-                path=self.preparation_artifacts/'stop.json'
-                temporary=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
-                temporary.write_text(json.dumps({'cancel':True,'reason':'Player closed the client preparation.'}))
-                os.replace(temporary,path)
+            self._cancel_preparation()
             if self.status not in ('starting', 'playing', 'stopping'):
                 return
             self.stop_requested = True
             self.status = 'stopping'
             if self.current_artifacts is not None and not self.cancellation_written: self._request_cancel()
+
+    def _cancel_preparation(self):
+        self.preparation_stop_requested=True
+        if self.preparation_status=='preparing' and self.preparation_artifacts:
+            path=self.preparation_artifacts/'stop.json'
+            temporary=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
+            temporary.write_text(json.dumps({'cancel':True,'reason':'Client preparation cancelled.'}))
+            os.replace(temporary,path)
 
     def _request_cancel(self):
         path = self.current_artifacts / 'stop.json'

@@ -35,6 +35,17 @@ class CommunityGameTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_file_progress_reaches_join_status_and_invalid_counts_are_ignored(self):
+        artifacts=self.game.artifacts/'prepare';(artifacts/'owner').mkdir(parents=True)
+        log=artifacts/'owner/stdout.log'
+        log.write_text('CLIENT_STARTUP|phase=staging_game\nCLIENT_PREPARATION_PROGRESS|128/512\nCLIENT_PREPARATION_PROGRESS|999/512\n')
+        self.game.preparation_artifacts=artifacts;self.game.preparation_status='preparing'
+        self.game.status='starting';self.game.startup_phase='preparing_client'
+        state=self.game.snapshot();self.assertEqual(state['progress'],'Preparing game files: 128 / 512 files…')
+        self.assertEqual(state['preparation']['progress'],state['progress'])
+        log.write_text('CLIENT_STARTUP|phase=staging_game\nCLIENT_PREPARATION_PROGRESS|1/0\n')
+        self.assertEqual(self.game.snapshot()['progress'],'Preparing your isolated game session…')
+
     def test_only_fresh_lobby_endpoint_and_owned_stop(self):
         event = threading.Event()
         captured = {}
@@ -53,11 +64,54 @@ class CommunityGameTest(unittest.TestCase):
         self.assertIn('100.80.168.96:18818', captured['argv'])
         self.assertNotIn('-server', captured['argv'])
 
+    def test_direct_reconnect_retires_only_the_disconnected_game(self):
+        self.lobby.reconnect_requires_new_game = True
+        game = self.game
+        game.status = 'playing'
+        game.current_artifacts = game.artifacts / 'attempt'
+        game.current_artifacts.mkdir()
+        game.run = game.workspace / 'client-attempt'
+        game.run.mkdir()
+        events = game.run / 'events.txt'
+        events.write_text('REMOTE_PAWN_READY|role=client\nRECONNECTING_TO_FIXED_SERVER\n'
+                          'REMOTE_PAWN_READY|role=client\n')
+        self.assertEqual(game.snapshot()['status'], 'playing')
+        with events.open('a') as stream:
+            stream.write('RECONNECTING_TO_FIXED_SERVER\nJOIN_REQUESTED\n')
+        state = game.snapshot()
+        self.assertEqual(state['status'], 'stopping')
+        self.assertIn('Join game', state['error'])
+        self.assertTrue((game.current_artifacts / 'stop.json').is_file())
+        self.assertEqual(self.lobby.calls, 0)
+
     def test_unready_lobby_does_not_start(self):
         self.lobby.endpoint = None
         with self.assertRaises(CommunityError):
             self.game.start()
         self.assertEqual(self.game.snapshot()['status'], 'failed')
+
+    def test_public_join_stages_files_before_reserving_a_bot_slot(self):
+        import json
+        game, lobby = self.game, self.lobby
+        (game.package/'package-manifest.json').write_text(json.dumps({'startup_contract':'prepared-client-v1'}))
+        steps = []
+        target = lobby.match_target()
+        lobby.public_map = lambda: target
+        lobby.public_join = lambda name: steps.append(('reserve', name))
+        lobby.public_target = lambda: target
+        game._prepared_for_join = lambda revision: steps.append('prepare') or {'path':'prepared', 'sha256':'a'*64}
+        game._run = lambda argv, artifacts: steps.append(argv)
+        self.assertEqual(game._start(public_name='Player'), 'starting')
+        game.thread.join(3)
+        self.assertEqual(steps[:2], ['prepare', ('reserve', 'Player')])
+        self.assertIn('--public-session', steps[2])
+
+    def test_selected_ui_map_cannot_launch_a_different_server_target(self):
+        with patch.object(self.game.owner,'run_owned_job') as owner:
+            with self.assertRaisesRegex(CommunityError,'selected map changed'):
+                self.game.start(expected_map='Snowblind')
+            owner.assert_not_called()
+        self.assertEqual(self.game.snapshot()['status'],'failed')
 
     def test_staging_failure_reports_child_reason_without_native_process(self):
         reason = 'Insufficient staging storage: need file bytes=8452589081 plus 2 GiB reserve; free=6568361984.'
@@ -181,6 +235,48 @@ class CommunityGameTest(unittest.TestCase):
         state=self.game.wait(5)
         self.assertEqual(state['status'],'failed')
         self.assertIn('runtime',state['error'])
+
+    def test_final_scoreboard_closes_only_owned_game_and_returns_to_lobby(self):
+        released = threading.Event()
+        launched = threading.Event()
+        argv = []
+        match_target = self.lobby.match_target
+        self.lobby.match_target = lambda: dict(match_target(), flagIndicators=True)
+        self.lobby.reconnect_requires_new_game = True
+
+        def owner(command, *args, **kwargs):
+            argv.extend(command)
+            launched.set()
+            if not released.wait(5):
+                raise RuntimeError('test timed out')
+            return {'status':'cancelled_by_owner_request', 'job_active_processes_after_cleanup':0}
+
+        self.game.owner.run_owned_job = owner
+        self.game.start()
+        try:
+            self.assertTrue(launched.wait(2))
+            self.assertIn('--show-flag-indicators', argv)
+            run = self.game.workspace/'client-test'
+            run.mkdir()
+            owner_dir = self.game.current_artifacts/'owner'
+            owner_dir.mkdir(exist_ok=True)
+            (owner_dir/'stdout.log').write_text('Session: '+str(run)+'\n')
+            events = run/'events.txt'
+            lines = 'REMOTE_PAWN_READY|role=client\nPOST_MATCH_SCOREBOARD_VISIBLE\n'
+            events.write_text(lines)
+            self.assertEqual(self.game.snapshot()['status'], 'playing')
+            events.write_text(lines+'RECONNECTING_TO_FIXED_SERVER\n')
+            self.assertEqual(self.game.snapshot()['status'], 'playing')
+            self.assertFalse((self.game.current_artifacts/'stop.json').exists())
+            events.write_text(lines+'POST_MATCH_RETURN_READY\n')
+            self.assertEqual(self.game.snapshot()['status'], 'stopping')
+            self.assertTrue((self.game.current_artifacts/'stop.json').is_file())
+        finally:
+            released.set()
+        state = self.game.wait(5)
+        self.assertEqual(state['status'], 'finished')
+        self.assertEqual(state['progress'], 'Match ended. Back in the lobby.')
+        self.assertIsNone(state['error'])
 
     def test_missing_playing_evidence_does_not_report_connected(self):
         gate=threading.Event()

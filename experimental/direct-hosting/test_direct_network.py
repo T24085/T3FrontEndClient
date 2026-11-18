@@ -1,4 +1,5 @@
 import hashlib,json,pathlib,secrets,socket,sys,tempfile,threading,time,unittest
+from unittest.mock import Mock, patch
 ROOT=pathlib.Path(__file__).resolve().parent
 sys.path[:0]=[str(ROOT/'src')]
 from direct_network import InviteStore,ReplayWindow,UdpServer,UdpClient,frame,unframe,write_json,valid_public_address
@@ -16,6 +17,85 @@ class Echo:
     def close(self):self.done=True;self.thread.join(1);self.sock.close()
 
 class DirectNetworkTests(unittest.TestCase):
+    def test_existing_invitation_accepts_new_friend_host_slots_with_matching_admission(self):
+        from community_transport import CommunityError
+        from direct_client import DirectClient
+
+        connection = {
+            'format': 1, 'hostname': 'localhost', 'public_address': '127.0.0.1',
+            'https_port': 18443, 'first_udp_port': 18000, 'last_udp_port': 18000,
+            'access_token': 'x'*43,
+        }
+        client = DirectClient(connection, test_source='127.0.0.2')
+        self.addCleanup(client.close)
+        match = {'id':'match', 'map':'Stonehenge', 'contentHash':'a'*64,
+                 'address':'127.0.0.1', 'port':18004}
+        grant = {'matchId':'match', 'id':'grant', 'port':18004}
+        with patch('direct_client.UdpClient') as proxy:
+            proxy.return_value.port = 20500
+            for bad in (dict(match, address='127.0.0.2', udpGrant=grant),
+                        dict(match, port=18010, udpGrant=dict(grant, port=18010))):
+                with self.assertRaisesRegex(CommunityError, 'differs from this invitation'):
+                    client._validated_target(bad, 'Stonehenge')
+            for missing in (match, dict(match, udpGrant=dict(grant, port=18000))):
+                with self.assertRaisesRegex(CommunityError, 'admission is unavailable'):
+                    client._validated_target(missing, 'Stonehenge')
+            proxy.assert_not_called()
+            target = client._validated_target(dict(match, udpGrant=grant), 'Stonehenge')
+            self.assertEqual(target['endpoint'], '127.0.0.1:20500')
+            proxy.assert_called_once_with('127.0.0.1', grant)
+
+    def test_stock_invitation_accepts_migrated_ports_with_pinned_address_and_grant(self):
+        from community_transport import CommunityError
+        from direct_client import DirectClient
+
+        connection = {'format': 1, 'hostname': 'localhost', 'public_address': '127.0.0.1',
+                      'https_port': 443, 'first_udp_port': 18000, 'last_udp_port': 18004,
+                      'access_token': 'x'*43}
+        match = {'id': 'match', 'map': 'Stonehenge', 'contentHash': 'a'*64,
+                 'address': '127.0.0.1', 'port': 18447}
+        grant = {'matchId': 'match', 'id': 'grant', 'port': 18447}
+        client = DirectClient(connection, test_source='127.0.0.2')
+        self.addCleanup(client.close)
+        custom = DirectClient(dict(connection, first_udp_port=17000, last_udp_port=17002),
+                              test_source='127.0.0.2')
+        self.addCleanup(custom.close)
+
+        with patch('direct_client.UdpClient') as proxy:
+            proxy.return_value.port = 20500
+            for bad in (dict(match, address='127.0.0.2', udpGrant=grant),
+                        dict(match, port=18453, udpGrant=dict(grant, port=18453)),
+                        dict(match, port=18100, udpGrant=dict(grant, port=18100))):
+                with self.assertRaisesRegex(CommunityError, 'differs from this invitation'):
+                    client._validated_target(bad, 'Stonehenge')
+            with self.assertRaisesRegex(CommunityError, 'differs from this invitation'):
+                custom._validated_target(dict(match, udpGrant=grant), 'Stonehenge')
+            with self.assertRaisesRegex(CommunityError, 'admission is unavailable'):
+                client._validated_target(dict(match, udpGrant=dict(grant, port=18443)), 'Stonehenge')
+            proxy.assert_not_called()
+
+            target = client._validated_target(dict(match, udpGrant=grant), 'Stonehenge')
+            self.assertEqual(target['endpoint'], '127.0.0.1:20500')
+            proxy.assert_called_once_with('127.0.0.1', grant)
+
+    def test_next_game_process_rotates_admission_without_changing_lobby_membership(self):
+        from direct_client import DirectClient
+
+        client = DirectClient({
+            'format': 1, 'hostname': 'localhost', 'public_address': '127.0.0.1',
+            'https_port': 18443, 'first_udp_port': 18000, 'last_udp_port': 18000,
+            'access_token': 'x'*43,
+        }, test_source='127.0.0.2')
+        client.code, client.token, client.player_id = 'ABC234', 'lobby-token', 'player'
+        first = client.direct_session
+        old_proxy = Mock()
+        client.proxies[('match', 'grant')] = old_proxy
+        client.begin_game_attempt()
+        old_proxy.close.assert_called_once()
+        self.assertEqual(client.proxies, {})
+        self.assertNotEqual(client.direct_session, first)
+        self.assertEqual((client.code, client.token, client.player_id), ('ABC234', 'lobby-token', 'player'))
+
     def test_invites_store_hashes_and_revocation_fails_closed(self):
         with tempfile.TemporaryDirectory(dir=ROOT)as folder:
             store=InviteStore(pathlib.Path(folder)/'invites.json');a,token=store.issue('one');b,other=store.issue('two')

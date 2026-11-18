@@ -26,7 +26,11 @@ ROOT = Path(__file__).resolve().parent
 
 
 def setup_option(root):
-    return shlex.quote(str(Path(root).resolve() / 'Start Community Starter.sh')) + ' --steam-launch %command%'
+    root = Path(root).resolve()
+    clan_wars = root.parent / 'Clan Wars - Linux.sh'
+    if root.name == 'Client Files' and clan_wars.is_file():
+        return 'sh ' + shlex.quote(str(clan_wars)) + ' --steam-launch %command%'
+    return shlex.quote(str(root / 'Start Community Starter.sh')) + ' --steam-launch %command%'
 
 
 def merge_dll_overrides(current):
@@ -196,7 +200,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--setup', action='store_true')
     parser.add_argument('--steam-launch', nargs=argparse.REMAINDER)
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    if '--steam-launch' in argv:
+        index = argv.index('--steam-launch')
+        args = parser.parse_args(argv[:index + 1])
+        command = argv[index + 1:]
+        # Steam can put one separator before its command. Keep the separators
+        # inside that command opaque to argparse for reaper and the runtime.
+        args.steam_launch = command[1:] if command[:1] == ['--'] else command
+    else:
+        args = parser.parse_args(argv)
     if sys.platform != 'linux' or platform.machine().lower() not in ('x86_64', 'amd64'):
         parser.error('This client requires 64-bit x86 Linux. ARM/Jetson is not supported.')
     if args.steam_launch is None:
@@ -204,7 +217,7 @@ def main():
         message = ('In Steam: TRIBES 3 > Properties > Compatibility: enable Proton.\n'
                    'In General > Launch Options, paste this entire line:\n\n'+option+
                    '\n\nThen click Play in Steam to open Community Starter.\n'
-                   'Keep Steam and Tailscale connected. No server files are included.')
+                   'Keep Steam signed in while playing. No server files are included.')
         print(message)
         # Optional desktop clipboard helper. Setup remains usable without it.
         if shutil.which('zenity'):

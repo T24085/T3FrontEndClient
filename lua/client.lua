@@ -7,6 +7,7 @@ local SPECTATOR_ROLE=@@SPECTATOR_ROLE@@
 local SPECTATOR_LEASE=@@MATCH_LEASE@@
 local SPECTATOR_WATCH=@@WATCH_ID@@
 local spectatorRuntime=nil
+local nativeSpectatorPresentation
 local MODE="BlueprintGeneratedClass /Game/Topaz/Game/BP_TopazGameMode_CTF_Persistent_BotBackfill.BP_TopazGameMode_CTF_Persistent_BotBackfill_C"
 local joined=false
 local nextHandle=nil
@@ -38,8 +39,24 @@ local function scope()
     return sys
 end
 local mapDefinitions=assert(loadfile(@@MAP_DEFINITIONS@@))()
+-- The sand release changes only this tile's authored mesh identity.
+do
+    local center='/Game/Community/RollercoasterSand2026/SM_RollercoasterCenter'
+    local session=assert(OUTPUT:match('^(.*/)'))
+    local asset=io.open(session..'game/Topaz/Content'..center:sub(6)..'.uasset','rb')
+    if asset then
+        asset:close()
+        for _,row in ipairs(mapDefinitions.Rollercoaster2026.geometry) do
+            if row.actor=='StaticMeshActor_47' then
+                row.asset=center..'.SM_RollercoasterCenter'
+                break
+            end
+        end
+    end
+end
 local configure_geometry=assert(loadfile(@@GEOMETRY@@))()({valid=valid,report=report,signature=signature,settings=assert(loadfile(@@LEVEL_SETTINGS@@))(),descriptors=mapDefinitions})
 local configure_weather=assert(loadfile(@@SNOWBLIND_WEATHER@@))()({valid=valid,report=report,scope=scope,descriptors=mapDefinitions})
+local configure_water=assert(loadfile(@@DAMNATION_WATER@@))()({valid=valid,report=report})
 local allowedMaps={}
 for name,row in pairs(mapDefinitions)do
  assert(name==row.name,"map_descriptor_identity_disagreement");allowedMaps[#allowedMaps+1]=row
@@ -63,7 +80,7 @@ local function state()
 end
 local markerService=nil
 local inputService=nil
--- BEGIN_WEAPON_INPUT_RECOVERY_V1|sha256=816a2c97f0ca5be92b4072752aeea2049c45c816d405743fa4b2aa1980f0feeb
+-- BEGIN_WEAPON_INPUT_RECOVERY_V1|sha256=f4f505a0b6a3e27b3f30c1e4d8a4b7940e4c5a4b1e84a92df12347765162efdd
 local weaponInputFactory=(function()
 -- Client-side completion of original weapon input and cancellation protocols.
 -- Projectile creation, ammo, per-weapon last-shot times and cooldowns stay native.
@@ -74,7 +91,7 @@ return function(env)
  signature('/Script/Valhalla.ValCharacter:GetActiveEquippedAbility',{{'ReturnValue','StructProperty',0}})
  local masterPath='/Game/Abilities/Devices/Gun/GA_Gun_Master.GA_Gun_Master_C'
  local reloadPath='/Game/Abilities/Devices/Gun/GA_Gun_Master_Reload.GA_Gun_Master_Reload_C'
- local master=nil;local reloadMaster=nil;local state;local stopped=false
+ local master=nil;local reloadMaster=nil;local state;local stopped=false;local visualObserver=env.observeVisuals
  local function same(a,b)return valid(a)and valid(b)and a:GetAddress()==b:GetAddress()end
  local function owned(s)
   return valid(s.pc)and s.pc:IsLocalPlayerController()and not s.pc:HasAuthority()
@@ -89,6 +106,10 @@ return function(env)
   if not valid(master)then return end
   assert(master:GetFullName()=='BlueprintGeneratedClass '..masterPath,'weapon_input_master_identity_changed')
   local selected=s.pawn:GetActiveEquippedAbility().Handle
+  if visualObserver then
+   local ok,why=pcall(visualObserver,s.pc,s.pawn,s.asc,selected)
+   if not ok then visualObserver=nil;report('HEAVY_BOLT_VISUAL_ERROR|'..tostring(why):sub(1,500))end
+  end
   if not valid(reloadMaster)then reloadMaster=StaticFindObject(reloadPath)end
   if valid(reloadMaster)then assert(reloadMaster:GetFullName()=='BlueprintGeneratedClass '..reloadPath,'weapon_input_reload_identity_changed')end
   local pressed=false;local grants={};local reloads={};local count=0
@@ -169,20 +190,490 @@ return function(env)
  end
 end
 
+
 end)()
-local weaponInput=weaponInputFactory({valid=valid,scope=scope,signature=signature,report=report})
+local heavyBoltVisualFactory=(function()
+-- Keep the local Heavy Bolt's flight and reload effects out of the camera.
+return function(env)
+ local valid,scope,report=env.valid,env.scope,env.report
+ local weapon='/Game/Topaz/Abilities/Weapons/HeavyBoltLauncher/'
+ local gun='BlueprintGeneratedClass '..weapon..'GA_Topaz_HeavyBoltLauncher.GA_Topaz_HeavyBoltLauncher_C'
+ local visualPath=weapon..'AV_Topaz_HeavyBoltLauncher.AV_Topaz_HeavyBoltLauncher'
+ local trail='/Game/VFX/Weapons/BoltLauncher/Heavy/Projectile/NS_BoltLauncher_Heavy_Projectile_'
+ local one='NiagaraSystem '..trail..'1P.NS_BoltLauncher_Heavy_Projectile_1P'
+ local three='NiagaraSystem '..trail..'3P.NS_BoltLauncher_Heavy_Projectile_3P'
+ local reload='NiagaraSystem /Game/VFX/Weapons/BoltLauncher/Heavy/Reload/'
+ local reloadSockets={
+  [reload..'NS_BoltLauncher_Heavy_Bolt_Reload.NS_BoltLauncher_Heavy_Bolt_Reload']='EnergyBullet_Socket',
+  [reload..'NS_BoltLauncher_Heavy_EnergyTether_Reload.NS_BoltLauncher_Heavy_EnergyTether_Reload']='MuzzleSocket',
+ }
+ local configured
+ local function same(a,b)return valid(a)and valid(b)and a:GetAddress()==b:GetAddress()end
+
+ return function(pc,pawn,asc)
+  scope()
+  if valid(configured) then return end
+  if not valid(pc)or not pc:IsLocalPlayerController()or pc:HasAuthority()or not same(pc.Pawn,pawn)or not same(pawn.Controller,pc)or not same(pawn.AbilitySystemComponent,asc)or not same(asc:GetOwner(),pawn)then return end
+  local hasBolt=false
+  asc.ActivatableAbilities.Items:ForEach(function(_,p)
+   local spec=p:get()
+   if spec.InputID==5 and valid(spec.Ability)and spec.Ability:GetClass():GetFullName()==gun then hasBolt=true end
+  end)
+  if not hasBolt then return end
+
+  local visual=StaticFindObject(visualPath)
+  if not valid(visual)or visual:GetFullName()~='ValDeviceAudioVisual '..visualPath then return end
+  local first,world=visual.ProjectileTrail1P,visual.ProjectileTrail3P
+  if not valid(first)or not valid(world)or world:GetFullName()~=three then return end
+  if not same(first,world)and first:GetFullName()~=one then return end
+
+  local targets={}
+  local seen={}
+  visual.ReloadActions:ForEach(function(_,param)
+   local action=param:get()
+   local system=action.ParticleSystem
+   if not valid(system) then return end
+   local name=system:GetFullName()
+   local socket=reloadSockets[name]
+   if socket and action.SocketName:ToString()==socket then
+    assert(not seen[name],'heavy_bolt_duplicate_camera_reload_action')
+    seen[name]=true
+    targets[#targets+1]=action
+   end
+  end)
+  if #targets~=2 then return end
+
+  -- The original projectile reads this slot when assigning its trail. A single
+  -- asset selection also covers bolts that impact before the player stows the gun.
+  -- The two first-person reload emitters can outlive the weapon attachment.
+  -- Retire their particle systems while preserving the original reload itself.
+  for _,action in ipairs(targets)do
+   action.ParticleSystem=nil
+   assert(not valid(action.ParticleSystem),'heavy_bolt_camera_reload_readback_failed')
+  end
+  visual.ProjectileTrail1P=world
+  assert(same(visual.ProjectileTrail1P,world),'heavy_bolt_world_trail_readback_failed')
+  configured=visual
+  report('HEAVY_BOLT_CAMERA_EFFECTS_READY|trail=original_3P|reload_emitters=2|stage=before_projectile')
+ end
+end
+end)()
+local heavyBoltVisual=heavyBoltVisualFactory({valid=valid,scope=scope,signature=signature,report=report})
+local weaponInput=weaponInputFactory({valid=valid,scope=scope,signature=signature,report=report,observeVisuals=heavyBoltVisual})
 -- END_WEAPON_INPUT_RECOVERY_V1
+
+-- BEGIN_DIRECT_PLAYTEST_PRESENTATION
+local shockLanceVisual
+local function configure_shock_lance()
+    if valid(shockLanceVisual) then return end
+    local path='/Game/Topaz/Abilities/Weapons/Shocklance/AV_Topaz_Shocklance.AV_Topaz_Shocklance'
+    local visual=StaticFindObject(path)
+    if not valid(visual) or visual:GetFullName()~='ValDeviceAudioVisual '..path then return end
+
+    local prefix='NiagaraSystem /Game/VFX/Weapons/ShockLance/'
+    local targets={}
+    local function select_action(actions,expected)
+        local count=0
+        actions:ForEach(function(_,param)
+            local action=param:get()
+            local system=action.ParticleSystem
+            if valid(system) and system:GetFullName()==prefix..expected and action.SocketName:ToString()=='MuzzleSocket' then
+                count=count+1
+                targets[#targets+1]=action
+            end
+        end)
+        return count==1
+    end
+    if not select_action(visual.RemainingAmmoActions,'Ammo/NS_ShockLance_Standard_Ammo_1P.NS_ShockLance_Standard_Ammo_1P') then return end
+    if not select_action(visual.ReloadActions,'Reload/NS_ShockLance_Standard_Reload_1P.NS_ShockLance_Standard_Reload_1P') then return end
+
+    -- These attached effects contain local-space lightning ribbons. The
+    -- muzzle flash, world-space tracers and impacts use separate slots.
+    for _,action in ipairs(targets) do
+        action.ParticleSystem=nil
+        assert(not valid(action.ParticleSystem),'shock_lance_camera_effect_readback_failed')
+    end
+    shockLanceVisual=visual
+    report('SHOCK_LANCE_CAMERA_EFFECTS_READY|charge=false|reload=false')
+end
+
+local scoreBarClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_ScoreBar_CTF.WBP_Game_ScoreBar_CTF_C'
+local scoreBars={}
+local scoreBarWorld,scoreBarController,scoreBarReported
+local scoreBarScanDelay=0
+local function same_object(a,b)
+    return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
+end
+
+local function prune_generator_icons(panel,world)
+    if not valid(panel) then return end
+    local count=panel:GetChildrenCount()
+    if count<2 or count>32 then return end
+    local seen,duplicates={},{}
+    for index=0,count-1 do
+        local icon=panel:GetChildAt(index)
+        if valid(icon) and icon:GetClass():GetFullName()==
+                'WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_GeneratorIcon.WBP_Game_GeneratorIcon_C' then
+            local generator=icon.CachedActor
+            if valid(generator) and same_object(generator:GetWorld(),world) then
+                local key=generator:GetAddress()
+                if seen[key] then duplicates[#duplicates+1]=index end
+                seen[key]=true
+            end
+        end
+    end
+    for index=#duplicates,1,-1 do panel:RemoveChildAt(duplicates[index]) end
+end
+
+local function refresh_ctf_score_bar(pc,ps,gs)
+    local team=ps.r_TeamId
+    if team~=1 and team~=2 then return end
+    local world=pc:GetWorld()
+    if not same_object(world,gs:GetWorld()) then return end
+    if not same_object(scoreBarWorld,world) or not same_object(scoreBarController,pc) then
+        scoreBarWorld,scoreBarController=world,pc
+        scoreBarScanDelay=0
+        scoreBarReported=false
+    end
+    if scoreBarScanDelay==0 then
+        scoreBars={}
+        for _,widget in ipairs(FindAllOf('WBP_Game_ScoreBar_CTF_C') or {}) do
+            if valid(widget) and widget:GetClass():GetFullName()==scoreBarClass
+                and same_object(widget:GetWorld(),world) and same_object(widget:GetOwningPlayer(),pc) then
+                scoreBars[#scoreBars+1]=widget
+            end
+        end
+        scoreBarScanDelay=3
+    end
+    scoreBarScanDelay=scoreBarScanDelay-1
+    if #scoreBars==0 then return end
+
+    local rows=gs.r_CurrentTeamScores
+    local count=rows:GetArrayNum()
+    local scores,malformed={},count>4
+    if not malformed then
+        rows:ForEach(function(_,param)
+            local row=param:get()
+            local id,score=row.TeamNum,row.Score
+            if id~=1 and id~=2 then return end
+            if scores[id]~=nil or type(score)~='number' or score<0 or score%1~=0 then malformed=true;return end
+            scores[id]=score
+        end)
+    end
+    if malformed then scores={} end
+    local friendly,enemy=scores[team],scores[3-team]
+    for _,widget in ipairs(scoreBars) do
+        if valid(widget) and widget:IsVisible() then
+            prune_generator_icons(widget.FriendlyGenerators,world)
+            prune_generator_icons(widget.EnemyGenerators,world)
+            local updated=false
+            local function sync_counter(score,fill,counter)
+                if score==nil or not valid(fill) or not valid(counter) or not valid(counter.ScoreText) then return end
+                if counter.CachedScore~=score or tonumber(counter.ScoreText:GetText():ToString())~=score then
+                    -- Use the original fill and counter update with the absolute
+                    -- replicated score for this side, independent of the delta.
+                    widget:UpdateScore(score,fill,counter)
+                    updated=true
+                end
+            end
+            sync_counter(friendly,widget.FriendlyScoreFill,widget.UI_Game_Scorebar_ScoreCount)
+            sync_counter(enemy,widget.EnemyScoreFill,widget.UI_Game_Scorebar_ScoreCount_1)
+            if updated and not scoreBarReported then
+                scoreBarReported=true
+                report('CTF_SCORE_BAR_REFRESHED|team='..team..'|friendly='..tostring(friendly)..'|enemy='..tostring(enemy))
+            end
+        end
+    end
+end
+-- END_DIRECT_PLAYTEST_PRESENTATION
+
+local function flag_marker_projection(valid)
+ local layout=StaticFindObject('/Script/UMG.Default__WidgetLayoutLibrary')
+ assert(valid(layout),'flag_marker_projection_library_required')
+
+ return function(entry,pc,target)
+  local widget=entry.widget
+  local slot,parent=widget.Slot,widget:GetParent()
+  if not valid(slot) or not valid(parent) then return end
+
+  local viewport=layout:GetViewportSize(pc)
+  local dpi=layout:GetViewportScale(pc)
+  local cx,cy=viewport.X/2,viewport.Y/2
+  if cx<=0 or cy<=0 or dpi<=0 then return end
+  local out={}
+  -- Keep the viewport origin used by Slate, including a constrained view rect.
+  local front=pc:ProjectWorldLocationToScreen(target,out,false)
+  local x,y
+  if front then
+   local screen=out.ScreenLocation or out
+   x,y=screen.X-cx,screen.Y-cy
+  else
+   local camera=pc.PlayerCameraManager
+   if not valid(camera) then return end
+   local origin,rotation=camera:GetCameraLocation(),camera:GetCameraRotation()
+   local yaw,pitch=math.rad(rotation.Yaw),math.rad(rotation.Pitch)
+   local dx,dy,dz=target.X-origin.X,target.Y-origin.Y,target.Z-origin.Z
+   x=-math.sin(yaw)*dx+math.cos(yaw)*dy
+   y=math.sin(pitch)*math.cos(yaw)*dx+math.sin(pitch)*math.sin(yaw)*dy-math.cos(pitch)*dz
+   if math.abs(x)+math.abs(y)<0.0001 then y=1 end
+  end
+  if not front or math.abs(x)>cx or math.abs(y)>cy then
+   local desired=widget:GetDesiredSize()
+   local edgeX,edgeY=cx-(desired.X/2+8)*dpi,cy-(desired.Y/2+8)*dpi
+   if edgeX<=0 or edgeY<=0 then return end
+   local scale=math.min(edgeX/math.max(math.abs(x),0.0001),edgeY/math.max(math.abs(y),0.0001))
+   x,y=x*scale,y*scale
+  end
+  local anchor={X=(cx+x)/viewport.X,Y=(cy+y)/viewport.Y}
+  if anchor.X~=anchor.X or anchor.Y~=anchor.Y or math.abs(anchor.X)==math.huge or math.abs(anchor.Y)==math.huge then return end
+  if not same_object(entry.layoutSlot,slot) then
+   slot:SetAutoSize(true)
+   slot:SetAlignment({X=0.5,Y=0.5})
+   entry.layoutSlot=slot
+  end
+  -- The retail Flags canvas fills the HUD. A point anchor lets Slate apply
+  -- the actual canvas scale and leaves no pixel offset for DPI to distort.
+  slot:SetAnchors({Minimum=anchor,Maximum=anchor})
+  slot:SetPosition({X=0,Y=0})
+  return true
+ end
+end
+
+-- Use the original overlay widgets when the lobby opts in.
+local function enabled_flag_markers(env)
+ local valid,report=env.valid,env.report
+ local project=flag_marker_projection(valid)
+ env.signature('/Script/Topaz.TopPickup_Flag:GetFlagState',{{'Querier','ObjectProperty',0},{'ReturnValue','EnumProperty',8}})
+ env.signature('/Script/Engine.KismetSystemLibrary:GetComponentBounds',{{'Component','ObjectProperty',0},
+  {'Origin','StructProperty',8},{'BoxExtent','StructProperty',32},{'SphereRadius','FloatProperty',56}})
+ local system=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
+ local state=nil
+ local stopped=false
+ local widgetPath='/Game/UI/Components/Game/Overlays/UI_Game_Overlay_FlagObjective.UI_Game_Overlay_FlagObjective_C'
+ local library=StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary')
+ local function same(a,b) return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() end
+ local function clear()
+  if state then for _,entry in pairs(state.entries) do if entry.owned and valid(entry.widget) then entry.widget:RemoveFromParent() end end end
+  state=nil
+ end
+ local function current(s)
+  return valid(s.pc) and valid(s.ps) and valid(s.gs) and same(s.pc.PlayerState,s.ps) and same(s.pc:GetWorld(),s.gs:GetWorld()) and s.gs:GetFullName()==s.gameState and not s.pc:HasAuthority() and s.pc:IsLocalPlayerController()
+ end
+ local function flag_holder(flag,info)
+  if info.bReturned then return nil end
+  local holder=info.Holder
+  if not valid(holder) then return nil end
+  -- The replicated holder can still name the thrower after detachment.
+  local root=flag.RootComponent
+  local attached=valid(root) and root:GetAttachParent() or nil
+  if same(flag:GetOwner(),holder) or (valid(attached) and same(attached:GetOwner(),holder)) then return holder end
+ end
+ local function flag_anchor(flag,root)
+  -- The pickup root is a collision sphere. The flag's visible mesh has its
+  -- own transform and extends above that pivot, including while carried.
+  local mesh=flag.Mesh
+  if valid(mesh) then
+   local origin,extent={},{}
+   system:GetComponentBounds(mesh,origin,extent,{})
+   origin,extent=origin.Origin or origin,extent.BoxExtent or extent
+   if type(extent.Z)=='number' and extent.Z>0 then
+    return {X=origin.X,Y=origin.Y,Z=origin.Z}
+   end
+  end
+  return root
+ end
+ local function pulse()
+  local s=state
+  if not s then return end
+  if not current(s) then clear();return end
+  local pawn=s.pc.Pawn
+  if not valid(pawn) or not pawn.bInitialized or pawn:GetHealth()<=0 then return end
+  local team=s.ps.r_TeamId
+  if team~=1 and team~=2 then return end
+  local carrying=false
+  for _,e in pairs(s.entries) do
+   if valid(e.flag) and e.flag.r_TeamId~=team and same(flag_holder(e.flag,e.flag:GetHeldBy()),pawn) then carrying=true end
+  end
+  for _,e in pairs(s.entries) do
+   local flag,w=e.flag,e.widget
+   if valid(flag) and valid(w) and same(flag:GetWorld(),s.pc:GetWorld()) then
+    local friendly=flag.r_TeamId==team
+    local flagState=flag:GetFlagState(pawn)
+    local holderInfo=flag:GetHeldBy()
+    local returned=holderInfo.bReturned==true
+    local holder=flag_holder(flag,holderInfo)
+    local holderAddress=valid(holder) and holder:GetAddress() or nil
+    if e.returned~=returned or e.holderAddress~=holderAddress then
+     -- Refresh the retail Tick on detachment as well as return. Both native
+     -- callbacks accept LastHolderInfo and use only the current value.
+     w:OnFlagHeldChanged(flag,holderInfo,holderInfo)
+     w.Content:SetRenderTranslation({X=0,Y=0})
+     e.holderAddress=holderAddress
+    end
+    if e.returned~=returned then
+     if returned and e.returned==nil then
+      e.home=flag:K2_GetActorLocation()
+      e.homeAnchor=flag_anchor(flag,e.home)
+     end
+     -- The stationary base widgets consume the same native flag notification.
+     for _,base in ipairs(FindAllOf('UI_Game_Overlay_FlagBase_C') or {}) do
+      if valid(base) and same(base:GetWorld(),s.pc:GetWorld()) and same(base:GetOwningPlayer(),s.pc) then
+       base:OnFlagHeldChanged(flag,holderInfo,holderInfo)
+       if same(base.CachedFlag,flag) then e.nativeBase=base end
+      end
+     end
+     e.returned=returned
+    end
+    local ownCarried=not friendly and same(holder,pawn)
+    local homeTarget=friendly and carrying and flagState==1
+    local text=friendly and (flagState==4 and 'RETURN' or flagState==3 and 'CHASE' or homeTarget and 'GO HERE' or 'DEFEND') or (flagState==2 and 'ESCORT' or 'GRAB')
+    w.BackgroundSwitcher:SetActiveWidget(friendly and (homeTarget and w.BlueGoTo or w.BlueDefend) or w.RedGoTo)
+    w.ActionLabelGroup:SetVisibility(4)
+    w.ActionText:SetText(FText(text))
+    local position
+    if returned then
+     -- Community matches can omit the stand actor and its widget on clients.
+     -- Keep the flag's original home position across out-of-order updates.
+     -- A client that joined with the flag away uses its replicated return.
+     if not valid(e.nativeBase) then position=e.home or flag:K2_GetActorLocation() end
+    elseif not ownCarried then
+     position=flag:K2_GetActorLocation()
+    end
+    local visible=position~=nil
+    local projected=false
+    if visible then
+     local a,b=pawn:K2_GetActorLocation(),position
+     w.DistanceText:SetText(FText(string.format('%dm',math.floor(math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)/100+0.5))))
+     local anchor=returned and e.homeAnchor or flag_anchor(flag,b)
+     projected=project(e,s.pc,anchor)==true
+     if w.TimerIsActive and w.ResetDuration>0 then
+      local material=w.TimerFill:GetDynamicMaterial()
+      if valid(material) then
+       local progress=(w['Reset Time']-s.gs:GetServerWorldTimeSeconds())/w.ResetDuration
+       material:SetScalarParameterValue(FName('Progress'),math.max(0,math.min(1,progress)))
+      end
+     end
+    end
+    w:ShowOverlay(visible)
+    w:SetVisibility(visible and 4 or 1)
+    if projected and not e.projected then
+     e.projected=true
+     report('FLAG_MARKER_PROJECTED|team='..flag.r_TeamId)
+    end
+    local status=tostring(flag.r_TeamId)..'|'..text..'|'..tostring(ownCarried)..'|returned='..tostring(returned)
+    if status~=e.status then e.status=status;report('FLAG_MARKER_STATE|'..status) end
+   end
+  end
+ end
+ local schedule
+ schedule=function()
+  ExecuteInGameThreadWithDelay(16,function()
+   if stopped then return end
+   local ok,why=pcall(function() env.scope();pulse();schedule() end)
+   if not ok then stopped=true;report('OPTIONAL_FLAG_MARKER_ERROR|'..tostring(why):sub(1,500)) end
+  end)
+ end
+ schedule();report('FLAG_MARKERS_READY')
+ return function(pc,ps,gs)
+  if not valid(pc) or not valid(ps) or not valid(gs) or pc:HasAuthority() or not pc:IsLocalPlayerController() or (ps.r_TeamId~=1 and ps.r_TeamId~=2) then return end
+  if not same(pc:GetWorld(),gs:GetWorld()) then return end
+  if state and (state.gameState~=gs:GetFullName() or not same(state.pc,pc) or not same(state.ps,ps)) then clear() end
+  if not state then state={pc=pc,ps=ps,gs=gs,gameState=gs:GetFullName(),entries={}} end
+  local parent
+  for _,o in ipairs(FindAllOf('UI_Game_Overlays_C') or {}) do if valid(o) and o:GetFullName():find('/Engine/Transient.',1,true) and same(o:GetWorld(),pc:GetWorld()) and valid(o.Flags) then assert(not parent,'multiple_runtime_flag_hud_containers');parent=o.Flags end end
+  if not parent then return end
+  local visibility=parent:GetVisibility()
+  if visibility==1 or visibility==2 then parent:SetVisibility(4) end
+  for key,e in pairs(state.entries) do
+   if not valid(e.flag) or not valid(e.widget) or not same(e.flag:GetWorld(),pc:GetWorld()) then
+    if e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
+    state.entries[key]=nil
+   end
+  end
+  local cls=StaticFindObject(widgetPath);if not valid(cls) then cls=LoadAsset(widgetPath) end
+  assert(valid(cls) and valid(library),'original_flag_ui_required')
+  for _,flag in ipairs(FindAllOf('TopPickup_Flag') or {}) do
+   if valid(flag) and same(flag:GetWorld(),pc:GetWorld()) and (flag.r_TeamId==1 or flag.r_TeamId==2) then
+    local key=flag:GetFullName()..'|'..tostring(flag:GetAddress())
+    local e=state.entries[key]
+    if not e or not valid(e.widget) or not same(e.widget:GetParent(),parent) then
+     if e and e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
+     local widget
+     for i=0,parent:GetChildrenCount()-1 do local child=parent:GetChildAt(i);if valid(child) and child:IsA(cls) and same(child.CachedActor,flag) then assert(not widget,'duplicate_native_flag_marker');widget=child end end
+     local owned=not valid(widget)
+     if owned then widget=library:Create(pc,cls,pc);assert(valid(widget),'original_flag_marker_creation_failed') end
+     -- The stock widget's Tick writes a second pixel position while the flag
+     -- is away. The HUD pulse owns positioning and the reset meter instead.
+     widget.TickFrequency=0
+     widget:StopAllAnimations()
+     if owned then parent:AddChildToCanvas(widget);widget:UpdateFlagActor(flag) end
+     -- Retail places the glyph above its anchor using bottom alignment and a
+     -- distance-dependent translation. Center the glyph on the mesh instead.
+     local content=widget.Content
+     local container=content:GetParent()
+     local center={X=0.5,Y=0.5}
+     container.Slot:SetAnchors({Minimum=center,Maximum=center})
+     container.Slot:SetAlignment(center)
+     content.Slot:SetAlignment(center)
+     content:SetRenderTranslation({X=0,Y=0})
+     widget:SetRenderTranslation({X=0,Y=0})
+     state.entries[key]={flag=flag,widget=widget,owned=owned}
+     report('FLAG_MARKER_BOUND|team='..flag.r_TeamId..'|created='..tostring(owned))
+    end
+   end
+  end
+ end
+end
+
+local scoreBarFailed,shockLanceVisualFailed
+local markerFailed
+local function update_flag_markers(pc,ps,gs)
+ if not markerService then
+  local factory=@@SHOW_FLAG_INDICATORS@@ and enabled_flag_markers or assert(loadfile(@@FLAG_MARKERS@@))()
+  markerService=factory({valid=valid,report=report,signature=signature,scope=scope})
+ end
+ markerService(pc,ps,gs)
+end
+
 local function observe_markers(pc,ps,gs)
  weaponInput(pc,ps)
  if not inputService then inputService=assert(loadfile(@@JETPACK_INPUT@@))()({valid=valid,report=report,signature=signature,scope=scope}) end
  inputService(pc,ps)
- if not markerService then markerService=assert(loadfile(@@FLAG_MARKERS@@))()({valid=valid,report=report,signature=signature,scope=scope,projection=@@FLAG_PROJECTION@@}) end
- markerService(pc,ps,gs)
+ if not @@SHOW_FLAG_INDICATORS@@ then
+  update_flag_markers(pc,ps,gs)
+ elseif not markerFailed then
+  local ok,why=pcall(update_flag_markers,pc,ps,gs)
+  if not ok then markerFailed=true;report('OPTIONAL_FLAG_MARKER_ERROR|'..tostring(why):sub(1,500)) end
+ end
 end
 
 local clientWorld=nil
 local lastJoin=0
--- Production network-client radar binding; authored settings stay native.
+-- Widths enclose the authored playable bounds about the native world origin,
+-- with ten percent padding. The same width owns both texture and coordinates.
+local radar_playable_width={
+ Damnation=155000,Damnation2026=155000,
+ HighOctane=109000,HighOctane2026=109000,
+ Rollercoaster=240000,Rollercoaster2026=240000,
+ Scarabrae=207000,Scarabrae2026=207000,
+ Snowblind=159000,Snowblind2026=159000,SnowblindBlizzard=159000,SnowblindBlizzard2026=159000,
+ Stonehenge=188000,Stonehenge2026=188000,
+ KatabaticMyrkwood=99000,
+}
+local function radar_projection_width(map,authored)
+ return math.min(radar_playable_width[map] or authored,authored)
+end
+local function initialize_radar_projection(widget,settings,width)
+ -- The original widget owns scale, map translation, native zoom and texture
+ -- setup. Supply the capture width only during this synchronous call.
+ local authored=settings.MapSize
+ if width==authored then widget:UpdateSublevel();return end
+ settings.MapSize=width
+ local ok,reason=pcall(widget.UpdateSublevel,widget)
+ settings.MapSize=authored
+ assert(ok,reason)
+end
+-- Production network-client radar binding.
 local releaseRadarGuardFactory=(function()
 -- One owner for the network-client/explicit standalone diagnostic distinction.
 return function(env)
@@ -203,8 +694,8 @@ end
 
 end)()
 local releaseRadarHelperFactory=(function()
--- Local minimap capture/view binding only. Native radars, teams, power and
--- authored ValWorldSettings remain owners. No radar-online or map-scale patches.
+-- Local minimap capture and display. Native radars, teams, power and authored
+-- authored ValWorldSettings remain owners. The native zoom stays intact.
 return function(env)
  local valid,report,scope,signature=assert(env.valid),assert(env.report),assert(env.scope),assert(env.signature)
  local contracts=assert(env.blueprint_contracts);local prefix=assert(env.world_prefix)
@@ -246,7 +737,8 @@ return function(env)
   local settings=original_settings(pc);local size=settings.MapSize;local world=pc:GetWorld()
   local ratio=projection.orthographic_width_per_map_size
   assert(finite(ratio) and ratio>0 and type(projection.source_reference)=='string' and projection.source_reference~='','radar_client_projection_source_required')
-  local captureWidth=size*ratio;assert(finite(captureWidth),'radar_client_finite_capture_width_required')
+  local captureWidth=radar_projection_width(env.descriptor.name,size)*ratio
+  assert(finite(captureWidth),'radar_client_finite_capture_width_required')
   signature('/Script/Engine.Actor:GetActorBounds',{{'bOnlyCollidingComponents','BoolProperty',0},{'Origin','StructProperty',8},{'BoxExtent','StructProperty',32},{'bIncludeFromChildActors','BoolProperty',56}})
   signature('/Script/UMG.Widget:GetOwningPlayer',{{'ReturnValue','ObjectProperty',0}})
   signature('/Script/UMG.PanelWidget:GetChildrenCount',{{'ReturnValue','IntProperty',0}})
@@ -255,7 +747,9 @@ return function(env)
   local origin,extent={},{};assembly:GetActorBounds(true,origin,extent,false)
   for _,axis in ipairs({'X','Y','Z'}) do assert(finite(origin[axis]) and finite(extent[axis]) and extent[axis]>=0,'radar_client_finite_geometry_bounds_required') end
   local halfWidth=math.max(math.abs(origin.X)+extent.X,math.abs(origin.Y)+extent.Y)
-  assert(captureWidth>=2*halfWidth,'radar_client_authored_capture_does_not_cover_map_bounds')
+  if captureWidth==size then
+   assert(captureWidth>=2*halfWidth,'radar_client_authored_capture_does_not_cover_map_bounds')
+  end
   local captures={};for _,a in ipairs(FindAllOf('BP_MinimapCapture_C') or {}) do if valid(a) and same(a:GetWorld(),world) then captures[#captures+1]=a end end
   assert(#captures==0,'radar_client_existing_capture_requires_map_owner_adoption')
   local class=StaticFindObject(capturePath);if not valid(class) then class=LoadAsset(capturePath) end
@@ -325,10 +819,13 @@ return function(env)
      assert(not valid(prior) or same(prior,state.capture),'radar_client_foreign_widget_capture')
      state.widgets[key]={widget=widget,name=widget:GetFullName(),prior=prior}
      widget.MinimapCapture=state.capture
-     widget:UpdateSublevel() -- normal original settings/scale/zoom/texture initialization
-     assert(finite(widget.CachedMapScale) and math.abs(widget.CachedMapScale-1024/state.map_size)<1e-8,'radar_client_native_widget_scale_mismatch')
+     initialize_radar_projection(widget,state.settings,state.capture_width)
+     assert(finite(widget.CachedMapScale) and math.abs(widget.CachedMapScale-1024/state.capture_width)<1e-8,
+            'radar_client_native_widget_scale_mismatch')
+     assert(finite(widget.MapScale) and math.abs(widget.MapScale-widget.CachedMapScale)<1e-8,
+            'radar_client_marker_scale_mismatch')
      assert(same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_native_material_binding_mismatch')
-     report('BASE_RADAR_CLIENT_WIDGET_BOUND|widget='..widget:GetFullName()..'|cachedScale='..widget.CachedMapScale..'|mapScale='..widget.MapScale)
+     report('BASE_RADAR_CLIENT_WIDGET_BOUND|widget='..widget:GetFullName()..'|cachedScale='..widget.CachedMapScale..'|mapScale='..widget.MapScale..'|projectionWidthCm='..state.capture_width..'|zoom='..tostring(widget.CachedZoom))
     end
     if state.widgets[key] then
      assert(same(widget.MinimapCapture,state.capture) and same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_widget_binding_changed')
@@ -337,6 +834,12 @@ return function(env)
    end
   end
   state.widgets_seen=count;state.widgets_bound=bound
+  if count>0 and bound==count and not state.manual_capture then
+   signature('/Script/Engine.SceneCaptureComponent2D:CaptureScene',{})
+   state.component:CaptureScene()
+   state.manual_capture=true
+   report('BASE_RADAR_CLIENT_CAPTURE_REQUESTED|source=bound_community_map')
+  end
   return count>0 and bound==count
  end
  function service.owned() return state end
@@ -415,6 +918,15 @@ end
 end)()
 local releaseRadarRuntimeFactory=(function()
 -- Normal network clients only. Actual remote world owns map selection.
+local function radar_descriptor(selected)
+ if not selected.native then return selected end
+ if selected.name~='KatabaticT22026' or selected.package~='/Game/Maps/Community/KatabaticT2/Arena_KatabaticT2_2026_P' then return nil end
+ -- This catalog map uses authored world settings and has its own structures mesh.
+ local descriptor={}
+ for key,value in pairs(selected) do descriptor[key]=value end
+ descriptor.assembly_asset='/Game/Community/KatabaticT2/Edition2026/SM_Structures2026.SM_Structures2026'
+ return descriptor
+end
 return function(env)
  local valid,report,scope=assert(env.valid),assert(env.report),assert(env.scope)
  local descriptors=assert(env.map_descriptors);local service=nil;local identity=nil;local retired={}
@@ -425,12 +937,13 @@ return function(env)
  function runtime.tick(pc,gs)
   scope();guard(pc,gs)
   assert(not pc:HasAuthority() and not gs:HasAuthority(),'radar_runtime_network_client_required')
-  local selected=nil;local count=0
+  local selected;local count=0
   for _,descriptor in pairs(descriptors) do
    if gs:GetFullName():find(descriptor.world,1,true) then selected=descriptor;count=count+1 end
   end
   assert(count==1,'radar_runtime_exactly_one_actual_remote_map_required')
-  if selected.native then return true end
+  selected=radar_descriptor(selected)
+  if not selected then return true end
   assert(selected.native_world_settings_class=='/Script/Valhalla.ValWorldSettings','radar_runtime_original_authored_settings_contract_required')
   local world=pc:GetWorld();local key=gs:GetFullName()..'|'..gs:GetAddress()..'|'..world:GetAddress()
   if identity~=key then
@@ -452,6 +965,343 @@ local releaseRadarRuntime=releaseRadarRuntimeFactory({valid=valid,report=report,
  map_descriptors=mapDefinitions,guard_factory=releaseRadarGuardFactory,helper_factory=releaseRadarHelperFactory,
  primary_assembly_factory=releasePrimaryAssemblyFactory,world_settings_guard_factory=releaseNativeWorldSettingsFactory,blueprint_contracts=releaseRadarBlueprintContracts})
 
+local postMatchEscapeBound=false
+local observe_post_match_result
+local function bind_post_match_escape()
+ if postMatchEscapeBound then return end
+ local path='/Game/UI/RallyHereUpdates/UI_Scene_Result_Frontier_RH_v2.UI_Scene_Result_Frontier_RH_v2_C'
+ local menuClass='WidgetBlueprintGeneratedClass /Game/UI/RallyHereUpdates/Shared/Scenes/UI_Scene_Menu_RH_v2.UI_Scene_Menu_RH_v2_C'
+ local menuHide='/Script/RallyHereStart.RHWidget:OnHide'
+ if not valid(StaticFindObject(menuHide)) then return end
+ postMatchEscapeBound=true
+ local pending,checked,failed,reported=false,false,false,false
+ local closing
+ local function same(a,b)
+  return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() and a:GetFullName()==b:GetFullName()
+ end
+ local function results_world()
+  scope()
+  if stopped or failed then return end
+  local gs=state()
+  if not valid(gs) or gs:HasAuthority()
+   or gs.r_GameplayPhaseInfo.Phase.TagName:ToString()~='GamePhase.GameplayEndedPhase' then return end
+  return gs:GetWorld()
+ end
+ local function owns_widget(widget,world)
+  if not valid(widget) or not same(widget:GetWorld(),world) then return false end
+  local pc=widget:GetOwningPlayer()
+  return valid(pc) and pc:IsLocalPlayerController() and not pc:HasAuthority() and same(pc:GetWorld(),world)
+ end
+ local function active_result()
+  if closing then return end
+  local world=results_world()
+  if not valid(world) then return end
+  local result=nil
+  for _,widget in ipairs(FindAllOf('UI_Scene_Result_Frontier_RH_v2_C') or {}) do
+   if owns_widget(widget,world) and widget:GetClass():GetFullName()=='WidgetBlueprintGeneratedClass '..path
+    and widget:IsVisible() and widget:IsTopViewRoute() then
+    if result then return end
+    result=widget
+   end
+  end
+  return result
+ end
+ local function fail(reason)
+  pending=false
+  if failed then return end
+  failed=true
+  report('POST_MATCH_ESCAPE_ERROR|'..tostring(reason))
+ end
+ local returning=false
+ observe_post_match_result=function()
+  if returning or not active_result() then return end
+  returning=true
+  report('POST_MATCH_SCOREBOARD_VISIBLE')
+  ExecuteInGameThreadWithDelay(8000,function()
+   scope()
+   report('POST_MATCH_RETURN_READY')
+  end)
+ end
+ local function on_escape()
+  if closing or pending or failed or stopped then return end
+  pending=true
+  local queued,reason=pcall(ExecuteInGameThread,function()
+   local ok,why=pcall(function()
+    local result=active_result()
+    if not result then pending=false;return end
+    -- Let the normal press/release handler take the menu route first.
+    ExecuteInGameThreadWithDelay(175,function()
+     pending=false
+     local handled,err=pcall(function()
+      if not same(result,active_result()) then return end
+      if not checked then signature(path..':OnNavigateMenu',{});checked=true end
+      result:OnNavigateMenu()
+      if not reported and result:GetViewManager():GetTopViewRoute():ToString()=='StartMenu' then
+       reported=true;report('POST_MATCH_ESCAPE_MENU|route=StartMenu|nativeHandler=true')
+      end
+     end)
+     if not handled then fail(err) end
+    end)
+   end)
+   if not ok then fail(why) end
+  end)
+  if not queued then fail(reason) end
+ end
+ local ok,why=pcall(function()
+  signature(menuHide,{})
+  RegisterHook(menuHide,function(context)
+   local observed,err=pcall(function()
+    local world=results_world()
+    local widget=context:get()
+    if not valid(world) or not valid(widget) or widget:GetClass():GetFullName()~=menuClass
+     or not owns_widget(widget,world) then return end
+    -- A native Back can close StartMenu before the queued Escape callback.
+    local token={}
+    closing=token
+    ExecuteInGameThreadWithDelay(250,function() if closing==token then closing=nil end end)
+   end)
+   if not observed then fail(err) end
+  end)
+  RegisterKeyBind(Key.ESCAPE,on_escape)
+  report('POST_MATCH_ESCAPE_READY')
+ end)
+ if not ok then fail(why) end
+end
+
+local flagReleaseFactory=(function()
+-- Initialize a detached flag proxy from its first authoritative movement update.
+return function(env)
+ local valid,scope,signature,report=env.valid,env.scope,env.signature,env.report
+ local attach='/Script/Engine.Actor:OnRep_AttachmentReplication'
+ local move='/Script/Engine.Actor:OnRep_ReplicatedMovement'
+ local flagClass='BlueprintGeneratedClass /Game/Topaz/Pickups/BP_TopazPickup_Flag.BP_TopazPickup_Flag_C'
+ local world=env.world
+ local active,reported=true,false
+ local pending={}
+ local function same(a,b)return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()end
+ local function bounded_vector(v)
+  return type(v.X)=='number' and math.abs(v.X)<1e8
+   and type(v.Y)=='number' and math.abs(v.Y)<1e8
+   and type(v.Z)=='number' and math.abs(v.Z)<1e8
+ end
+ signature(attach,{})
+ signature(move,{})
+ signature('/Script/Engine.Actor:K2_SetActorLocation',{{'NewLocation','StructProperty',0},{'bSweep','BoolProperty',24},
+  {'SweepHitResult','StructProperty',32},{'bTeleport','BoolProperty',264},{'ReturnValue','BoolProperty',265}})
+ signature('/Script/Engine.GameplayStatics:RebaseZeroOriginOntoLocal',{{'WorldContextObject','ObjectProperty',0},
+  {'WorldLocation','StructProperty',8},{'ReturnValue','StructProperty',32}})
+ signature('/Script/Engine.GameplayStatics:GetTimeSeconds',{{'WorldContextObject','ObjectProperty',0},{'ReturnValue','DoubleProperty',8}})
+ local statics=StaticFindObject('/Script/Engine.Default__GameplayStatics')
+ assert(valid(statics),'flag_release_native_world_rebase_required')
+ local function before_attach(context)
+  local flag=context:get()
+  if not active or not valid(flag) or flag:GetClass():GetFullName()~=flagClass
+     or flag:HasAuthority() or not same(flag:GetWorld(),world) then return end
+  scope()
+  local root,holder=flag.RootComponent,flag.r_HeldBy
+  if not valid(root) or not same(root:GetOwner(),flag) or not valid(root:GetAttachParent())
+     or not valid(holder) then return end
+  pending[flag:GetAddress()]={flag=flag,root=root,at=statics:GetTimeSeconds(world)}
+ end
+ local function on_movement(context)
+  local flag=context:get()
+  if not active or not valid(flag) then return end
+  local id=flag:GetAddress()
+  local release=pending[id]
+  if not release then return end
+  pending[id]=nil
+  if not same(flag,release.flag) or not same(flag.RootComponent,release.root)
+     or valid(release.root:GetAttachParent()) or valid(flag:GetOwner())
+     or statics:GetTimeSeconds(world)-release.at>0.20 then return end
+  local location=flag.ReplicatedMovement.Location
+  if not bounded_vector(location) then return end
+  local to=statics:RebaseZeroOriginOntoLocal(flag,{X=location.X,Y=location.Y,Z=location.Z})
+  if not bounded_vector(to) then return end
+  local from=flag:K2_GetActorLocation()
+  local distance=(to.X-from.X)^2+(to.Y-from.Y)^2+(to.Z-from.Z)^2
+  if distance<1 or distance>300^2 then return end
+  if flag:K2_SetActorLocation({X=to.X,Y=to.Y,Z=to.Z},false,{},true) and not reported then
+   reported=true
+   report('FLAG_RELEASE_POSITION_SEEDED|distanceCm='..string.format('%.1f',math.sqrt(distance)))
+  end
+ end
+ local function guarded(fn)
+  return function(...)
+   local ok,why=pcall(fn,...)
+   if not ok and active then
+    active=false;pending={}
+    report('FLAG_RELEASE_HANDOFF_UNAVAILABLE|'..tostring(why))
+   end
+  end
+ end
+ local pre,post=RegisterHook(attach,guarded(before_attach),function()end)
+ local ok,mp,mq=pcall(RegisterHook,move,function()end,guarded(on_movement))
+ if not ok then UnregisterHook(attach,pre,post);error(mp) end
+ return {retire=function()
+  active=false;pending={}
+  local detach=pcall(UnregisterHook,attach,pre,post)
+  local movement=pcall(UnregisterHook,move,mp,mq)
+  return detach and movement
+ end}
+end
+end)()
+local flagReleaseService,flagReleaseWorld
+local function ensure_flag_release_handoff(gs)
+ local world=gs:GetWorld()
+ if valid(flagReleaseWorld) and flagReleaseWorld:GetAddress()==world:GetAddress() then return end
+ if flagReleaseService then
+  if not flagReleaseService.retire() then
+   report('FLAG_RELEASE_HANDOFF_UNAVAILABLE|prior_hook_cleanup')
+   return
+  end
+  flagReleaseService=nil
+ end
+ flagReleaseWorld=world
+ local ok,service=pcall(flagReleaseFactory,{valid=valid,scope=scope,signature=signature,report=report,world=world})
+ if ok then flagReleaseService=service
+ else report('FLAG_RELEASE_HANDOFF_UNAVAILABLE|'..tostring(service)) end
+end
+local soundSettingsWorld
+local function apply_saved_sound_settings(pc)
+    local world = pc:GetWorld()
+    if not valid(world) or same_object(soundSettingsWorld, world) then return end
+    soundSettingsWorld = world
+    local ok, why = pcall(function()
+        signature('/Script/Engine.GameUserSettings:GetGameUserSettings',{{'ReturnValue','ObjectProperty',0}})
+        signature('/Script/Valhalla.ValGameUserSettings:ApplySoundSettings',{})
+        local defaults = loaded('/Script/Engine.Default__GameUserSettings',
+                                'GameUserSettings /Script/Engine.Default__GameUserSettings')
+        local settings = defaults:GetGameUserSettings()
+        local class = loaded('/Script/Valhalla.ValGameUserSettings','Class /Script/Valhalla.ValGameUserSettings')
+        assert(valid(settings) and settings:IsA(class),'native_sound_settings_required')
+        settings:ApplySoundSettings()
+        report('SAVED_SOUND_SETTINGS_APPLIED')
+    end)
+    if not ok then report('SAVED_SOUND_SETTINGS_UNAVAILABLE|'..tostring(why):sub(1,300)) end
+    return ok
+end
+
+local update_match_music=(function()
+    local busPath='/Game/Audio/Submixes/MUS_Game_Submix.MUS_Game_Submix'
+    local world, appliedWorld, appliedPhase, bus, muted, failed
+
+    local function saved_music_is_muted()
+        local config=io.open(@@MUSIC_SETTINGS@@,'rb')
+        if not config then return end
+        local raw=config:read(1048577)
+        config:close()
+        if not raw or #raw>1048576 then return end
+        if raw:sub(1,2)=='\255\254' or raw:sub(1,2)=='\254\255' then raw=raw:gsub('%z','') end
+        local row=raw:match('[\r\n]SavedSettingsConfig=([^\r\n]*)') or ''
+        local value=tonumber(row:match('"MusicSoundVolume"%s*,%s*"([^"]+)"'))
+        return value==0
+    end
+
+    return function(pc,gs,settingsApplied)
+        local current=pc:GetWorld()
+        if not valid(current) then return end
+        if not same_object(current,world) then world=current;failed=nil end
+        if failed then return end
+        local ok,why=pcall(function()
+            local wantMute=saved_music_is_muted()
+            if wantMute==nil or (not wantMute and not muted) then return end
+            local phase=gs.r_GameplayPhaseInfo.Phase.TagName:ToString()
+            if wantMute and muted and not settingsApplied and same_object(current,appliedWorld)
+                and phase==appliedPhase then return end
+            if not valid(bus) then
+                signature('/Script/Engine.SoundSubmix:SetSubmixOutputVolume',
+                          {{'WorldContextObject','ObjectProperty',0},{'InOutputVolume','FloatProperty',8}})
+                bus=LoadAsset(busPath)
+                assert(valid(bus) and bus:GetFullName()=='SoundSubmix '..busPath,'match_music_submix_required')
+            end
+            -- The original match soundtrack submix has unity output. The
+            -- native sound settings still own nonzero Music slider levels.
+            bus:SetSubmixOutputVolume(pc,wantMute and 0.0 or 1.0)
+            muted=wantMute
+            appliedWorld=current
+            appliedPhase=phase
+            report('MATCH_MUSIC_MUTE|'..tostring(muted))
+        end)
+        if not ok then failed=true;report('MATCH_MUSIC_MUTE_UNAVAILABLE|'..tostring(why):sub(1,300)) end
+    end
+end)()
+
+local shieldWallPreviewChecked=false
+local function configure_shield_wall_preview()
+ if shieldWallPreviewChecked then return end
+ shieldWallPreviewChecked=true
+ local ok,why=pcall(function()
+  local asset='/Game/Topaz/Abilities/Packs/ForceField/GA_Pack_ForceField'
+  local class=LoadAsset(asset..'.GA_Pack_ForceField_C')
+  local defaults=StaticFindObject(asset..'.Default__GA_Pack_ForceField_C')
+  assert(valid(class) and class:GetFullName()=='BlueprintGeneratedClass '..asset..'.GA_Pack_ForceField_C'
+   and valid(defaults) and defaults:IsA(class) and type(defaults.AlwaysUsePreview)=='boolean','shield_wall_preview_defaults_required')
+  defaults.AlwaysUsePreview=true
+  assert(defaults.AlwaysUsePreview==true,'shield_wall_preview_defaults_readback_failed')
+ end)
+ if not ok then report('SHIELD_WALL_PREVIEW_ERROR|'..tostring(why)) end
+end
+local configure_stock_clouds=(function()
+    local descriptor=mapDefinitions[@@STOCK_CLOUD_MAP@@]
+    local attemptedWorld
+    return function(gs,sys)
+        if not descriptor or not gs:GetFullName():find(descriptor.world,1,true) then return end
+        local world=gs:GetWorld()
+        if not valid(world) or same_object(world,attemptedWorld) then return end
+        local spawned
+        local ok,why=pcall(function()
+            local cloud
+            for _,actor in ipairs(FindAllOf('VolumetricCloud') or {}) do
+                if valid(actor) and same_object(actor:GetWorld(),world) then
+                    assert(not cloud,'multiple_volumetric_clouds')
+                    cloud=actor
+                end
+            end
+            local myrkwood=descriptor.name=='KatabaticMyrkwood'
+            if not cloud and not myrkwood then return end
+            attemptedWorld=world
+            local path='/Engine/EngineSky/VolumetricClouds/m_SimpleVolumetricCloud_Inst.m_SimpleVolumetricCloud_Inst'
+            local material=StaticFindObject(path)
+            if not valid(material) then material=LoadAsset(path) end
+            assert(valid(material) and material:GetFullName()=='MaterialInstanceConstant '..path,'stock_cloud_material_required')
+            if not cloud then
+                local class=loaded('/Script/Engine.VolumetricCloud','Class /Script/Engine.VolumetricCloud')
+                spawned=world:SpawnActor(class,{X=0,Y=0,Z=0},{Pitch=0,Yaw=0,Roll=0})
+                cloud=spawned
+            end
+            assert(valid(cloud) and same_object(cloud:GetWorld(),world),'volumetric_cloud_actor_required')
+            local component=cloud.VolumetricCloudComponent
+            assert(valid(component),'volumetric_cloud_component_required')
+            component:SetMaterial(material)
+            assert(same_object(component.Material,material),'stock_cloud_material_readback_failed')
+            if descriptor.name~='Stonehenge2026' and component.ViewSampleCountScale<1 then
+                component:SetViewSampleCountScale(1.0)
+                assert(component.ViewSampleCountScale==1.0,'stock_cloud_sample_count_readback_failed')
+            end
+            if spawned or descriptor.name=='Stonehenge2026' then
+                component:SetLayerBottomAltitude(3.5)
+                component:SetLayerHeight(4.0)
+                assert(component.LayerBottomAltitude==3.5 and component.LayerHeight==4.0,'stock_cloud_layer_readback_failed')
+            end
+            if descriptor.name~='Stonehenge2026' then
+                -- Shipping clients ignore -ini overrides. Configure the
+                -- native temporal reconstruction path in the selected world.
+                sys:ExecuteConsoleCommand(gs,'r.VolumetricRenderTarget.Mode 2',nil)
+                sys:ExecuteConsoleCommand(gs,'r.VolumetricRenderTarget 1',nil)
+                assert(sys:GetConsoleVariableIntValue('r.VolumetricRenderTarget.Mode')==2 and
+                       sys:GetConsoleVariableIntValue('r.VolumetricRenderTarget')==1,'stock_cloud_temporal_mode_readback_failed')
+                report('STOCK_CLOUD_TEMPORAL_RECONSTRUCTION|map='..descriptor.name..'|mode=2')
+            end
+            report('STOCK_CLOUD_PROFILE_APPLIED|map='..descriptor.name)
+        end)
+        if not ok then
+            attemptedWorld=world
+            if valid(spawned) then pcall(function() spawned:K2_DestroyActor() end) end
+            report('STOCK_CLOUD_PROFILE_UNAVAILABLE|'..tostring(why))
+        end
+    end
+end)()
+
 local function client_tick(sys)
     if joined and os.time()-lastJoin>=30 then
         local modes=FindAllOf('TopGameMode_Topaz') or {}
@@ -471,19 +1321,56 @@ local function client_tick(sys)
     end
     local gs=state();if not gs or gs:HasAuthority() then return end
     configure_geometry(gs)
+    configure_stock_clouds(gs,sys)
     if clientWorld~=gs:GetFullName() then clientWorld=gs:GetFullName();report("CLIENT_WORLD|"..clientWorld) end
     local pcs=FindAllOf("ValPlayerController") or {};if #pcs~=1 or not valid(pcs[1]) then return end
     local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() or not valid(pc.PlayerState) then return end
     configure_weather(gs,pc)
+    configure_water(gs)
     local ps=pc.PlayerState
     if SPECTATOR_ROLE=="spectator" then
         if not spectatorRuntime then spectatorRuntime=assert(loadfile(@@SPECTATOR_RUNTIME@@))()({valid=valid,scope=scope,signature=signature,report=report,lease_id=SPECTATOR_LEASE,watch_id=SPECTATOR_WATCH,material_factory=assert(loadfile(@@SPECTATOR_MATERIAL_RUNTIME@@))()})end
         spectatorRuntime.tick(pc,ps,gs);return
     end
     assert(SPECTATOR_ROLE=="player","unknown_client_role")
+    if nativeSpectatorPresentation~=false and (nativeSpectatorPresentation or ps.r_bDead==true) then
+        local ok,why=pcall(function()
+            if not nativeSpectatorPresentation then
+                nativeSpectatorPresentation=assert(loadfile(@@SPECTATOR_RUNTIME@@))()({
+                    valid=valid,scope=scope,signature=signature,report=report,passive=true,
+                    material_factory=assert(loadfile(@@SPECTATOR_MATERIAL_RUNTIME@@))()
+                })
+            end
+            nativeSpectatorPresentation.observe_native(pc,ps,gs)
+        end)
+        if not ok then
+            nativeSpectatorPresentation=false
+            report('NATIVE_SPECTATOR_PRESENTATION_ERROR|'..tostring(why))
+        end
+    end
+    local pawnReady=valid(pc.Pawn) and pc.Pawn.bInitialized==true
+    local settingsApplied=pawnReady and apply_saved_sound_settings(pc)
+    update_match_music(pc,gs,settingsApplied)
+    configure_shield_wall_preview()
+    if not scoreBarFailed then
+        local ok,why=pcall(refresh_ctf_score_bar,pc,ps,gs)
+        if not ok then scoreBarFailed=true;report('CTF_SCORE_BAR_ERROR|'..tostring(why):sub(1,300)) end
+    end
+    if not shockLanceVisualFailed then
+        local ok,why=pcall(configure_shock_lance)
+        if not ok then shockLanceVisualFailed=true;report('SHOCK_LANCE_CAMERA_EFFECTS_ERROR|'..tostring(why):sub(1,300)) end
+    end
+    ensure_flag_release_handoff(gs)
+    bind_post_match_escape()
+    if observe_post_match_result then observe_post_match_result() end
     local plc=pc.PlayerLoadoutComponent;if not valid(plc) then return end
     local r=player_record(pc,ps)
-    if valid(pc.Pawn) and pc.Pawn.bInitialized==true then observe_markers(pc,ps,gs);releaseRadarRuntime.tick(pc,gs);if not r.ready then r.ready=true;report("REMOTE_PAWN_READY|role=client") end;return end
+    if pawnReady then
+        observe_markers(pc,ps,gs)
+        releaseRadarRuntime.tick(pc,gs)
+        if not r.ready then r.ready=true;report("REMOTE_PAWN_READY|role=client") end
+        return
+    end
     if r.selectionAttempted or valid(pc.Pawn) or (ps.r_TeamId~=1 and ps.r_TeamId~=2) or not plc:IsComponentReady() then return end
     local choices=plc.r_PlayerLoadouts;if choices:GetArrayNum()==0 then return end;assert(choices:GetArrayNum()<=64)
     local chosen=nil

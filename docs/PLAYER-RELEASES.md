@@ -21,3 +21,9 @@ Release assets must each remain below GitHub's 2 GiB limit. If a future complete
 The r5 ZIP was built before these repositories were created. Its embedded `RELEASE-INFO.json` and package manifest retain its original build identity. The Git tag records this distribution/verification setup, not a claim that the old ZIP was rebuilt byte-for-byte from the tag. `DISTRIBUTION-PROVENANCE.json` records the archive digest, its original package-manifest digest and the corresponding frontend/backend source references.
 
 Later releases should record the exact source commits used to build their packages. Update shared runtime/catalog files and both repositories' shared-contracts.json together. Verify all selected map hashes against the target server again for each release. Keep download links pinned to a verified release rather than an unverified development branch.
+
+## Building a current complete release
+
+`tools/build_player_release.py` takes an externally retained base archive and its exact SHA256, a fresh verified server catalog, the paired backend checkout, and a fresh output directory outside the source checkout. It retains cooked content, map-fingerprint runtime and bundled binary bytes from the verified base. Canonical client source overlays and updated instructions are inventoried; `SOURCE-INFO.json` records their hashes and exact source commits. Both selected checkouts must be clean and committed before building, and remain unchanged during the build.
+
+Run the complete archive verifier above afterward. A published client release does not deploy the server. Keep unresolved multiplayer/loadout and cold-preparation limitations explicit in playtest release notes.

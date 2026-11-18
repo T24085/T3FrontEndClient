@@ -40,7 +40,11 @@ lobby-server-defaults.json
 client-settings.json
 connection-policy.json
 connection.json
+group-invitation.json
 private-config.json
+server-access.json
+server-access-operator.json
+server-access-state.json
 local-installation.json
 laptop-setup.json
 active-run.json

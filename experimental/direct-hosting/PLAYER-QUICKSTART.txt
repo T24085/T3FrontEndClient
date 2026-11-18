@@ -1,0 +1,26 @@
+TRIBES 3 • Windows Direct Starter • r12
+
+1. Install TRIBES 3 in Steam and keep Steam running and signed in.
+2. Extract the entire Direct Starter ZIP into a fresh folder.
+3. Run Start Direct Starter.bat. The player ZIP your host prepares registers
+   your device on the first launch and saves access for later launches.
+   Reopen the same launcher to receive signed updates from your game host.
+4. Join or create a lobby. Pick teams, start the match, then click Join game
+   when the match is ready. The first match can take longer while Starter
+   checks and stages your game files.
+
+If your host supports proximity voice, hold your proximity key while the
+game is in the foreground to talk to enemy players within 100 meters.
+The default is F9. Use Change key in Starter to pick another keyboard
+key. Turn off Proximity voice in Starter to mute transmission and playback.
+
+If Starter asks for a JSON, it is using the unconfigured template. Ask for
+the player ZIP prepared by your host. Individual invitations can still be
+imported into the template using Change Host Invitation.bat.
+You can keep this Starter alongside your regular Community Starter. This build
+uses the direct host's lobby and map catalog and does not require Tailscale.
+
+If the lobby won't open, ask your host to check TCP forwarding, the TLS
+certificate, and your invitation. If the lobby opens and the game times out,
+ask the host to check the UDP rule. The first connection test should be from
+outside the host's home network.

@@ -12,6 +12,16 @@ def show_error(message):
     ctypes.windll.user32.MessageBoxW(None, message, 'TRIBES 3 Community Starter', 0x10)
 
 
+def launch_startup(root, *, ssl_context=None):
+    from starter_update import run_startup
+
+    def launch(on_ready):
+        from desktop_launcher import main
+        main(ssl_context=ssl_context, on_ready=on_ready)
+
+    run_startup(root, launch, ssl_context=ssl_context)
+
+
 def main():
     root = Path(__file__).resolve().parent
     os.environ['TCL_LIBRARY'] = str(root / 'python/tcl/tcl8.6')
@@ -29,8 +39,7 @@ def main():
         with stream:
             sys.stdout = sys.stderr = stream
             try:
-                from desktop_launcher import main as launch
-                launch()
+                launch_startup(root)
             except BaseException as exc:
                 if isinstance(exc, SystemExit) and exc.code in (None, 0):
                     return 0

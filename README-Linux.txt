@@ -1,4 +1,4 @@
-TRIBES 3 COMMUNITY STARTER - LINUX / PROTON PLAYTEST
+TRIBES 3 COMMUNITY STARTER - LINUX / PROTON R12
 
 This is an x86_64 Linux compatibility candidate. It runs the existing Windows
 client through Steam Proton. The Linux launcher is tested separately from the
@@ -8,7 +8,8 @@ It does not include a server, Steam, Proton, or the original game.
 ONE-TIME SETUP
 
 1. Install TRIBES 3: Rivals in Steam using your own account. Connect Tailscale
-   to the playtest network and have the owner approve you if needed.
+   to the playtest network. For first-time access, open the shared server setup
+   page in a browser and enter the playtest code from your organizer.
 2. Extract this entire .tar.gz into a permanent folder under your home directory.
    Use an ordinary local Linux filesystem with enough space for an isolated
    game copy. Do not extract into the original game's installation directory.
@@ -20,7 +21,11 @@ ONE-TIME SETUP
 5. Click Play for TRIBES 3 in Steam. Community Starter opens through Proton.
    Create/join a lobby and click Join game after the match becomes ready.
 
-After setup, use Play in Steam each time. Keep the extracted folder in the same
+After setup, use Play in Steam each time. Starter checks the signed r12 update
+channel before opening the lobby. Compatible cooked map updates sync from the
+connected server. The archive includes all 22 map choices from the live host.
+
+Keep the extracted folder in the same
 location; if you move it, repeat steps 3-4. Remove the launch option to return to
 the original Steam launch. Setup does not edit Steam configuration for you.
 
@@ -63,6 +68,6 @@ TROUBLESHOOTING / TEST REPORTS
   flag pickup/capture, respawn and quitting work. A lobby screen alone does not
   establish that the UE4SS gameplay runtime works under that Proton version.
 
-Native Steam is the initial target. Flatpak Steam and Steam Deck Gaming Mode
+Native Steam on x86_64 Linux is the initial target. Flatpak Steam and Steam Deck Gaming Mode
 require their own end-to-end validation; sandbox access to the extracted folder
 and Python can differ. The server is unchanged and remains on the host PC.

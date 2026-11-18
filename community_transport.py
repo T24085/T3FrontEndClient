@@ -12,13 +12,35 @@ import ssl
 import threading
 
 from dynamic_destination import destination,isolated_source
-from community_maps import BY_ID
+from community_maps import BY_ID, MAX_MAPS, valid_id, valid_label
+from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION
+
+MAX_LOBBY_BOTS = 12
+DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True}
+
+
+def validated_lobby_rules(value, *, partial=False):
+    keys = DEFAULT_LOBBY_RULES.keys()
+    if (not isinstance(value, dict) or not value or not value.keys() <= keys
+            or not partial and value.keys() != keys):
+        raise ValueError('Invalid match rules.')
+    for name, selected in value.items():
+        if name == 'botCount':
+            if type(selected) is not int or not 0 <= selected <= MAX_LOBBY_BOTS:
+                raise ValueError(f'Choose zero to {MAX_LOBBY_BOTS} bots.')
+        elif type(selected) is not bool:
+            raise ValueError('Use a checkbox to change this match rule.')
+    return dict(value)
 
 
 class CommunityError(RuntimeError):
     def __init__(self, message, code=None):
         super().__init__(message)
         self.code = code
+
+
+class CommunityConnectionError(CommunityError):
+    """The connection failed; a submitted operation may already have applied."""
 
 
 class PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -36,6 +58,23 @@ class PinnedHTTPSConnection(http.client.HTTPSConnection):
             raise
 
 
+def read_server_map_options(items):
+    if not isinstance(items, list) or not 1 <= len(items) <= MAX_MAPS:
+        raise ValueError('Invalid lobby map list.')
+    labels, ids, names = {}, set(), set()
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {'id', 'label'}:
+            raise ValueError('Invalid lobby map option.')
+        name, label = item['id'], item['label']
+        if (not valid_id(name) or name.casefold() in ids
+                or not valid_label(label) or label.casefold() in names):
+            raise ValueError('Invalid or duplicate server map option.')
+        ids.add(name.casefold())
+        names.add(label.casefold())
+        labels[name] = label
+    return labels
+
+
 class CommunityClient:
     def __init__(self, hostname, port, server_address, policy, *, ssl_context=None, test_source=None):
         test_source=isolated_source(test_source)
@@ -45,8 +84,8 @@ class CommunityClient:
             raise ValueError('Invalid lobby port.')
         address = ipaddress.IPv4Address(server_address)
         if test_source is None:
-            if address not in ipaddress.ip_network('100.64.0.0/10'):
-                raise ValueError('Lobby server must use Tailscale IPv4.')
+            if not self.accepts_server_address(address):
+                raise ValueError(self.address_error)
         elif str(address) != '127.0.0.1':
             raise ValueError('Invalid isolated test connection.')
         self.hostname = hostname.lower()
@@ -63,10 +102,20 @@ class CommunityClient:
         self.token = None
         self.player_id = None
         self._watch_tokens = {}
+        self.server_maps = None
         self.lock = threading.RLock()
 
+    address_error = 'Lobby server must use Tailscale IPv4.'
+
+    @staticmethod
+    def accepts_server_address(address):
+        return address in ipaddress.ip_network('100.64.0.0/10')
+
+    def request_headers(self):
+        return {'Host': self.authority, 'Accept': 'application/json', CATALOG_HEADER: str(CATALOG_VERSION), 'X-T3-Map-Labels': '1'}
+
     def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True):
-        headers = {'Host': self.authority, 'Accept': 'application/json'}
+        headers = self.request_headers()
         method, body = 'GET', None
         if data is not None:
             method = 'POST'
@@ -101,26 +150,60 @@ class CommunityClient:
             return value
         except CommunityError:
             raise
-        except (OSError, ssl.SSLError, http.client.HTTPException, ValueError) as exc:
-            raise CommunityError('Could not securely contact the community lobby.') from exc
+        except (OSError, http.client.HTTPException) as exc:
+            raise CommunityConnectionError('Could not securely contact the community lobby.') from exc
+        except ValueError as exc:
+            raise CommunityError('Invalid lobby response.') from exc
         finally:
             conn.close()
 
     def capabilities(self):
         with self.lock:
-            return self._request('capabilities')
+            caps = self._request('capabilities')
+            try:
+                self.server_maps = (read_server_map_options(caps['maps'])
+                                    if caps.get('mapFileSync') == CATALOG_VERSION else None)
+            except (ValueError, KeyError) as exc:
+                raise CommunityError('Invalid server map catalog.') from exc
+            return caps
+
+    def map_label(self, name):
+        if not isinstance(name, str):
+            return None
+        if self.server_maps is not None:
+            return self.server_maps.get(name)
+        return BY_ID[name].label if name in BY_ID else None
 
     def create(self, name):
         with self.lock:
             if self.code is not None:
-                raise CommunityError('Already in a lobby.')
+                try:
+                    return self.action('state')
+                except CommunityError as exc:
+                    if exc.code not in ('lobby_missing', 'session_invalid'):
+                        raise
             return self._remember(self._request('create', {'name':name}))
 
     def join(self, code, name):
         with self.lock:
-            if self.code is not None:
-                raise CommunityError('Already in a lobby.')
+            if self.code is not None and self.code != code:
+                try:
+                    self.action('state')
+                except CommunityError as exc:
+                    if exc.code not in ('lobby_missing', 'session_invalid'):
+                        raise
+                else:
+                    raise CommunityError('Leave lobby '+self.code+' before joining another lobby.')
             return self._remember(self._request('join', {'code':code, 'name':name}))
+
+    def resume(self):
+        """Recover only this freshly verified device's existing membership."""
+        with self.lock:
+            response = self._request('resume', {})
+            if response.get('room') is None and set(response) == {'room'}:
+                self.code = self.token = self.player_id = None
+                return None
+            return self._remember(response)
 
     def _remember(self, response):
         room, token = response.get('room'), response.get('token')
@@ -134,7 +217,7 @@ class CommunityClient:
 
     def action(self, operation, **data):
         with self.lock:
-            if self.code is None or operation not in ('state', 'team', 'map', 'start', 'stop', 'reset', 'leave','spectators'):
+            if self.code is None or operation not in ('state', 'team', 'map', 'start', 'stop', 'reset', 'leave','spectators','rules'):
                 raise CommunityError('No valid lobby action is available.')
             if 'code' in data:
                 raise CommunityError('Invalid lobby action.')
@@ -169,11 +252,13 @@ class CommunityClient:
 
     def _validated_target(self,match,name,*,spectator=False):
         if not isinstance(match,dict):raise CommunityError('Invalid match response.')
+        if match.get('map', name) != name:
+            raise CommunityError('The allocated match does not match the selected map.')
         fingerprint,match_id=match.get('contentHash'),match.get('id')
         pattern=r'[0-9a-f]{32}' if spectator else r'[A-Za-z0-9_-]{1,64}'
         if not isinstance(match_id,str) or not re.fullmatch(pattern,match_id):
             raise CommunityError('The server did not provide a valid match identity.')
-        if not isinstance(name,str) or name not in BY_ID or not isinstance(fingerprint,str) or not re.fullmatch(r'[0-9a-f]{64}',fingerprint):
+        if self.map_label(name) is None or not isinstance(fingerprint,str) or not re.fullmatch(r'[0-9a-f]{64}',fingerprint):
             raise CommunityError('The server did not provide a valid map version.')
         if spectator and match.get('role')!='spectator':
             raise CommunityError('The server did not provide an observer admission.')
@@ -183,6 +268,10 @@ class CommunityClient:
         try:endpoint=destination(address+':'+str(port),self.policy,test_source=self.test_source)
         except ValueError as exc:raise CommunityError('The match endpoint is not approved by this client.')from exc
         target={'endpoint':endpoint,'map':name,'contentHash':fingerprint,'matchId':match_id}
+        if 'flagIndicators' in match:
+            if type(match['flagIndicators']) is not bool:
+                raise CommunityError('Invalid flag indicator policy.')
+            target['flagIndicators'] = match['flagIndicators']
         if spectator:target['role']='spectator'
         return target
 
@@ -196,8 +285,8 @@ class CommunityClient:
             for item in matches:
                 if (not isinstance(item,dict) or set(item)!=fields or not isinstance(item['id'],str)
                         or re.fullmatch('[0-9a-f]{32}',item['id'])is None or item['id']in seen
-                        or not isinstance(item['map'],str) or item['map']not in BY_ID
-                        or item['label']!=BY_ID[item['map']].label or type(item['canSpectate'])is not bool
+                        or self.map_label(item['map']) is None or item['label']!=self.map_label(item['map'])
+                        or type(item['canSpectate'])is not bool
                         or any(type(item[k])is not int or item[k]<0 for k in
                                ('playerCount','playerCapacity','spectatorCount','spectatorCapacity'))
                         or item['playerCount']>item['playerCapacity']):

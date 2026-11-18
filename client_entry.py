@@ -21,6 +21,11 @@ from client_support import (ROOT, REL, engine_command_line, save,
 
 MODE = '/Game/Topaz/Game/BP_TopazGameMode_CTF_Persistent_BotBackfill.BP_TopazGameMode_CTF_Persistent_BotBackfill_C'
 SPECTATOR_CONTRACT = 'native-spectator-v1'
+STOCK_CLOUD_MAPS = frozenset({
+    'Damnation2026', 'HighOctane2026', 'KatabaticMyrkwood', 'Rollercoaster2026',
+    'Scarabrae2026', 'Snowblind2026', 'SnowblindBlizzard2026', 'Stonehenge2026',
+})
+
 
 
 def main():
@@ -29,9 +34,12 @@ def main():
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--prepared')
     parser.add_argument('--prepared-sha256')
+    parser.add_argument('--map-revision', help=argparse.SUPPRESS)
     parser.add_argument('--expected-map')
     parser.add_argument('--expected-content-hash')
     parser.add_argument('--spectate', action='store_true')
+    parser.add_argument('--public-session', action='store_true')
+    parser.add_argument('--show-flag-indicators', action='store_true')
     parser.add_argument('--match-id')
     parser.add_argument('--watch-id')
     parser.add_argument('--test-source', choices=ISOLATED_TEST_SOURCES, help=argparse.SUPPRESS)
@@ -42,6 +50,8 @@ def main():
     parser.add_argument('--headless', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--seconds', type=float, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.public_session and (args.spectate or args.prepare_only or args.check or not args.expected_map):
+        raise ValueError('Public CTF requires an admitted match and its verified map.')
     if args.spectate:
         if (args.prepare_only or args.check or args.expected_map is None or args.expected_content_hash is None
                 or not re.fullmatch('[0-9a-f]{32}', args.match_id or '')
@@ -57,6 +67,8 @@ def main():
         raise ValueError('Prepared client requires its exact descriptor and digest.')
     if args.prepare_only and (args.prepared or args.endpoint or args.check):
         raise ValueError('File preparation cannot join a match.')
+    if args.map_revision is not None and not args.prepare_only:
+        raise ValueError('A map revision must go through owned file preparation.')
     if not args.prepare_only and not args.endpoint:
         raise ValueError('The lobby must provide the selected match endpoint.')
     if args.game_dir is None:
@@ -91,7 +103,13 @@ def main():
         with startup.phase('original-verification'):
             manifest,identities,verification=verify_game(source,workspace,args.rehash)
         from map_catalog import verified_catalog
-        with startup.phase('map-verification'):catalog=verified_catalog(ROOT)
+        map_overlay, custom_maps = None, None
+        with startup.phase('map-verification'):
+            if args.map_revision is None:
+                catalog = verified_catalog(ROOT)
+            else:
+                from map_sync import load_overlay
+                map_overlay, catalog, custom_maps = load_overlay(workspace, args.map_revision, package)
         if args.expected_map is not None and catalog.get(args.expected_map)!=args.expected_content_hash:
             raise ValueError('Your map files do not match this match. Update the community client.')
         if args.check:
@@ -99,7 +117,8 @@ def main():
             return
         startup_progress('staging_game')
         with startup.phase('client-preparation'):
-            descriptor=stage(ROOT,source,workspace,package,manifest,identities,verification,catalog=catalog,
+            descriptor=stage(ROOT,source,workspace,package,manifest,identities,verification,catalog=catalog,map_overlay=map_overlay,
+                             custom_maps=custom_maps,
                              emit=lambda line:print(line,flush=True))
         if args.prepare_only:return
         prepared=consume(ROOT,source,workspace,descriptor['path'],descriptor['sha256'],
@@ -121,9 +140,28 @@ def main():
     loopback_http_failure_preflight()
     from player_profile import ProfileSession
     from client_bootstrap import apply as bootstrap_runtime, map_name as bootstrap_map
+    from community_maps import BY_ID, custom_definitions, lua_map_definitions
+    definitions = {**BY_ID, **custom_definitions(package.get('map_definitions', {})),
+                   **custom_definitions(prepared.get('custom_maps', {}))}
     bootstrap_contract = package.get('client_bootstrap_contract')
-    selected_bootstrap = bootstrap_map(bootstrap_contract, args.expected_map)
-    template = bootstrap_runtime((ROOT / 'lua/client.lua').read_text(encoding='utf-8'), bootstrap_contract, args.expected_map)
+    bootstrap_id = 'Drydock' if args.public_session else args.expected_map
+    selected_bootstrap = bootstrap_map(bootstrap_contract, bootstrap_id, definitions=definitions)
+    template = bootstrap_runtime((ROOT / 'lua/client.lua').read_text(encoding='utf-8'), bootstrap_contract,
+                                 bootstrap_id, definitions=definitions)
+    if args.public_session:
+        map_definitions = run / 'public-maps.lua'
+        bundled = ROOT / 'lua/community_maps.lua'
+        quote = lambda value: json.dumps(value, ensure_ascii=False)
+        lines = [f'local maps=assert(loadfile({quote(bundled.as_posix())}))()']
+        for key in sorted(definitions.keys() - BY_ID.keys()):
+            definition = definitions[key]
+            world = f'{definition.package}.{definition.level}:'
+            lines.append(f'maps[{quote(key)}]={{name={quote(key)},package={quote(definition.package)},'
+                         f'world={quote(world)},native=true,'
+                         'native_world_settings_class="/Script/Valhalla.ValWorldSettings"}')
+        map_definitions.write_text('\n'.join([*lines, 'return maps', '']), encoding='utf-8')
+    else:
+        map_definitions = lua_map_definitions(ROOT, run, definitions.get(args.expected_map))
     diagnostic_profile = bool(args.headless or args.test_source or args.seconds is not None)
     with ProfileSession(mode=MODE, workspaces=(workspace, source.parent / 'TRIBES3 Client Sessions'),
                         diagnostic=diagnostic_profile, source_game=source, package_root=ROOT,
@@ -142,11 +180,21 @@ def main():
         if args.test_source:
             argv.append('-MULTIHOME=' + args.test_source)
         argv += ['-nullrhi', '-nosound', '-unattended'] if args.headless else ['-d3d11'] + (['-fullscreen'] if player_profile.fullscreen_default else [])
+        cloud_map = args.expected_map if not args.headless and args.expected_map in STOCK_CLOUD_MAPS else ''
         if args.spectate and (any(not (ROOT/name).is_file()for name in ('lua/spectator_client.lua','lua/spectator_materials.lua'))
                 or any('@@' + tag + '@@' not in template for tag in
                        ('SPECTATOR_ROLE', 'SPECTATOR_RUNTIME', 'SPECTATOR_MATERIAL_RUNTIME', 'MATCH_LEASE', 'WATCH_ID'))):
             raise ValueError('The spectator runtime is incomplete. Update the community client.')
-        for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=(ROOT/'lua/community_maps.lua').as_posix(), SNOWBLIND_WEATHER=(ROOT/'lua/snowblind_weather.lua').as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
+        if '@@DAMNATION_WATER@@' in template:
+            water_runtime = ROOT / 'lua/damnation_water.lua'
+            if not water_runtime.is_file():
+                raise ValueError('The Damnation water runtime is incomplete. Update the community client.')
+            template = template.replace('@@DAMNATION_WATER@@', json.dumps(water_runtime.as_posix(), ensure_ascii=False))
+        template = template.replace('@@SHOW_FLAG_INDICATORS@@', 'true' if args.show_flag_indicators else 'false')
+        template = template.replace('@@STOCK_CLOUD_MAP@@', json.dumps(cloud_map))
+        settings_path = profile / 'Saved/Config/Windows/GameUserSettings.ini'
+        template = template.replace('@@MUSIC_SETTINGS@@', json.dumps(settings_path.as_posix(), ensure_ascii=False))
+        for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=map_definitions.as_posix(), SNOWBLIND_WEATHER=(ROOT/'lua/snowblind_weather.lua').as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
             template = template.replace('@@' + key + '@@', json.dumps(value, ensure_ascii=False))
         if '@@' in template:
             raise RuntimeError('Incomplete client runtime template.')

@@ -4,6 +4,10 @@ import ipaddress
 ISOLATED_TEST_SOURCES=('127.0.0.2','127.0.0.3','127.0.0.4')
 
 
+DIRECT_BRIDGE_POLICY = {'transport': 'authenticated-udp-v1', 'server_address': '127.0.0.1',
+                        'first_port': 1024, 'last_port': 65535}
+
+
 def isolated_source(value):
     """The three explicit devices in a player/player/observer loopback test."""
     if value is not None and (not isinstance(value,str) or value not in ISOLATED_TEST_SOURCES):
@@ -22,6 +26,10 @@ def destination(value, policy, *, test_source=None):
         address, port = ipaddress.IPv4Address(host), int(port_text)
     except ValueError as exc:
         raise ValueError('Invalid match address.') from exc
+    if policy == DIRECT_BRIDGE_POLICY:
+        if str(address) != '127.0.0.1' or not 1024 <= port <= 65535:
+            raise ValueError('Direct-host native traffic must use the local UDP bridge.')
+        return str(address) + ':' + str(port)
     if not isinstance(policy, dict) or set(policy) != {'server_address', 'first_port', 'last_port'}:
         raise ValueError('Invalid match connection policy.')
     try:
