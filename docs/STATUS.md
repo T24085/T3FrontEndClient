@@ -5,9 +5,12 @@ native death camera follows another player. This path leaves the view target,
 input, AFK policy, and respawn under native control. It restores presentation
 when the player respawns or the remote view ends.
 
-Spectators start with the chase camera. It frames the existing full-body mesh
-from farther back with a lower pivot. A short spring arm at a wall keeps the
-chase body mask. Left click selects the next player and right click selects the
+Spectators start with the chase camera. In open space the camera sits 5.8 m
+from a raised pivot and looks down at a steady angle. A world-static sweep
+selects a raised or shoulder angle when a nearby wall blocks the usual view.
+The client writes the resulting pose directly to the camera because the
+spring arm socket can retain its initial position on a remote actor. Left
+click selects the next player and right click selects the
 previous player. F7 selects first person, F8 selects chase, and middle click
 switches between them. Explicit perspective keys also refresh a cached camera
 when the controller already reports the requested mode. The selected perspective
@@ -17,9 +20,10 @@ cosmetic overrides that arrive on the original material after the view opens.
 The observer HUD also suppresses the default “Text Block” beside “SKI TOGGLE”
 and restores the label when the native HUD supplies a value.
 
-Lua fixture coverage exercises keyboard and mouse selection, close-camera
-chase presentation, restored native camera policy, and target reacquisition.
-A rendered multiplayer check is pending.
+Lua fixture coverage exercises perspective controls, close-camera body
+presentation, target reacquisition, and camera clearance. An isolated native
+Firestorm test measured the open camera pose and the raised pose around a
+static obstacle. A rendered multiplayer check is pending.
 
 # Native flag widget callback
 

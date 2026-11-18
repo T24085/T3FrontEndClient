@@ -51,6 +51,16 @@ function StaticFindObject(name)
  return classes[name]
 end
 function FName(name)return name end
+local sys=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
+probes={};obstacles={}
+function sys:SphereTraceSingleForObjects(target,start,finish,radius,types,complex,ignore,_,hit)
+ assert(types[1]==0 and #types==1 and complex and ignore[1]==target and radius==16)
+ assert(finish.Z>start.Z)
+ probes[#probes+1]={start=start,finish=finish}
+ local time=table.remove(obstacles,1)
+ if time then hit.Time=time;return true end
+ return false
+end
 local skiRow=object('ski_row')
 skiRow.class='/Script/UMG.PanelWidget'
 local widgets={}
@@ -77,6 +87,11 @@ function make_target(name)
  local t=object(name);t.class='/Script/Valhalla.ValCharacter';t.bInitialized=true
  t.PlayerState=object(name..'_state');t.PlayerState.PawnPrivate=t
  t.bForceOnlySpectatorToThirdPerson=true
+ t.aim={Pitch=0,Yaw=0,Roll=0}
+ function t:GetBaseAimRotation()return self.aim end
+ t.RootComponent=object(name..'_root')
+ function t.RootComponent:GetOwner()return t end
+ function t.RootComponent:K2_GetComponentLocation()return {X=0,Y=0,Z=100}end
  t.alpha=0
  t.FirstPersonCameraComponent=object(name..'_eye')
  function t.FirstPersonCameraComponent:GetOwner()return t end
@@ -86,7 +101,9 @@ function make_target(name)
   local component=object(class.name)
   component.height=transform.Translation.Z
   function component:GetOwner()return t end
-  function component:K2_AttachToComponent()return true end
+  function component:K2_AttachToComponent(parent,socket)assert(parent==t.RootComponent and socket=='None');return true end
+  function component:SetAbsolute(location,rotation,scale)assert(not location and rotation and not scale)end
+  function component:K2_SetWorldLocationAndRotation(location,rotation)self.location=location;self.rotation=rotation end
   return component
  end
  -- An empty inventory models a retired replica. Native cleanup is outside
@@ -200,7 +217,40 @@ class SpectatorCameraTests(unittest.TestCase):
         assert(#presentations==1 and presentations[1]==true)
         pc.PlayerCameraManager.location.X=-50;follow_once()
         assert(#presentations==1 and presentations[1]==true)
-        assert(active.ThirdPersonCameraBoom.TargetArmLength==360 and active.ThirdPersonCameraBoom.height==32)
+        assert(active.ThirdPersonCameraBoom.TargetArmLength==580 and active.ThirdPersonCameraComponent.location.Z>280)
+        ''')
+
+    def test_chase_uses_aim_yaw_and_stays_above_the_player_at_extreme_pitch(self):
+        self.check('''
+        active.aim={Pitch=85,Yaw=90,Roll=31};follow_once()
+        local arm,camera=active.ThirdPersonCameraBoom,active.ThirdPersonCameraComponent
+        assert(arm.TargetArmLength==580 and camera.rotation.Yaw==90 and camera.rotation.Pitch==-14 and camera.rotation.Roll==0)
+        assert(not arm.bUsePawnControlRotation and not arm.bDoCollisionTest)
+        local shot=probes[#probes]
+        assert(shot.start.Z==148 and shot.finish.Z>280 and shot.finish.Y<-550)
+        active.aim.Pitch=-85;follow_once()
+        assert(camera.rotation.Pitch==-14 and arm.TargetArmLength==580)
+        ''')
+
+    def test_chase_tries_an_elevated_view_and_a_shoulder_view_before_closing_in(self):
+        self.check('''
+        obstacles={.08};follow_once()
+        local arm,camera=active.ThirdPersonCameraBoom,active.ThirdPersonCameraComponent
+        assert(#probes==2 and camera.rotation.Pitch==-34 and arm.TargetArmLength==580)
+        obstacles={.08,.1};follow_once()
+        assert(#probes==5 and camera.rotation.Pitch==-26 and camera.rotation.Yaw==55 and arm.TargetArmLength==580)
+        obstacles={.08,.2,.15,.3};follow_once()
+        assert(#probes==9 and camera.rotation.Yaw==-55 and arm.TargetArmLength==166)
+        follow_once()
+        assert(camera.rotation.Pitch==-14 and arm.TargetArmLength==211)
+        ''')
+
+    def test_first_person_skips_chase_collision_queries(self):
+        self.check('''
+        follow_once();local before=#probes
+        keys.F7();follow_once()
+        assert(#probes==before and not pc.third)
+        keys.F8();assert(#probes>before and pc.third)
         ''')
 
     def test_perspective_keys_rebind_a_cached_camera_even_with_cursor_visible(self):

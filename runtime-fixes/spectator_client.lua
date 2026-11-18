@@ -12,6 +12,12 @@ return function(env)
  local materials=nil
  local retired={}
  local service={};local now=env.now or os.time
+ local chaseDistance,chaseHeight=580,48
+ local cameraProbe,surfaceMargin=16,8
+ local comfortableDistance=300
+ local cameraAngles={{-14,0},{-34,0},{-26,55},{-26,-55}}
+ local noColor={R=0,G=0,B=0,A=0}
+ local chaseTrace='/Script/Engine.KismetSystemLibrary:SphereTraceSingleForObjects'
  local function same(a,b)return valid(a)and valid(b)and a:GetAddress()==b:GetAddress()and a:GetFullName()==b:GetFullName()end
  local function identity(a)return a:GetFullName()..'|'..tostring(a:GetAddress())end
  local function restore_placeholder()
@@ -84,8 +90,15 @@ return function(env)
   signature('/Script/Engine.PlayerController:SetViewTargetWithBlend',{{'NewViewTarget','ObjectProperty',0},{'BlendTime','FloatProperty',8},{'BlendFunc','ByteProperty',12},{'BlendExp','FloatProperty',16},{'bLockOutgoing','BoolProperty',20}})
   signature('/Script/Engine.Actor:AddComponentByClass',{{'Class','ClassProperty',0},{'bManualAttachment','BoolProperty',8},{'RelativeTransform','StructProperty',16},{'bDeferredFinish','BoolProperty',112},{'ReturnValue','ObjectProperty',120}})
   signature('/Script/Engine.SceneComponent:K2_AttachToComponent',{{'Parent','ObjectProperty',0},{'SocketName','NameProperty',8},{'LocationRule','EnumProperty',16},{'RotationRule','EnumProperty',17},{'ScaleRule','EnumProperty',18},{'bWeldSimulatedBodies','BoolProperty',19},{'ReturnValue','BoolProperty',20}})
-  signature('/Script/Engine.SceneComponent:K2_SetWorldRotation',{{'NewRotation','StructProperty',0},{'bSweep','BoolProperty',24},{'SweepHitResult','StructProperty',32},{'bTeleport','BoolProperty',264}})
+  signature('/Script/Engine.SceneComponent:K2_SetWorldLocationAndRotation',{{'NewLocation','StructProperty',0},{'NewRotation','StructProperty',24},
+   {'bSweep','BoolProperty',48},{'SweepHitResult','StructProperty',56},{'bTeleport','BoolProperty',288}})
+  signature('/Script/Engine.SceneComponent:SetAbsolute',{{'bNewAbsoluteLocation','BoolProperty',0},{'bNewAbsoluteRotation','BoolProperty',1},{'bNewAbsoluteScale','BoolProperty',2}})
   signature('/Script/Engine.Pawn:GetBaseAimRotation',{{'ReturnValue','StructProperty',0}})
+  signature(chaseTrace,{{'WorldContextObject','ObjectProperty',0},{'Start','StructProperty',8},{'End','StructProperty',32},
+   {'Radius','FloatProperty',56},{'ObjectTypes','ArrayProperty',64},{'bTraceComplex','BoolProperty',80},
+   {'ActorsToIgnore','ArrayProperty',88},{'DrawDebugType','ByteProperty',104},{'OutHit','StructProperty',112},
+   {'bIgnoreSelf','BoolProperty',344},{'TraceColor','StructProperty',348},{'TraceHitColor','StructProperty',364},
+   {'DrawTime','FloatProperty',380},{'ReturnValue','BoolProperty',384}})
   signature('/Script/Engine.ActorComponent:K2_DestroyComponent',{{'Object','ObjectProperty',0}})
   signature('/Script/Engine.Actor:K2_GetComponentsByClass',{{'ComponentClass','ClassProperty',0},{'ReturnValue','ArrayProperty',8}})
   local character=StaticFindObject('/Script/Valhalla.ValCharacter');assert(valid(character),'spectator_native_character_required')
@@ -198,18 +211,60 @@ return function(env)
   -- Rendered remote avatars can have native camera subobjects that never
   -- update their transforms. Preserve them, but always bind one explicitly
   -- owned viewer-local rig instead of treating existence as camera readiness.
-  local transform={Rotation={X=0,Y=0,Z=0,W=1},Translation={X=0,Y=0,Z=32},Scale3D={X=1,Y=1,Z=1}}
+  local transform={Rotation={X=0,Y=0,Z=0,W=1},Translation={X=0,Y=0,Z=0},Scale3D={X=1,Y=1,Z=1}}
   r.arm=target:AddComponentByClass(StaticFindObject('/Script/Engine.SpringArmComponent'),false,transform,false)
   if valid(r.arm)then r.armIdentity=identity(r.arm)end
   assert(valid(r.arm)and same(r.arm:GetOwner(),target),'spectator_local_arm_creation_failed')
-  r.arm.TargetArmLength=360;r.arm.bDoCollisionTest=true;r.arm.bUsePawnControlRotation=true
-  transform.Translation.Z=0
+  r.arm.TargetArmLength=chaseDistance
+  r.arm.bDoCollisionTest=false
+  r.arm.bUsePawnControlRotation=false
   r.camera=target:AddComponentByClass(StaticFindObject('/Script/Engine.CameraComponent'),false,transform,false)
   if valid(r.camera)then r.cameraIdentity=identity(r.camera)end
   assert(valid(r.camera)and same(r.camera:GetOwner(),target),'spectator_local_camera_creation_failed')
-  assert(r.camera:K2_AttachToComponent(r.arm,FName('SpringEndpoint'),0,0,0,false),'spectator_local_camera_attach_failed')
+  local root=target.RootComponent
+  assert(valid(root)and same(root:GetOwner(),target),'spectator_local_camera_root_required')
+  r.camera:SetAbsolute(false,true,false)
+  assert(r.camera:K2_AttachToComponent(root,FName('None'),0,0,0,false),'spectator_local_camera_attach_failed')
   target.ThirdPersonCameraBoom=r.arm;target.ThirdPersonCameraComponent=r.camera
   assert(same(target.ThirdPersonCameraBoom,r.arm)and same(target.ThirdPersonCameraComponent,r.camera),'spectator_local_camera_binding_failed')
+ end
+ local function chase_endpoint(pivot,pitch,yaw,length)
+  local p,y=math.rad(pitch),math.rad(yaw)
+  local horizontal=length*math.cos(p)
+  return {X=pivot.X-horizontal*math.cos(y),Y=pivot.Y-horizontal*math.sin(y),Z=pivot.Z-length*math.sin(p)}
+ end
+ local function chase_clearance(sys,r,pivot,pitch,yaw)
+  local endpoint=chase_endpoint(pivot,pitch,yaw,chaseDistance)
+  local hit={}
+  -- WorldStatic only. A carried flag or nearby pawn must not retract the camera.
+  if not sys:SphereTraceSingleForObjects(r.target,pivot,endpoint,cameraProbe,{0},true,{r.target},0,hit,true,noColor,noColor,0)then
+   return chaseDistance
+  end
+  local time=hit.Time
+  assert(type(time)=='number'and time>=0 and time<=1,'spectator_chase_trace_time_invalid')
+  return math.max(0,chaseDistance*time-surfaceMargin)
+ end
+ local function update_chase(r)
+  local sys=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
+  assert(valid(sys),'spectator_chase_system_library_required')
+  local yaw=r.target:GetBaseAimRotation().Yaw
+  local origin=r.target.RootComponent:K2_GetComponentLocation()
+  local pivot={X=origin.X,Y=origin.Y,Z=origin.Z+chaseHeight}
+  local bestDistance,bestPitch,bestYaw=-1,cameraAngles[1][1],yaw
+  for _,angle in ipairs(cameraAngles)do
+   local pitch,heading=angle[1],yaw+angle[2]
+   local distance=chase_clearance(sys,r,pivot,pitch,heading)
+   if distance>bestDistance then bestDistance,bestPitch,bestYaw=distance,pitch,heading end
+   if bestDistance>=comfortableDistance then break end
+  end
+  -- Retract immediately for an obstacle and ease back as clearance returns.
+  local length=r.chaseLength and math.min(bestDistance,r.chaseLength+45)or bestDistance
+  r.chaseLength=length
+  r.arm.TargetArmLength=length
+  -- Remote actor components can retain the spring arm's initial socket pose.
+  -- Write the checked viewpoint directly to the owned camera component.
+  local location=chase_endpoint(pivot,bestPitch,bestYaw,length)
+  r.camera:K2_SetWorldLocationAndRotation(location,{Pitch=bestPitch,Yaw=bestYaw,Roll=0},false,{},true)
  end
  local function current_target()
   local target=pc:GetViewTarget()
@@ -282,7 +337,10 @@ return function(env)
    select_perspective()
    -- Explicit mode selection also repairs a cached camera whose controller
    -- is already reporting the requested mode.
-   if following then refresh_camera(target);update_presentation(target)end
+   if following then
+    if preferredThird then update_chase(rig)end
+    refresh_camera(target);update_presentation(target)
+   end
    report('SPECTATOR_VIEW|mode='..action)
   else error('spectator_unknown_camera_action')end
  end
@@ -316,6 +374,7 @@ return function(env)
   end
   local policyReset=allow_first_person(rig)
   local perspectiveChanged=select_perspective()
+  if preferredThird then update_chase(rig)end
   if changed or perspectiveChanged or policyReset then
    refresh_camera(target)
   end
