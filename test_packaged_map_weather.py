@@ -118,6 +118,36 @@ class PackagedMapWeatherTest(unittest.TestCase):
             self.assertEqual(replacement.read_bytes(), module)
         self.assertEqual(weather_runtime_path(self.root, self.run, package), self.root / 'lua/weather.lua')
 
+    def test_shared_objectives_cache_only_materializes_private_selected_map(self):
+        other = MapDefinition('MinotaurT22026', 'Minotaur', 'MinotaurT2', 'Arena_MinotaurT2_2026_P')
+        self.definitions[other.id] = other
+        rows = [self.add_adapter(DESCRIPTOR), self.add_adapter(DESCRIPTOR.replace('.5,speed', '.7,speed'), other)]
+        cache = self.root / 'map-downloads'
+        cache.mkdir()
+        for row in rows:
+            (self.root / row['path']).replace(cache / (row['sha256'] + '.asset'))
+        private = write_map_definitions(self.root, self.run, self.definitions, KATA, {'files': []},
+                                        objectives=rows, objectives_cache=self.root)
+        self.assertEqual(self.lua.execute(private.read_text())[KATA.id].weather.density, .5)
+        self.assertEqual(list((self.run/'map-descriptors').iterdir()), [self.run/'map-descriptors'/KATA.id])
+
+        rotation = self.root / 'rotation'
+        rotation.mkdir()
+        public = write_map_definitions(self.root, rotation, self.definitions, KATA, {'files': []},
+                                       public=True, objectives=rows, objectives_cache=self.root)
+        maps = self.lua.execute(public.read_text())
+        self.assertEqual(maps[KATA.id].weather.density, .5)
+        self.assertEqual(maps[other.id].weather.density, .7)
+        self.assertFalse((rotation/'map-descriptors').exists())
+        self.assertEqual(len(list(cache.iterdir())), 2)
+
+        (cache / (rows[0]['sha256'] + '.asset')).write_text('x' * rows[0]['bytes'])
+        retry = self.root / 'retry'
+        retry.mkdir()
+        with self.assertRaisesRegex(ValueError, 'failed package verification'):
+            write_map_definitions(self.root, retry, self.definitions, KATA, {'files': []},
+                                  objectives=rows, objectives_cache=self.root)
+
     def test_legacy_stub_loads_generic_runtime_and_options_affect_cooked_actors(self):
         for kind in ('snow', 'rain', 'ash', 'wind'):
             with self.subTest(kind=kind):

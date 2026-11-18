@@ -52,6 +52,8 @@ class CommunityPreparationTest(unittest.TestCase):
   self.assertIn('--prepared',self.calls[1]);self.assertIn('--prepared-sha256',self.calls[1])
   self.assertEqual(self.calls[1][self.calls[1].index('--expected-map')+1],'Stonehenge')
   self.assertEqual(self.lobby.calls,2);self.assertEqual(self.game.preparation_status,'spent')
+  self.assertFalse(self.game.prepare())
+  self.assertEqual(len(self.calls),2)
   self.assertFalse((self.game.workspace/'client-000000000001/game').exists())
   self.assertTrue((self.game.workspace/'client-000000000001/prepared.json').is_file())
  def test_close_cancels_owned_preparation_and_never_launches_game(self):
@@ -63,7 +65,7 @@ class CommunityPreparationTest(unittest.TestCase):
   self.assertFalse((self.game.workspace/'client-000000000001/game').exists())
  def test_join_replaces_prewarmed_files_when_match_requires_downloaded_revision(self):
   revision='b'*64
-  self.game.map_sync=SimpleNamespace(current=(None,{}),status='',revision_for=lambda *_:revision)
+  self.game.map_sync=SimpleNamespace(available=False,current=(None,{}),status='',revision_for=lambda *_:revision)
   self.game.owner.run_owned_job=self.ready_owner
   self.game.prepare();self.assertTrue(self.entered.wait(2));self.gate.set();self.game.preparation_thread.join(3)
   self.game.start();self.game.wait(3)
@@ -73,6 +75,21 @@ class CommunityPreparationTest(unittest.TestCase):
   self.assertIn('client-000000000002',self.calls[2][self.calls[2].index('--prepared')+1])
   self.assertFalse((self.game.workspace/'client-000000000001/game').exists())
   self.assertFalse((self.game.workspace/'client-000000000002/game').exists())
+ def test_background_preparation_waits_for_catalog_instead_of_preparing_twice(self):
+  revision='b'*64
+  self.game.map_sync=SimpleNamespace(available=True,current=(None,{}),status='Checking for map updates...',
+                                     revision_for=lambda *_:revision)
+  self.game.owner.run_owned_job=self.ready_owner
+  self.assertFalse(self.game.prepare())
+  self.assertEqual(self.calls,[])
+  self.game.map_sync.current=(revision,{'Stonehenge':'a'*64})
+  self.gate.set()
+  self.assertTrue(self.game.prepare());self.game.preparation_thread.join(3)
+  self.game.start();self.game.wait(3)
+  self.assertEqual(len(self.calls),2)
+  self.assertEqual(self.calls[0][self.calls[0].index('--map-revision')+1],revision)
+  self.assertEqual(self.game.preparation_status,'spent')
+  self.assertFalse(self.game.prepare())
  def test_unconfirmed_preparer_cleanup_retains_quarantine_and_blocks_retries(self):
   self.game.owner.run_owned_job=lambda *a,**k:{'status':'terminal','exit_code':0,'job_active_processes_after_cleanup':1}
   self.game.prepare();self.game.preparation_thread.join(3)

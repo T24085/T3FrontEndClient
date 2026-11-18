@@ -41,10 +41,24 @@ def weather_runtime_path(root, run, package):
         return root / 'lua/weather.lua'
     return root / 'lua/snowblind_weather.lua'
 
-def write_map_definitions(root, run, definitions, selected, package, *, public=False, objectives=None):
+def write_launcher_script(binary, template):
+    from client_preparation import _replace_file
+
+    mod = binary / 'ue4ss/Mods/CommunityLauncher/Scripts/main.lua'
+    mod.parent.mkdir(parents=True, exist_ok=True)
+    if mod.parent.resolve(strict=True) != mod.parent or mod.parent.is_junction():
+        raise ValueError('The client launcher scripts directory escaped its game tree.')
+    _replace_file(mod, lambda path: path.write_text(template, encoding='utf-8'))
+    _replace_file(mod.parents[2] / 'mods.txt',
+                  lambda path: path.write_text('CommunityLauncher : 1\n', encoding='utf-8'))
+
+
+def write_map_definitions(root, run, definitions, selected, package, *, public=False, objectives=None,
+                          objectives_cache=None):
     """Extend the map catalog with descriptors verified during map preparation."""
     from hashlib import sha256
     from community_maps import BY_ID, lua_map_definitions
+    from map_sync import cache_path
     from map_sync_contract import map_objective_rows
 
     if public:
@@ -76,17 +90,21 @@ def write_map_definitions(root, run, definitions, selected, package, *, public=F
             source_root = root
         if row is None:
             continue
-        path = source_root / name
+        path = (cache_path(objectives_cache, row['sha256'] + '.asset') if objectives_cache is not None
+                else source_root / name)
         if path.resolve(strict=True) != path or path.is_symlink() or not 0 < row['bytes'] <= 256 * 1024:
             raise ValueError(f'Invalid map-local objectives file: {name}')
         with path.open('rb') as stream:
             raw = stream.read(row['bytes'] + 1)
         if len(raw) != row['bytes'] or sha256(raw).hexdigest() != row['sha256']:
             raise ValueError(f'Map-local objectives failed package verification: {name}')
-        source = run / 'map-descriptors' / definition.id / 'objectives.lua'
-        source.parent.mkdir(parents=True, exist_ok=True)
-        with source.open('xb') as output:
-            output.write(raw)
+        source = path
+        # Public CTF can rotate through the catalog after the process starts.
+        if not (public and objectives_cache is not None):
+            source = run / 'map-descriptors' / definition.id / 'objectives.lua'
+            source.parent.mkdir(parents=True, exist_ok=True)
+            with source.open('xb') as output:
+                output.write(raw)
         adapters.append((definition.id, source))
 
     if not adapters:
@@ -270,7 +288,8 @@ def prepare_or_join(args, source, workspace, startup, stable):
                                  bootstrap_id, definitions=definitions)
     map_definitions = write_map_definitions(ROOT, run, definitions, definitions.get(args.expected_map),
                                             package, public=args.public_session,
-                                            objectives=prepared.get('map_objectives'))
+                                            objectives=prepared.get('map_objectives'),
+                                            objectives_cache=workspace if prepared.get('map_objective_cache') else None)
     diagnostic_profile = bool(args.headless or args.test_source or args.seconds is not None)
     with ProfileSession(mode=MODE, workspaces=(workspace, source.parent / 'TRIBES3 Client Sessions'),
                         diagnostic=diagnostic_profile, source_game=source, package_root=ROOT,
@@ -308,10 +327,7 @@ def prepare_or_join(args, source, workspace, startup, stable):
             template = template.replace('@@' + key + '@@', json.dumps(value, ensure_ascii=False))
         if '@@' in template:
             raise RuntimeError('Incomplete client runtime template.')
-        mod = binary / 'ue4ss/Mods/CommunityLauncher/Scripts/main.lua'
-        mod.parent.mkdir(parents=True)
-        mod.write_text(template, encoding='utf-8')
-        (mod.parents[2] / 'mods.txt').write_text('CommunityLauncher : 1\n', encoding='utf-8')
+        write_launcher_script(binary, template)
         save(run / 'session.json', dict(build=package['build_id'], capability='join-only',
                                        role='spectator' if args.spectate else 'player', match_id=args.match_id, watch_id=args.watch_id,
                                        destination=destination, source=str(source), verification=verification,

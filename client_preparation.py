@@ -80,19 +80,27 @@ def _read_json(path, limit=MAX_DESCRIPTOR_BYTES):
     return json.loads(raw)
 
 
+def _installation_key(package):
+    return hashlib.sha256(os.path.normcase(str(package)).encode('utf-8')).hexdigest()[:24]
+
+
+def stable_lobby_path(workspace, package):
+    return Path(workspace) / ('lobby-install-' + _installation_key(package))
+
+
 class StableGame:
     """A game tree whose lock is held through native Job cleanup."""
 
     def __init__(self, root, source, workspace):
         self.package = root
         self.workspace = workspace
-        key = hashlib.sha256(os.path.normcase(str(root)).encode('utf-8')).hexdigest()[:24]
-        self.slot = workspace / ('game-install-'+key)
+        self.slot = workspace / ('game-install-' + _installation_key(root))
+        self.lobby = stable_lobby_path(workspace, root)
         self.game = self.slot / 'game'
         self.ready = self.slot / 'ready.json'
         self.native = self.slot / 'native.json'
-        if any(self.slot == boundary or self.slot in boundary.parents or boundary in self.slot.parents
-               for boundary in (root, source)):
+        if any(path == boundary or path in boundary.parents or boundary in path.parents
+               for path in (self.slot, self.lobby) for boundary in (root, source)):
             raise ValueError('Stable client files must be outside the Starter package and original game.')
 
     def check_idle(self):
@@ -100,7 +108,7 @@ class StableGame:
             return
         try:
             pending = _read_json(self.native, 65536)
-            run = staged_session(self.workspace, pending['run'])
+            run = staged_session(self.workspace, pending['run'], package=self.package)
             if pending['argv'][0] != str(self.game/EXECUTABLE):
                 raise ValueError('Unexpected pending game path.')
             if self._native_job_empty(run, pending['argv']) or self._desktop_job_empty(pending.get('desktop')):
@@ -140,7 +148,7 @@ class StableGame:
         return receipt['pid'] == desktop['pid'] and receipt['argv'] == desktop['argv'] and _terminal_job_empty(receipt)
 
     def starting(self, run, argv, desktop_job=None):
-        staged_session(self.workspace, run)
+        staged_session(self.workspace, run, package=self.package)
         if os.path.lexists(self.native) or argv[0] != str(self.game/EXECUTABLE):
             raise ValueError('Native game path differs from the reserved installation.')
         pending = {'run': str(run), 'argv': argv}
@@ -159,9 +167,10 @@ def _terminal_job_empty(receipt):
 
 def stable_session_executable(root, run, execution):
     """Resolve the executable for consumers of a running client's Job receipt."""
-    run = staged_session(run.parent, run)
+    root = Path(root).resolve(strict=True)
+    run = staged_session(run.parent, run, package=root)
     session = _read_json(run/'session.json', 65536)
-    stable = StableGame(Path(root).resolve(strict=True), Path(session['source']).resolve(strict=True), run.parent)
+    stable = StableGame(root, Path(session['source']).resolve(strict=True), run.parent)
     executable = stable.game/EXECUTABLE
     argv = execution['argv']
     pending = _read_json(stable.native, 65536)
@@ -290,15 +299,20 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
  package_ids=_stamps(root,[entry['path']for entry in package['files']]+['package-manifest.json'])
  source_ids={entry['path']:list(original_identities[entry['path']])for entry in original['files']}
  _check_stamps(source,source_ids)
- run=workspace/('client-'+uuid.uuid4().hex[:12]);run.mkdir(exist_ok=False)
- game=stable.game if stable else run/'game'
  prior={}
  if stable:
+  stable.check_idle()
+  run,game=stable.lobby,stable.game
   existing=_game_files(game)
   if os.path.lexists(stable.ready):
    prior=_read_json(stable.ready).get('bulk',{})
    stable.ready.unlink()  # Any partial update invalidates every previous descriptor.
+  if os.path.lexists(run):
+   shutil.rmtree(staged_session(workspace,run,package=root))
+  run.mkdir()
  else:
+  run=workspace/('client-'+uuid.uuid4().hex[:12]);run.mkdir()
+  game=run/'game'
   game.mkdir()
  emit('Session: '+str(run))
  cache=cache_factory(workspace/'asset-cache')
@@ -321,11 +335,16 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
    name=item['path']
    src=_member(root,bundled) if bundled is not None else _member(workspace,download.relative_to(workspace).as_posix())
    if name.startswith('lua/'):
-    target=run/'downloaded-objectives'/_relative(name)
-    target.parent.mkdir(parents=True,exist_ok=True)
-    _copy_private(src,target)
-    if target.stat().st_size!=item['bytes'] or digest(target)!=item['sha256']:
-     raise ValueError('Prepared map objectives differ: '+name)
+    if stable:
+     from map_sync import cache_path
+     if bundled is not None or src!=cache_path(workspace,item['sha256']+'.asset'):
+      raise ValueError('Prepared map objectives must use the shared download cache: '+name)
+    else:
+     target=run/'downloaded-objectives'/_relative(name)
+     target.parent.mkdir(parents=True,exist_ok=True)
+     _copy_private(src,target)
+     if target.stat().st_size!=item['bytes'] or digest(target)!=item['sha256']:
+      raise ValueError('Prepared map objectives differ: '+name)
     map_objectives.append(item)
     continue
    jobs.append((src,game/'Topaz/Content'/_relative(name[len('content/'):]),item['sha256'],item['bytes'],None))
@@ -376,20 +395,27 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
  if objectives_downloaded:record['map_objectives']=map_objectives
  if stable:
   record['stable_game']=str(game)
+  record['generation']=uuid.uuid4().hex
+  if objectives_downloaded:record['map_objective_cache']=True
+ path=run/'prepared.json'
+ _replace_file(path,lambda temp:_write(temp,record))
+ sha=digest(path)
+ if stable:
   bulk={dst.relative_to(game).as_posix():[expected,outputs[dst.relative_to(game).as_posix()]]for _,dst,expected,_,_ in jobs}
-  _replace_file(stable.ready,lambda temp:_write(temp,{'run':str(run),'bulk':bulk}))
- path=run/'prepared.json';sha=_write(path,record)
+  _replace_file(stable.ready,lambda temp:_write(temp,{'run':str(run),'bulk':bulk,'descriptor_sha256':sha}))
  emit('BULK_STAGE_SUMMARY|'+json.dumps(cache.snapshot(),separators=(',',':')))
  result={'path':str(path),'sha256':sha}
  emit('CLIENT_PREPARED|'+json.dumps(result,separators=(',',':')))
  return result
 
 
-def staged_session(workspace, path):
+def staged_session(workspace, path, *, package=None):
     """Accept only an immediate, real client session directory."""
     workspace = Path(workspace).resolve(strict=True)
     run = Path(path)
-    if (run.parent != workspace or not re.fullmatch(r'client-[0-9a-f]{12}', run.name)
+    legacy = re.fullmatch(r'client-[0-9a-f]{12}', run.name)
+    lobby = package is not None and run == stable_lobby_path(workspace, package)
+    if (run.parent != workspace or not (legacy or lobby)
             or run.is_symlink() or run.is_junction()
             or run.resolve(strict=True) != run or not run.is_dir()):
         raise ValueError('Unexpected staged client session.')
@@ -432,8 +458,9 @@ def consume(root,source,workspace,descriptor,expected_sha,*,expected_map=None,ex
  """Freshly validate a completed stage and claim it once before profile/native use."""
  root=Path(root).resolve(strict=True);source=Path(source).resolve(strict=True);workspace=Path(workspace).resolve(strict=True)
  path=Path(descriptor).absolute()
- if path.name!='prepared.json'or path.parent.parent!=workspace or re.fullmatch(r'client-[0-9a-f]{12}',path.parent.name)is None:
+ if path.name!='prepared.json':
   raise ValueError('Unexpected prepared client descriptor path.')
+ staged_session(workspace,path.parent,package=root)
  if path.resolve(strict=True)!=path or path.is_symlink()or path.is_junction():raise ValueError('Prepared client descriptor escaped its owner.')
  before=identity(path)
  with path.open('rb')as stream:raw=stream.read(MAX_DESCRIPTOR_BYTES+1)
@@ -450,8 +477,9 @@ def consume(root,source,workspace,descriptor,expected_sha,*,expected_map=None,ex
  if digest(package_path)!=record['package_manifest_sha256']:raise ValueError('Client was updated after preparation.')
  _check_stamps(root,record['package_inputs']);_check_stamps(source,record['source_inputs'])
  if 'stable_game' in record:
-  if (stable is None or record['stable_game']!=str(stable.game)
-      or not stable.ready.is_file() or _read_json(stable.ready).get('run')!=str(path.parent)):
+  ready=_read_json(stable.ready) if stable is not None and stable.ready.is_file() else {}
+  if (stable is None or record['stable_game']!=str(stable.game) or ready.get('run')!=str(path.parent)
+      or (path.parent==stable.lobby and ready.get('descriptor_sha256')!=expected_sha)):
    raise ValueError('Prepared stable game was replaced; prepare the client again.')
   game=stable.game
  else:game=path.parent/'game'
