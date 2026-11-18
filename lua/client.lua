@@ -479,7 +479,7 @@ local function flag_marker_projection(valid)
  local layout=StaticFindObject('/Script/UMG.Default__WidgetLayoutLibrary')
  assert(valid(layout),'flag_marker_projection_library_required')
 
- return function(entry,pc,target)
+ return function(entry,pc,target,lift)
   local widget=entry.widget
   local slot,parent=widget.Slot,widget:GetParent()
   if not valid(slot) or not valid(parent) then return end
@@ -505,12 +505,17 @@ local function flag_marker_projection(valid)
    y=math.sin(pitch)*math.cos(yaw)*dx+math.sin(pitch)*math.sin(yaw)*dy-math.cos(pitch)*dz
    if math.abs(x)+math.abs(y)<0.0001 then y=1 end
   end
-  if not front or math.abs(x)>cx or math.abs(y)>cy then
+  local offscreen=not front or math.abs(x)>cx or math.abs(y)>cy
+  if offscreen or lift then
    local desired=widget:GetDesiredSize()
    local edgeX,edgeY=cx-(desired.X/2+8)*dpi,cy-(desired.Y/2+8)*dpi
    if edgeX<=0 or edgeY<=0 then return end
-   local scale=math.min(edgeX/math.max(math.abs(x),0.0001),edgeY/math.max(math.abs(y),0.0001))
-   x,y=x*scale,y*scale
+   if offscreen then
+    local scale=math.min(edgeX/math.max(math.abs(x),0.0001),edgeY/math.max(math.abs(y),0.0001))
+    x,y=x*scale,y*scale
+   else
+    y=math.max(-edgeY,math.min(edgeY,y-lift*dpi))
+   end
   end
   local anchor={X=(cx+x)/viewport.X,Y=(cy+y)/viewport.Y}
   if anchor.X~=anchor.X or anchor.Y~=anchor.Y or math.abs(anchor.X)==math.huge or math.abs(anchor.Y)==math.huge then return end
@@ -532,6 +537,7 @@ local function enabled_flag_markers(env)
  local valid,report=env.valid,env.report
  local project=flag_marker_projection(valid)
  env.signature('/Script/Topaz.TopPickup_Flag:GetFlagState',{{'Querier','ObjectProperty',0},{'ReturnValue','EnumProperty',8}})
+ env.signature('/Script/Engine.SceneComponent:K2_GetComponentLocation',{{'ReturnValue','StructProperty',0}})
  env.signature('/Script/Engine.KismetSystemLibrary:GetComponentBounds',{{'Component','ObjectProperty',0},
   {'Origin','StructProperty',8},{'BoxExtent','StructProperty',32},{'SphereRadius','FloatProperty',56}})
  local system=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
@@ -556,19 +562,19 @@ local function enabled_flag_markers(env)
   local attached=valid(root) and root:GetAttachParent() or nil
   if same(flag:GetOwner(),holder) or (valid(attached) and same(attached:GetOwner(),holder)) then return holder end
  end
- local function flag_anchor(flag,root)
+ local function loose_flag_anchor(flag,root)
   -- The pickup root is a collision sphere. The flag's visible mesh has its
-  -- own transform and extends above that pivot, including while carried.
+  -- own transform and extends above that pivot.
   local mesh=flag.Mesh
   if valid(mesh) then
    local origin,extent={},{}
    system:GetComponentBounds(mesh,origin,extent,{})
    origin,extent=origin.Origin or origin,extent.BoxExtent or extent
    if type(extent.Z)=='number' and extent.Z>0 then
-    return {X=origin.X,Y=origin.Y,Z=origin.Z}
+    return {X=origin.X,Y=origin.Y,Z=origin.Z+extent.Z}
    end
   end
-  return root
+  return {X=root.X,Y=root.Y,Z=root.Z+150}
  end
  local function pulse()
   local s=state
@@ -601,7 +607,7 @@ local function enabled_flag_markers(env)
     if e.returned~=returned then
      if returned and e.returned==nil then
       e.home=flag:K2_GetActorLocation()
-      e.homeAnchor=flag_anchor(flag,e.home)
+      e.homeAnchor=loose_flag_anchor(flag,e.home)
      end
      -- The stationary base widgets consume the same native flag notification.
      for _,base in ipairs(FindAllOf('UI_Game_Overlay_FlagBase_C') or {}) do
@@ -631,9 +637,21 @@ local function enabled_flag_markers(env)
     local projected=false
     if visible then
      local a,b=pawn:K2_GetActorLocation(),position
-     w.DistanceText:SetText(FText(string.format('%dm',math.floor(math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)/100+0.5))))
-     local anchor=returned and e.homeAnchor or flag_anchor(flag,b)
-     projected=project(e,s.pc,anchor)==true
+     local distance=math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)
+     w.DistanceText:SetText(FText(string.format('%dm',math.floor(distance/100+0.5))))
+     local anchor,lift
+     if holder then
+      -- Retail uses the carrier's Character.Mesh origin and a 190 cm lift.
+      local mesh=holder.Mesh
+      local origin=valid(mesh) and mesh:K2_GetComponentLocation() or holder:K2_GetActorLocation()
+      anchor={X=origin.X,Y=origin.Y,Z=origin.Z+190}
+      -- The retail glyph rises by 40 Slate units nearby and 24 at range.
+      lift=40-16*math.max(0,math.min(1,(distance-1000)/11500))
+     else
+      anchor=returned and e.homeAnchor or loose_flag_anchor(flag,b)
+      lift=8
+     end
+     projected=project(e,s.pc,anchor,lift)==true
      if w.TimerIsActive and w.ResetDuration>0 then
       local material=w.TimerFill:GetDynamicMaterial()
       if valid(material) then
@@ -695,8 +713,8 @@ local function enabled_flag_markers(env)
      widget.TickFrequency=0
      widget:StopAllAnimations()
      if owned then parent:AddChildToCanvas(widget);widget:UpdateFlagActor(flag) end
-     -- Retail places the glyph above its anchor using bottom alignment and a
-     -- distance-dependent translation. Center the glyph on the mesh instead.
+     -- The HUD pulse lifts the glyph with the same viewport projection that
+     -- tracks it. Clear native translations so they cannot apply a second lift.
      local content=widget.Content
      local container=content:GetParent()
      local center={X=0.5,Y=0.5}
