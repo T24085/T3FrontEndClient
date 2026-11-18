@@ -208,7 +208,7 @@ options. Remote players and multiple populated matches still need testing.
 SPECTATING
 
 Open Live matches, select a match, then click Spectate.
-Left click for the next player, right click for the previous player, and middle click to change the camera.
+Left click for the next player and right click for the previous player. Press F7 for first person or F8 for chase. Middle click also switches views.
 Stop watching closes only your viewer. Keep Starter open while watching.
 The leader can disable spectators during lobby setup. Spectators have separate
 seats and do not join either team or count toward the player load-in countdown.

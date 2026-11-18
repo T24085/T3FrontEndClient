@@ -82,7 +82,7 @@ TO PLAY
 4. Run Start Community Starter.vbs (the BAT is an alternate launcher).
 5. Create/join a lobby, choose teams and a map, then start and join the match.
    Keep Starter open while playing. Its close action also stops its owned game.
-   Spectators use Live matches. Left click for the next player, right click for the previous player, and middle click to change the camera.
+   Spectators use Live matches. Left click for the next player and right click for the previous player. Press F7 for first person or F8 for chase. Middle click also switches views.
    Third-person spectator viewing is unavailable in this release.
 
 R6 UPDATES

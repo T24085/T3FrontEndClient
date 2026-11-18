@@ -181,6 +181,12 @@ return function(env)
    if not valid(r.target)and not valid(r.camera)and not valid(r.arm)then table.remove(retired,i)end
   end
  end
+ local function allow_first_person(r)
+  if not r.target.bForceOnlySpectatorToThirdPerson then return false end
+  r.originalForce=true;r.changedForce=true
+  r.target.bForceOnlySpectatorToThirdPerson=false
+  return true
+ end
  local function target_rig(target)
   if rig and same(rig.target,target)then return end
   release_rig()
@@ -188,15 +194,15 @@ return function(env)
   local r={target=target,identity=identity(target),originalCamera=target.ThirdPersonCameraComponent,originalArm=target.ThirdPersonCameraBoom,originalForce=target.bForceOnlySpectatorToThirdPerson}
   assert(type(r.originalForce)=='boolean','spectator_original_camera_policy_required')
   rig=r -- Retain every component immediately, even if later setup fails.
-  if r.originalForce then target.bForceOnlySpectatorToThirdPerson=false;r.changedForce=true end
+  allow_first_person(r)
   -- Rendered remote avatars can have native camera subobjects that never
   -- update their transforms. Preserve them, but always bind one explicitly
   -- owned viewer-local rig instead of treating existence as camera readiness.
-  local transform={Rotation={X=0,Y=0,Z=0,W=1},Translation={X=0,Y=0,Z=64},Scale3D={X=1,Y=1,Z=1}}
+  local transform={Rotation={X=0,Y=0,Z=0,W=1},Translation={X=0,Y=0,Z=32},Scale3D={X=1,Y=1,Z=1}}
   r.arm=target:AddComponentByClass(StaticFindObject('/Script/Engine.SpringArmComponent'),false,transform,false)
   if valid(r.arm)then r.armIdentity=identity(r.arm)end
   assert(valid(r.arm)and same(r.arm:GetOwner(),target),'spectator_local_arm_creation_failed')
-  r.arm.TargetArmLength=300;r.arm.bDoCollisionTest=true;r.arm.bUsePawnControlRotation=true
+  r.arm.TargetArmLength=360;r.arm.bDoCollisionTest=true;r.arm.bUsePawnControlRotation=true
   transform.Translation.Z=0
   r.camera=target:AddComponentByClass(StaticFindObject('/Script/Engine.CameraComponent'),false,transform,false)
   if valid(r.camera)then r.cameraIdentity=identity(r.camera)end
@@ -233,9 +239,9 @@ return function(env)
   assert(pc:IsThirdPerson()==preferredThird,'spectator_requested_perspective_required')
   return changed
  end
- local function update_presentation(target)
-  -- The mode flag changes before the camera finishes blending. Use its
-  -- distance from the eye camera so a close camera also works at walls.
+ local function native_third_person(target)
+  -- The native death camera owns its perspective and can pass close to the
+  -- remote avatar during blends and when moving around walls.
   local threshold=renderedThird and 65 or 90
   local alpha=target:GetThirdPersonCameraAlpha()
   assert(type(alpha)=='number'and alpha>=0 and alpha<=1,'spectator_camera_alpha_invalid')
@@ -250,6 +256,13 @@ return function(env)
    -- A camera frame from the outgoing target can be one tick behind.
    if distanceSquared<=600*600 then third=distanceSquared>=threshold*threshold end
   end
+  return third
+ end
+ local function update_presentation(target)
+  -- In spectator mode the selected view owns the body mask. Spring-arm
+  -- collision can otherwise make chase view apply the first-person cutout.
+  local third=preferredThird
+  if passive then third=native_third_person(target)end
   if third~=renderedThird then
    materials.apply(target,third)
    renderedThird=third
@@ -263,9 +276,13 @@ return function(env)
   if action=='next'or action=='previous'then pc:ServerSpectateNext(action=='next'and 1 or -1)
   elseif action=='first'or action=='third'then
    preferredThird=action=='third'
-   local changed=select_perspective()
    local target=current_target()
-   if changed and target and same(rig and rig.target,target)then refresh_camera(target)end
+   local following=target and same(rig and rig.target,target)
+   if following then allow_first_person(rig)end
+   select_perspective()
+   -- Explicit mode selection also repairs a cached camera whose controller
+   -- is already reporting the requested mode.
+   if following then refresh_camera(target);update_presentation(target)end
    report('SPECTATOR_VIEW|mode='..action)
   else error('spectator_unknown_camera_action')end
  end
@@ -279,8 +296,6 @@ return function(env)
  local function follow()
   guard()
   refresh_ski_hud()
-  -- The observer's selection survives native resets and target handoffs.
-  local perspectiveChanged=select_perspective()
   -- Watching is intentionally passive. The original local AFK clock also
   -- kicks observer-only controllers; exempt this exact admitted viewer while
   -- its native spectator context remains valid, without manufacturing input
@@ -290,6 +305,7 @@ return function(env)
   pc.AFKTimer=0
   sweep_retired();local target=current_target()
   if not target then
+   select_perspective()
    release_rig();lastTarget=nil;renderedThird=nil
    if now()-lastNext>=2 then lastNext=now();pc:ServerSpectateNext(1)end
    return
@@ -298,7 +314,9 @@ return function(env)
   if changed then
    target_rig(target);lastTarget=identity(target);renderedThird=nil
   end
-  if changed or perspectiveChanged then
+  local policyReset=allow_first_person(rig)
+  local perspectiveChanged=select_perspective()
+  if changed or perspectiveChanged or policyReset then
    refresh_camera(target)
   end
   if changed then
@@ -323,14 +341,14 @@ return function(env)
   owned=ExecuteInGameThreadWithDelay(20,callback)
   assert(type(owned)=='number'and owned%1==0,'spectator_timer_registration_unknown');nextHandle=owned
  end
- local function key_action(action)
+ local function key_action(action,mouse)
   return function()
    if stopped then return end
    ExecuteInGameThread(function()
     if stopped then return end
     local ok,why=pcall(function()
      guard()
-     if pc.bShowMouseCursor==true then return end
+     if mouse and pc.bShowMouseCursor==true then return end
      local selected=action
      if action=='toggle'then selected=preferredThird and 'first' or 'third'end
      service.action(selected)
@@ -354,10 +372,12 @@ return function(env)
    select_perspective()
    started=true;pc:ServerViewSelf({BlendTime=0,BlendFunction=0,BlendExp=2,bLockOutgoing=false})
    pc:ServerRequestStartSpectating()
-   RegisterKeyBind(Key.LEFT_MOUSE_BUTTON,key_action('next'))
-   RegisterKeyBind(Key.RIGHT_MOUSE_BUTTON,key_action('previous'))
-   RegisterKeyBind(Key.MIDDLE_MOUSE_BUTTON,key_action('toggle'))
-   report('SPECTATOR_CONTROLS|left_click=next_player|right_click=previous_player|middle_click=toggle_camera')
+   RegisterKeyBind(Key.LEFT_MOUSE_BUTTON,key_action('next',true))
+   RegisterKeyBind(Key.RIGHT_MOUSE_BUTTON,key_action('previous',true))
+   RegisterKeyBind(Key.MIDDLE_MOUSE_BUTTON,key_action('toggle',true))
+   RegisterKeyBind(Key.F7,key_action('first'))
+   RegisterKeyBind(Key.F8,key_action('third'))
+   report('SPECTATOR_CONTROLS|left_click=next_player|right_click=previous_player|middle_click=toggle_camera|F7=first_person|F8=third_person')
    report('SPECTATOR_IDLE_POLICY|scope=local_observer_only')
    schedule()
   end

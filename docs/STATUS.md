@@ -5,19 +5,21 @@ native death camera follows another player. This path leaves the view target,
 input, AFK policy, and respawn under native control. It restores presentation
 when the player respawns or the remote view ends.
 
-Spectators start with the chase camera so the watched player's full armor can
-render. Left click selects the next player, right click selects the previous
-player, and middle click changes perspective. The selected perspective persists
-across target changes and respawns. The local body materials follow the camera
-distance during the blend. When the chase camera is pushed into the player at a
-wall, the body uses the close-camera presentation until there is clearance again.
+Spectators start with the chase camera. It frames the existing full-body mesh
+from farther back with a lower pivot. A short spring arm at a wall keeps the
+chase body mask. Left click selects the next player and right click selects the
+previous player. F7 selects first person, F8 selects chase, and middle click
+switches between them. Explicit perspective keys also refresh a cached camera
+when the controller already reports the requested mode. The selected perspective
+persists across target changes and respawns.
 The spectator follows native mesh and material replacements and refreshes
 cosmetic overrides that arrive on the original material after the view opens.
 The observer HUD also suppresses the default “Text Block” beside “SKI TOGGLE”
 and restores the label when the native HUD supplies a value.
 
-Lua fixture coverage exercises the blend in both directions, wall clearance,
-player switching, and reacquisition. A rendered multiplayer check is pending.
+Lua fixture coverage exercises keyboard and mouse selection, close-camera
+chase presentation, restored native camera policy, and target reacquisition.
+A rendered multiplayer check is pending.
 
 # Native flag widget callback
 

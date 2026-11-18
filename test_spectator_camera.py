@@ -82,8 +82,9 @@ function make_target(name)
  function t.FirstPersonCameraComponent:GetOwner()return t end
  function t.FirstPersonCameraComponent:K2_GetComponentLocation()return {X=0,Y=0,Z=64}end
  function t:GetThirdPersonCameraAlpha()return self.alpha end
- function t:AddComponentByClass(class)
+ function t:AddComponentByClass(class,manual,transform)
   local component=object(class.name)
+  component.height=transform.Translation.Z
   function component:GetOwner()return t end
   function component:K2_AttachToComponent()return true end
   return component
@@ -96,7 +97,7 @@ end
 pc=object('observer');ps=object('observer_state');pc.PlayerState=ps
 function ps:IsOnlyASpectator()return true end
 local spectator=object('spectator_pawn')
-pc.third=false;pc.AFKTimer=10;pc.directions={};pc.toggles=0
+pc.third=false;pc.AFKTimer=10;pc.directions={};pc.toggles=0;pc.camera_refreshes=0
 pc.PlayerCameraManager=object('camera_manager')
 pc.PlayerCameraManager.location={X=0,Y=0,Z=64}
 function pc.PlayerCameraManager:GetCameraLocation()return self.location end
@@ -106,13 +107,13 @@ function pc:IsThirdPerson()return self.third end
 function pc:ToggleThirdPerson()self.third=not self.third;self.toggles=self.toggles+1 end
 function pc:GetViewTarget()return self.view end
 function pc:GetSpectatorPawn()return spectator end
-function pc:SetViewTargetWithBlend(target)self.view=target end
+function pc:SetViewTargetWithBlend(target)self.view=target;self.camera_refreshes=self.camera_refreshes+1 end
 function pc:ServerViewSelf()self.view=spectator end
 function pc:ServerRequestStartSpectating()self.view=active end
 function pc:ServerSpectateNext(direction)
  self.directions[#self.directions+1]=direction;self.view=active
 end
-keys={};Key={LEFT_MOUSE_BUTTON='left',RIGHT_MOUSE_BUTTON='right',MIDDLE_MOUSE_BUTTON='middle'}
+keys={};Key={LEFT_MOUSE_BUTTON='left',RIGHT_MOUSE_BUTTON='right',MIDDLE_MOUSE_BUTTON='middle',F7='F7',F8='F8'}
 function RegisterKeyBind(key,callback)keys[key]=callback end
 function ExecuteInGameThread(callback)callback()end
 local pending=nil;local handle=0
@@ -158,7 +159,7 @@ class SpectatorCameraTests(unittest.TestCase):
         self.check('''
         assert(pc.third and pc.toggles==1)
         assert(keys.left and keys.right and keys.middle)
-        assert(not (keys.F5 or keys.F6 or keys.F7 or keys.F8))
+        assert(keys.F7 and keys.F8 and not (keys.F5 or keys.F6))
         active.alpha=1;pc.PlayerCameraManager.location.X=-300
         follow_once()
         follow_once()
@@ -171,34 +172,55 @@ class SpectatorCameraTests(unittest.TestCase):
         assert(ready)
         ''')
 
-    def test_camera_blend_keeps_meshes_in_sync_in_both_directions(self):
+    def test_camera_input_selects_the_matching_body_presentation(self):
         self.check('''
         keys.middle();follow_once()
         keys.middle()
         assert(pc.third and events[#events]=='SPECTATOR_VIEW|mode=third')
         follow_once()
-        assert(#presentations==1 and presentations[1]==false)
+        assert(#presentations==2 and presentations[1]==false and presentations[2]==true)
         active.alpha=1
         pc.PlayerCameraManager.location.X=-300
         follow_once()
         assert(#presentations==2 and presentations[2]==true)
         keys.middle();active.alpha=0;follow_once()
-        assert(not pc.third and #presentations==2)
+        assert(not pc.third and #presentations==3)
         pc.PlayerCameraManager.location.X=0
         follow_once()
         assert(#presentations==3 and presentations[3]==false)
         ''')
 
-    def test_close_chase_camera_uses_eye_view_materials_until_clear(self):
+    def test_close_chase_camera_keeps_full_body_presentation(self):
         self.check('''
         follow_once();active.alpha=1
         pc.PlayerCameraManager.location.X=-42;follow_once()
-        assert(pc.third and #presentations==1)
+        assert(pc.third and #presentations==1 and presentations[1]==true)
         pc.PlayerCameraManager.location.X=-100;follow_once()
         pc.PlayerCameraManager.location.X=-72;follow_once()
-        assert(#presentations==2 and presentations[2]==true)
+        assert(#presentations==1 and presentations[1]==true)
         pc.PlayerCameraManager.location.X=-50;follow_once()
-        assert(#presentations==3 and presentations[3]==false)
+        assert(#presentations==1 and presentations[1]==true)
+        assert(active.ThirdPersonCameraBoom.TargetArmLength==360 and active.ThirdPersonCameraBoom.height==32)
+        ''')
+
+    def test_perspective_keys_rebind_a_cached_camera_even_with_cursor_visible(self):
+        self.check('''
+        follow_once();pc.bShowMouseCursor=true
+        keys.F7();assert(not pc.third and presentations[#presentations]==false)
+        local before=pc.camera_refreshes
+        keys.F7();assert(not pc.third and pc.camera_refreshes==before+2)
+        keys.F8();assert(pc.third and presentations[#presentations]==true)
+        ''')
+
+    def test_late_native_third_person_policy_is_repaired_and_retained_for_cleanup(self):
+        self.check('''
+        follow_once();keys.F7()
+        local before=pc.camera_refreshes
+        active.bForceOnlySpectatorToThirdPerson=true
+        follow_once()
+        assert(not active.bForceOnlySpectatorToThirdPerson and not pc.third)
+        assert(pc.camera_refreshes==before+2)
+        assert(service.owned().rig.originalForce and service.owned().rig.changedForce)
         ''')
 
     def test_hud_hides_only_ski_placeholder_and_restores_valid_text(self):
