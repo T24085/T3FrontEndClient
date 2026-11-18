@@ -218,10 +218,11 @@ def unframe(key,identity,packet,direction,window):
     return packet[28:-32]
 
 class UdpServer:
-    def __init__(self,bind,public_port,native_port,permitted,*,clock=time.monotonic,forward=None,renew=False,route=None):
+    def __init__(self,bind,public_port,native_port,permitted,*,clock=time.monotonic,forward=None,renew=False,route=None,probe=None):
         self.forward = forward if forward is not None else permitted
         self.renew = renew
         self.route = route
+        self.probe = probe
         self.clock=clock;self.permitted=permitted;self.native=('127.0.0.1',native_port);self.public_port=public_port
         self.lock=threading.RLock();self.stop=threading.Event();self.grants={};self.identities={}
         self.socket=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
@@ -274,6 +275,11 @@ class UdpServer:
                 for sock in readable:
                     if sock is self.socket:
                         packet,source=sock.recvfrom(65535)
+                        if self.probe is not None:
+                            response = self.probe(packet)
+                            if response is not None:
+                                self.socket.sendto(response, source)
+                                continue
                         if len(packet)<60 or packet[:4]!=MAGIC:continue
                         with self.lock:
                             r=self.grants.get(packet[4:20].hex())

@@ -18,7 +18,7 @@ from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLO
                             MAX_DEVICES, TOKEN, UdpClient,
                             VoiceFrames, VOICE_AUDIO, VOICE_FRAME_BYTES, VOICE_KEEPALIVE, VOICE_PROTOCOL,
                             VOICE_RELEASE, VOICE_ROUTE, VOICE_SAMPLE_RATE,
-                            locked_state, read_json, validate_endpoint, validate_group, write_json)
+                            locked_state, read_json, valid_public_address, validate_endpoint, validate_group, write_json)
 from community_transport import CommunityClient, CommunityError, PinnedHTTPSConnection
 from community_game import CommunityGame
 from dynamic_destination import DIRECT_BRIDGE_POLICY
@@ -444,7 +444,7 @@ class DirectClient(CommunityClient):
             proxy = next(iter(self.proxies.values()), None)
             admission = dict(proxy.grant) if proxy is not None else None
             headers = self.request_headers()
-        if not self.proximity_supported or admission is None or self.test_source:
+        if not self.proximity_supported or admission is None or self.test_source or getattr(proxy, 'community_host', False):
             yield
             return
 
@@ -497,6 +497,7 @@ class DirectClient(CommunityClient):
         return dict(super().request_headers(), **{
             'Authorization': 'Bearer ' + self.access_token,
             'X-Direct-Session': self.direct_session,
+            'X-Community-Host': '1',
         })
 
     def begin_game_attempt(self):
@@ -524,10 +525,20 @@ class DirectClient(CommunityClient):
         # two Friend Host ranges. Custom ranges keep their original bounds.
         if first in MATCH_UDP_BASES and last < first + MATCH_SLOT_LIMIT:
             allowed_ports = tuple(range(base, base + MATCH_SLOT_LIMIT) for base in MATCH_UDP_BASES)
-        if (not isinstance(match, dict) or match.get('address') != self.server_address
-                or type(match.get('port')) is not int
-                or not any(match['port'] in ports for ports in allowed_ports)):
+        remote = isinstance(match, dict) and match.get('communityHost') is True and not public and not spectator
+        if remote:
+            try:
+                address = valid_public_address(match['address'], local_test=bool(self.test_source))
+                if type(match.get('port')) is not int or not 1024 <= match['port'] <= 65535:
+                    raise ValueError('Invalid community host port')
+            except (TypeError, ValueError, KeyError) as exc:
+                raise CommunityError('The lobby returned an invalid community host endpoint.') from exc
+        elif (not isinstance(match, dict) or match.get('address') != self.server_address
+              or type(match.get('port')) is not int
+              or not any(match['port'] in ports for ports in allowed_ports)):
             raise CommunityError('The public match endpoint differs from this invitation.')
+        else:
+            address = self.server_address
         grant=match.get('udpGrant')
         native=dict(match,address='127.0.0.1',port=DIRECT_BRIDGE_POLICY['first_port'])
         target=super()._validated_target(native,name,spectator=spectator)
@@ -537,6 +548,8 @@ class DirectClient(CommunityClient):
         key=(grant.get('matchId'),grant.get('id'))
         with self.lock:
             proxy=self.proxies.get(key)
+            if proxy is not None and remote and proxy.remote != (address, match['port']):
+                raise CommunityError('The community host endpoint changed during admission.')
             if proxy is not None and proxy.grant!=grant:
                 try:
                     if not public:
@@ -550,8 +563,9 @@ class DirectClient(CommunityClient):
                 # One native session at a time is already enforced by CommunityGame.
                 for old in self.proxies.values():old.close()
                 self.proxies.clear()
-                try:proxy=UdpClient(self.server_address,grant)
+                try:proxy=UdpClient(address,grant)
                 except (TypeError,ValueError,OSError)as exc:raise CommunityError('UDP match admission could not be opened.')from exc
+                proxy.community_host = remote
                 self.proxies[key]=proxy
             return dict(target,endpoint='127.0.0.1:'+str(proxy.port))
 
