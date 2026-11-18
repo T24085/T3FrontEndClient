@@ -10,6 +10,7 @@ MANIFEST_ROUTE = '/api/map-files-v1'
 FILE_ROUTE = MANIFEST_ROUTE + '/'
 CATALOG_VERSION = 2
 CATALOG_HEADER = 'X-T3-Map-Catalog'
+OBJECTIVES_HEADER = 'X-T3-Map-Objectives'
 CATALOG_ROUTE = '/api/map-files-v2'
 MAX_MANIFEST = 2 * 1024**2
 MAX_FILE = 256 * 1024**2
@@ -44,6 +45,22 @@ def cooked_rows(rows):
         seen.add(name.casefold())
     if sum(row['bytes'] for row in rows) > MAX_TOTAL:
         raise ValueError('Cooked map inventory exceeds its size limit.')
+    return result
+
+
+def map_objective_rows(rows, definitions):
+    """Accept only bounded objectives.lua entries for declared community maps."""
+    paths = {f'lua/{key}/objectives.lua' for key, definition in definitions.items() if not definition.native}
+    if not isinstance(rows, list) or len(rows) > len(paths):
+        raise ValueError('Invalid map objectives inventory.')
+    result = {}
+    for row in rows:
+        if (not isinstance(row, dict) or set(row) != {'path', 'bytes', 'sha256'}
+                or not isinstance(row['path'], str) or row['path'] not in paths or row['path'] in result
+                or type(row['bytes']) is not int or not 0 < row['bytes'] <= 256 * 1024
+                or not isinstance(row['sha256'], str) or not SHA.fullmatch(row['sha256'])):
+            raise ValueError('Invalid map objectives file.')
+        result[row['path']] = row
     return result
 
 

@@ -1,68 +1,226 @@
-"""Validate that community radar uses one spatial scale at native zoom."""
+"""Exercise the production minimap binding with generated community map rows."""
 
 from pathlib import Path
+import tempfile
 import unittest
 
 from lupa.lua54 import LuaRuntime
 
+from community_maps import MapDefinition, lua_map_definitions
 
-SOURCE = (Path(__file__).with_name("lua") / "client.lua").read_text(encoding="utf-8")
+
+ROOT = Path(__file__).resolve().parent
+SOURCE = (ROOT / 'lua/client.lua').read_text(encoding='utf-8')
+MAPS = (
+    ('KatabaticT22026', 'KatabaticT2', 'Arena_KatabaticT2_2026_P', 146000),
+    ('MinotaurT22026', 'MinotaurT2', 'Arena_MinotaurT2_2026_P', 122000),
+    ('BeggarsRunTWLT22026', 'BeggarsRunTWLT2', 'Arena_BeggarsRunTWLT2_2026_P', 132000),
+    ('QuagmireTWLT22026', 'QuagmireTWLT2', 'Arena_QuagmireTWLT2_2026_P', 161000),
+)
+
+
+FIXTURE = '''
+local f={captures={},radars={},meshes={},requests=0,spawns=0,reports={}}
+local next_address=0
+local function object(name)
+    local actor={}
+    next_address=next_address+1
+    local address=next_address
+    function actor:GetAddress() return address end
+    function actor:GetFullName() return name end
+    function actor:GetWorld() return self.world end
+    return actor
+end
+local world, foreign=object('World'),object('Foreign world')
+local gs=object(descriptor.world..'PersistentLevel.GameState');gs.world=world
+local pc=object(descriptor.world..'PersistentLevel.PlayerController');pc.world=world
+function gs:HasAuthority() return false end
+pc.HasAuthority=gs.HasAuthority
+function pc:IsLocalPlayerController() return true end
+local settings=object(descriptor.world..'PersistentLevel.WorldSettings');settings.world=world
+f.settings_class='Class /Script/Valhalla.ValWorldSettings'
+function settings:GetClass() return object(f.settings_class) end
+setmetatable(settings,{__index=function(_,key) if key=='MapSize' then return authored end end,
+    __newindex=function(t,key,value) assert(key~='MapSize','authored settings were changed');rawset(t,key,value) end})
+local lib=object('UILibrary /Script/ValhallaUI.Default__UILibrary')
+function lib:GetWorldSettings(context) assert(context==pc);return settings end
+local target=object('TextureRenderTarget2D /Game/Maps/Game/CrossFire/Crossfire_RenderTarget2D.Crossfire_RenderTarget2D')
+target.SizeX,target.SizeY=1024,1024
+local api=object('GameplayStatics /Script/Engine.Default__GameplayStatics')
+function api:BeginDeferredActorSpawnFromClass(context,klass,transform)
+    assert(context==pc and klass:GetFullName():find('BP_MinimapCapture_C',1,true))
+    f.spawns=f.spawns+1;f.height=transform.Translation.Z
+    local capture=object('MinimapCapture');capture.world=world
+    local component={ProjectionType=1,TextureTarget=target}
+    function component:GetOwner() return capture end
+    function component:CaptureScene() f.requests=f.requests+1 end
+    capture.SceneCaptureComponent2D=component
+    f.component=component
+    f.captures[#f.captures+1]=capture
+    return capture
+end
+function api:FinishSpawningActor(actor) return actor end
+local contracts=releaseRadarBlueprintContracts
+function StaticFindObject(path)
+    if path=='/Script/ValhallaUI.Default__UILibrary' then return lib end
+    if path=='/Script/Engine.Default__GameplayStatics' then return api end
+    if path=='/Game/Common/Blueprints/Cameras/BP_MinimapCapture.BP_MinimapCapture_C' then
+        return object('BlueprintGeneratedClass '..path)
+    end
+    for _,contract in pairs(contracts) do
+        if contract.path==path then
+            local fn=object('Function '..path)
+            function fn:ForEachProperty(callback)
+                for field,kind in pairs(contract.fields) do
+                    local property=object(kind..' '..path..':'..field)
+                    function property:GetFName() return {ToString=function()return field end} end
+                    callback(property)
+                end
+            end
+            return fn
+        end
+    end
+end
+local widget=object('UI_Game_Map');widget.world=world
+widget.visibility=0
+function widget:GetVisibility() return self.visibility end
+function widget:SetVisibility(value) self.visibility=value end
+widget.Material=object('Map material')
+widget.MapTexture={Brush={ResourceObject=widget.Material}}
+widget.CachedZoom,widget.TargetZoom=1,1
+widget.RadarSensors={children=0,GetChildrenCount=function(self) return self.children end}
+function widget:GetOwningPlayer() return pc end
+function widget:UpdateSublevel() self.CachedMapScale=1024/settings.MapSize;self.MapScale=self.CachedMapScale end
+function widget:BindRadarSensors() self.RadarSensors.children=2 end
+local foreignWidget=object('Foreign map widget');foreignWidget.world=foreign
+foreignWidget.GetOwningPlayer=widget.GetOwningPlayer
+function foreignWidget:SetVisibility() error('foreign minimap changed') end
+local otherPlayerWidget=object('Other player map widget');otherPlayerWidget.world=world
+function otherPlayerWidget:GetOwningPlayer() return otherPlayerWidget end
+otherPlayerWidget.SetVisibility=foreignWidget.SetVisibility
+function FindAllOf(klass)
+    return ({BP_MinimapCapture_C=f.captures,StaticMeshActor=f.meshes,UI_Game_Map_C={widget,foreignWidget,otherPlayerWidget},
+        BP_Objective_RadarSensor_C=f.radars})[klass]
+end
+function f.add_mesh(asset,x,z,half_z,elsewhere,hidden,collision)
+    local actor=object('StaticMeshActor');actor.world=elsewhere and foreign or world;actor.bHidden=hidden
+    actor.StaticMeshComponent={StaticMesh=object('StaticMesh '..asset)}
+    local c=actor.StaticMeshComponent;c.world=actor.world
+    function c:GetWorld() return self.world end
+    function c:GetOwner() return actor end
+    function c:GetCollisionEnabled() return collision or 3 end
+    function c:GetCollisionObjectType() return 0 end
+    function actor:GetActorBounds(colliding,origin,extent)
+        assert(colliding==true)
+        origin.X,origin.Y,origin.Z=x,0,z
+        extent.X,extent.Y,extent.Z=1000,1000,half_z
+    end
+    f.meshes[#f.meshes+1]=actor
+end
+function f.add_map_capture()
+    local capture=object('authored capture');capture.world=world;f.captures[1]=capture
+end
+function f.add_radars()
+    for team=1,2 do
+        local radar=object('Radar sensor');radar.world=world;radar.r_TeamId=team
+        function radar:GetClass()
+            return object('BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_RadarSensor.BP_Objective_RadarSensor_C')
+        end
+        f.radars[#f.radars+1]=radar
+    end
+end
+local runtime=releaseRadarRuntimeFactory({valid=function(v) return v~=nil end,scope=function() end,
+    signature=function() end,report=function(value) f.reports[#f.reports+1]=value end,
+    map_descriptors={descriptor},guard_factory=releaseRadarGuardFactory,helper_factory=releaseRadarHelperFactory,
+    capture_bounds_factory=releaseRadarBoundsFactory,world_settings_guard_factory=releaseNativeWorldSettingsFactory,
+    blueprint_contracts=contracts})
+function f.tick() return runtime.tick(pc,gs) end
+f.widget=widget
+return f
+'''
 
 
 class RadarProjectionTest(unittest.TestCase):
-    def fixture(self):
-        start = SOURCE.index("local radar_playable_width=")
-        end = SOURCE.index("-- Production network-client radar binding.", start)
-        return LuaRuntime().execute(SOURCE[start:end] + """
-            local settings={MapSize=1075200}
-            local widget={CachedZoom=1,TargetZoom=1}
-            function widget:UpdateSublevel()
-                if self.fail then error('native projection failed') end
-                self.CachedMapScale=1024/settings.MapSize
-            end
-            return {
-                width=radar_projection_width,
-                initialize=function(width)initialize_radar_projection(widget,settings,width)end,
-                widget=widget,settings=settings,
-            }
-        """)
-
-    def test_damnation_coverage_and_native_zoom(self):
-        f = self.fixture()
-        width = f.width("Damnation2026", f.settings.MapSize)
-        self.assertEqual(width, 155000)
-        self.assertGreater(width / 2, 70323.5)
-        f.initialize(width)
-        self.assertAlmostEqual(f.widget.CachedMapScale, 1024 / width)
-        self.assertEqual((f.widget.CachedZoom, f.widget.TargetZoom), (1, 1))
-        self.assertEqual(f.settings.MapSize, 1075200)
-
-    def test_unknown_map_or_tighter_authored_size_uses_native_scale(self):
-        f = self.fixture()
-        self.assertEqual(f.width("Unlisted", 234000), 234000)
-        self.assertEqual(f.width("Damnation2026", 150000), 150000)
-
-    def test_native_projection_error_restores_authored_settings(self):
-        f = self.fixture()
-        f.widget.fail = True
-        with self.assertRaisesRegex(Exception, "native projection failed"):
-            f.initialize(155000)
-        self.assertEqual(f.settings.MapSize, 1075200)
-
-    def test_katabatic_t2_uses_community_radar_with_authored_settings(self):
-        start = SOURCE.index("local function radar_descriptor(selected)")
-        end = SOURCE.index("\nreturn function(env)", start)
+    def fixture(self, map_id, group, level, size, *, retail=False, radar_count=None, hide=False):
         lua = LuaRuntime()
-        descriptor_for = lua.execute(SOURCE[start:end] + "\nreturn radar_descriptor")
-        selected = lua.table_from({
-            "native": True,
-            "name": "KatabaticT22026",
-            "package": "/Game/Maps/Community/KatabaticT2/Arena_KatabaticT2_2026_P",
-        })
-        descriptor = descriptor_for(selected)
-        self.assertTrue(descriptor.native)
-        self.assertEqual(descriptor.assembly_asset,
-                         "/Game/Community/KatabaticT2/Edition2026/SM_Structures2026.SM_Structures2026")
-        self.assertIsNone(selected.assembly_asset)
-        selected.package = "/Game/Maps/Active/Katabatic/Arena_Katabatic_P"
-        self.assertIsNone(descriptor_for(selected))
+        if retail:
+            package = f'/Game/Maps/Active/{group}/{level}'
+            row = lua.table(name=map_id, package=package, world=f'{package}.{level}:', native=True)
+        else:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / 'lua').mkdir()
+                (root / 'lua/community_maps.lua').write_text('return {}\n', encoding='utf-8')
+                path = lua_map_definitions(root, root, MapDefinition(map_id, map_id, group, level))
+                row = lua.execute(path.read_text(encoding='utf-8'))[map_id]
+            self.assertTrue(row.native)
+            self.assertIsNone(row.assembly_asset)
+        row.radars_per_team = radar_count
+        row.hide_minimap = hide
+        lua.globals().descriptor = row
+        lua.globals().authored = size
+        start = SOURCE.index('local function community_radar_group(')
+        end = SOURCE.index('local releaseRadarRuntime=releaseRadarRuntimeFactory(', start)
+        return lua.execute(SOURCE[start:end] + FIXTURE)
+
+    def test_generated_native_rows_use_own_cooked_meshes_and_authored_map_size(self):
+        for map_id, group, level, size in MAPS:
+            with self.subTest(map=map_id):
+                f = self.fixture(map_id, group, level, size)
+                f.add_mesh(f'/Game/Community/{group}/UnlistedAssembly.UnlistedAssembly', 0, 110000, 9000)
+                f.add_mesh(f'/Game/Maps/Community/{group}/{level}.InLevelMesh', 1000, 120000, 5000)
+                f.add_mesh(f'/Game/Community/{group}/OutsideTile.OutsideTile', size, 999000, 0)
+                f.add_mesh(f'/Game/Community/{group}/ForeignActor.ForeignActor', 0, 998000, 0, True)
+                f.add_mesh(f'/Game/Community/{group}/Hidden.H', 0, 888000, 0, False, True)
+                f.add_mesh(f'/Game/Community/{group}/VisualEffect.V', 0, 889000, 0, False, False, 0)
+                f.add_mesh('/Game/Community/OtherMap/Mesh.Mesh', 0, 500000, 0)
+                self.assertTrue(f.tick())
+                self.assertEqual(f.height, 136000)
+                self.assertEqual(f.component.OrthoWidth, size)
+                self.assertAlmostEqual(f.widget.CachedMapScale, 1024 / size)
+                self.assertEqual((f.widget.CachedZoom, f.widget.TargetZoom), (1, 1))
+
+    def test_background_captures_without_radars_and_late_radars_bind(self):
+        f = self.fixture(*MAPS[-1])
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.RadarSensors.children, 0)
+        self.assertEqual(f.requests, 1)
+        f.add_radars()
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.RadarSensors.children, 2)
+        self.assertEqual((f.requests, f.spawns), (1, 1))
+
+    def test_no_radar_map_keeps_the_minimap_by_default(self):
+        f = self.fixture(*MAPS[-1], radar_count=0)
+        f.add_radars()
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.visibility, 0)
+        self.assertEqual(f.widget.RadarSensors.children, 0)
+        self.assertEqual((f.requests, f.spawns), (1, 1))
+
+    def test_only_local_minimap_is_collapsed_when_requested(self):
+        f = self.fixture(*MAPS[-1], radar_count=0, hide=True)
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.visibility, 1)
+        self.assertEqual((f.requests, f.spawns), (0, 0))
+        f.widget.visibility = 0  # Native UI can reset the widget after initial setup.
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.visibility, 1)
+
+    def test_retail_and_map_owned_capture_keep_native_behavior(self):
+        retail = self.fixture('Katabatic', 'Katabatic', 'Arena_Katabatic_P', 172000, retail=True)
+        self.assertTrue(retail.tick())
+        self.assertEqual(retail.spawns, 0)
+        authored = self.fixture(*MAPS[1])
+        authored.add_map_capture()
+        self.assertTrue(authored.tick())
+        self.assertEqual((authored.requests, authored.spawns), (0, 0))
+
+    def test_waits_for_compatible_world_settings(self):
+        f = self.fixture(*MAPS[2])
+        f.settings_class = 'Class /Script/Engine.WorldSettings'
+        self.assertFalse(f.tick())
+        self.assertEqual(f.spawns, 0)
+        f.settings_class = 'Class /Script/Valhalla.ValWorldSettings'
+        self.assertTrue(f.tick())
+        self.assertEqual(f.requests, 1)

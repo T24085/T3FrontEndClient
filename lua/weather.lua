@@ -1,0 +1,326 @@
+local originalFactory=(function()
+-- Local cosmetic motion for the separately cooked Blizzard level.
+-- Team objectives, pawn movement and weather lighting remain owned by the map/game.
+return function(env)
+ local valid,report=env.valid,env.report
+ local package='/Game/Maps/Community/Snowblind/Arena_Snowblind_Blizzard_P'
+ local prefix=package..'.Arena_Snowblind_Blizzard_P:'
+ local states={}
+ return function(context,pc)
+  if not valid(context) or context:HasAuthority() or not context:GetFullName():find(prefix,1,true) then return end
+  -- An authored descriptor takes precedence over the original Blizzard path.
+  for _,row in pairs(env.descriptors or {})do
+   if row.world==prefix and row.weather_authored then return end
+  end
+  if not valid(pc) or not pc:IsLocalPlayerController() or pc:HasAuthority() then return end
+  local world=context:GetWorld()
+  if not valid(world) or pc:GetWorld():GetAddress()~=world:GetAddress() then return end
+  local key=context:GetFullName()..'|'..string.format('%x',context:GetAddress())
+  if states[key] then return end
+  local clouds={}
+  for _,actor in ipairs(FindAllOf('StaticMeshActor') or {}) do
+   if valid(actor) and actor:GetWorld():GetAddress()==world:GetAddress() then
+    local index=actor:GetFullName():match('^StaticMeshActor '..prefix:gsub('([^%w])','%%%1')..'PersistentLevel%.Snowblind_Snowfall_(%d+)$')
+    if index then
+     index=tonumber(index)
+     assert(index>=0 and index<48,'snowfall_group_index_changed')
+     clouds[#clouds+1]={actor=actor,index=index,speed=180+(index*37)%201,yaw=(index%4)*90}
+    end
+   end
+  end
+  assert(#clouds==48,'snowfall_expected_48_cooked_groups_got_'..#clouds)
+  table.sort(clouds,function(a,b) return a.index<b.index end)
+  for index,cloud in ipairs(clouds) do assert(cloud.index==index-1,'snowfall_group_identity_repeated') end
+  local gameplay=StaticFindObject('/Script/Engine.Default__GameplayStatics')
+  assert(valid(gameplay),'snowfall_gameplay_statics_missing')
+  states[key]=true
+  local last=nil
+  local ticks=0
+  local function tick()
+   ExecuteInGameThreadWithDelay(20,function()
+    if not valid(context) or not valid(pc) or not valid(world) then return end
+    if context:GetWorld():GetAddress()~=world:GetAddress() or pc:GetWorld():GetAddress()~=world:GetAddress() then return end
+    local ok,why=pcall(function()
+     env.scope()
+     local manager=pc.PlayerCameraManager
+     if not valid(manager) then return end
+     local location=manager:GetCameraLocation()
+     local now=gameplay:GetTimeSeconds(context)
+     local dt=last and math.max(0,math.min(now-last,1)) or 0
+     last=now
+     for _,cloud in ipairs(clouds) do
+      assert(valid(cloud.actor),'snowfall_owned_group_lost')
+      local old=cloud.z or (location.Z-1900+(cloud.index+.5)*4500/48)
+      cloud.z=location.Z-1900+((old-cloud.speed*dt-(location.Z-1900))%4500)
+      local dx=now*(240+(cloud.index*7)%220)+(cloud.index*317)%8000
+      local dy=now*(-110+(cloud.index*11)%180)+(cloud.index*683)%8000
+      local x=math.floor((location.X-dx)/8000+.5)*8000+dx
+      local y=math.floor((location.Y-dy)/8000+.5)*8000+dy
+      assert(cloud.actor:K2_TeleportTo({X=x,Y=y,Z=cloud.z},{Pitch=0,Yaw=cloud.yaw,Roll=0}),'snowfall_group_move_failed')
+     end
+     ticks=ticks+1
+     if ticks%200==0 then report('SNOWFALL_SAMPLE|style=blizzard|ticks='..ticks..'|dt='..string.format('%.3f',dt)) end
+    end)
+    if not ok then report('SNOWFALL_ERROR|'..tostring(why));return end
+    tick()
+   end)
+  end
+  report('SNOWFALL_READY|style=blizzard|groups=48|requested_interval_ms=20|local_cosmetic=true')
+  tick()
+ end
+end
+
+end)()
+local mapWeatherFactory=(function()
+-- Cosmetic motion for cooked weather actors declared by the selected map.
+local function number(value,min,max,default)
+ if value==nil then return default end
+ assert(type(value)=='number' and value>=min and value<=max,'weather_parameter_out_of_range')
+ return value
+end
+
+local function ordered_count(values,max,error_name)
+ assert(type(values)=='table',error_name)
+ local count=0
+ for i in pairs(values)do
+  assert(type(i)=='number' and i%1==0 and i>=1 and i<=max,error_name)
+  count=count+1
+ end
+ for i=1,count do assert(values[i]~=nil,error_name) end
+ return count
+end
+
+local function finite(value)
+ return type(value)=='number' and value>-math.huge and value<math.huge
+end
+
+local function box_vector(values,error_name)
+ assert(ordered_count(values,3,error_name)==3
+        and finite(values[1]) and finite(values[2]) and finite(values[3]),error_name)
+ return {X=values[1],Y=values[2],Z=values[3]}
+end
+
+local function exclusion_boxes(values)
+ local boxes={}
+ if values==nil then return boxes end
+ local count=ordered_count(values,16,'weather_exclusions_require_ordered_boxes')
+ for i=1,count do
+  local row=values[i]
+  assert(type(row)=='table' and finite(row.yaw),'weather_exclusion_requires_yaw')
+  local center=box_vector(row.center_cm,'weather_exclusion_requires_center_xyz')
+  local half=box_vector(row.half_cm,'weather_exclusion_requires_half_xyz')
+  assert(half.X>0 and half.Y>0 and half.Z>0,'weather_exclusion_requires_positive_half_extents')
+  local angle=math.rad(row.yaw%360)
+  boxes[i]={center=center,half=half,axis={X=math.cos(angle),Y=math.sin(angle),Z=0}}
+ end
+ return boxes
+end
+
+local function camera_fade(boxes,clouds,valid)
+ local parameter=FName('WeatherOpacity')
+ local opacity=1
+ local function apply(value)
+  for _,cloud in ipairs(clouds)do
+   if cloud.enabled then
+    assert(valid(cloud.actor),'weather_2026_owned_actor_lost')
+    cloud.actor.StaticMeshComponent:SetScalarParameterValueOnMaterials(parameter,value)
+   end
+  end
+ end
+ apply(opacity)
+ return function(p,dt)
+  local inside=false
+  for _,box in ipairs(boxes)do
+   local x,y=p.X-box.center.X,p.Y-box.center.Y
+   local axis,half=box.axis,box.half
+   if math.abs(x*axis.X+y*axis.Y)<=half.X and math.abs(y*axis.X-x*axis.Y)<=half.Y
+      and math.abs(p.Z-box.center.Z)<=half.Z then
+    inside=true;break
+   end
+  end
+  local nextOpacity=inside and math.max(0,opacity-2*dt) or math.min(1,opacity+2*dt)
+  if nextOpacity~=opacity then
+   apply(nextOpacity)
+   opacity=nextOpacity
+  end
+ end
+end
+
+local function configure_lighting(config,descriptor,world,valid)
+ if config==nil then return end
+ assert(type(config)=='table' and type(config.actors)=='table'
+        and #config.actors>=1 and #config.actors<=16,'weather_lighting_actor_contract')
+ local intensity=number(config.intensity,0,1000000)
+ assert(intensity~=nil,'weather_lighting_intensity_required')
+ local wanted,lights={},{}
+ for _,name in ipairs(config.actors)do
+  assert(type(name)=='string' and name:match('^[%w_]+$'),'weather_lighting_actor_identity')
+  local full='PointLight '..descriptor.world..'PersistentLevel.'..name
+  assert(not wanted[full],'weather_lighting_repeated_actor')
+  wanted[full]=true
+ end
+ for _,actor in ipairs(FindAllOf('PointLight') or {})do
+  if valid(actor) and actor:GetWorld():GetAddress()==world:GetAddress() then
+   local name=actor:GetFullName()
+   if wanted[name] then
+    local light=actor.LightComponent
+    assert(not actor.bReplicates and valid(light) and light.Mobility==2,'weather_lighting_requires_local_movable_light')
+    lights[#lights+1]=light
+    wanted[name]=nil
+   end
+  end
+ end
+ assert(#lights==#config.actors,'weather_lighting_missing_cooked_actors')
+ for _,light in ipairs(lights)do light:SetIntensity(intensity) end
+end
+
+return function(env)
+ local valid,report=assert(env.valid),assert(env.report)
+ local descriptors=assert(env.descriptors)
+ local states={}
+ return function(context,pc)
+  if not valid(context) or not valid(pc) or not pc:IsLocalPlayerController() then return end
+  local world=context:GetWorld()
+  if not valid(world) or pc:GetWorld():GetAddress()~=world:GetAddress() then return end
+  local descriptor=nil
+  for _,row in pairs(descriptors)do
+   if row.weather and context:GetFullName():find(row.world,1,true)then
+    assert(not descriptor,'weather_2026_ambiguous_world');descriptor=row
+   end
+  end
+  if not descriptor then return end
+  local weather=descriptor.weather
+  assert(type(weather)=='table','weather_2026_invalid_descriptor')
+  local kind=weather.kind
+  local sand=kind=='sand'
+  local windOnly=kind=='wind'
+  local lightingOnly=kind=='lighting'
+  assert(sand or windOnly or lightingOnly or kind=='snow' or kind=='rain' or kind=='ash','weather_2026_unknown_kind')
+  local count=type(weather.actors)=='table' and #weather.actors or 0
+  assert((lightingOnly and count==0 and weather.lighting~=nil) or
+         (not lightingOnly and count>=1 and count<=64),'weather_2026_actor_contract')
+  local key=descriptor.world..'|'..string.format('%x',world:GetAddress())
+  if states[key]then return end
+  local boxes=exclusion_boxes(weather.exclusions)
+  assert(weather.fade_when_camera_inside==nil or type(weather.fade_when_camera_inside)=='boolean',
+         'weather_camera_fade_requires_boolean')
+  if lightingOnly then
+   configure_lighting(weather.lighting,descriptor,world,valid)
+   states[key]=true
+   report('WEATHER_2026_READY|kind=lighting|groups=0|local_cosmetic=true')
+   return
+  end
+  local density=number(weather.density,0,1,1)
+  local active=math.floor(count*density+.5)
+  local speed=number(weather.speed,0,10000,sand and 600 or kind=='rain' and 1600 or kind=='ash' and 110 or windOnly and 240 or 280)
+  local windX,windY
+  if weather.wind~=nil then
+   local wind=weather.wind
+   assert(type(wind)=='table' and #wind==2,'weather_wind_requires_xy')
+   windX=number(wind[1],-10000,10000)
+   windY=number(wind[2],-10000,10000)
+  end
+  local tint
+  local c=weather.tint
+  if c==nil then c=weather.color end
+  if c~=nil then
+   assert(type(c)=='table' and #c==3,'weather_color_requires_linear_rgb')
+   tint={X=number(c[1],0,1),Y=number(c[2],0,1),Z=number(c[3],0,1)}
+  end
+  local wanted={}
+  for n,row in ipairs(weather.actors)do
+   assert(type(row)=='table' and type(row.actor)=='string' and row.actor:match('^[%w_]+$')
+          and row.index==n-1,'weather_2026_actor_identity')
+   local full='StaticMeshActor '..descriptor.world..'PersistentLevel.'..row.actor
+   assert(not wanted[full],'weather_2026_repeated_actor');wanted[full]=row.index
+  end
+  local clouds={}
+  for _,actor in ipairs(FindAllOf('StaticMeshActor')or{})do
+   if valid(actor)and actor:GetWorld():GetAddress()==world:GetAddress()then
+    local name=actor:GetFullName()
+    local index=wanted[name]
+    if index~=nil then
+     assert(not actor.bReplicates and valid(actor.StaticMeshComponent) and actor.StaticMeshComponent:GetCollisionEnabled()==0,'weather_2026_requires_nonreplicated_cosmetic_actor')
+     clouds[#clouds+1]={actor=actor,index=index}
+     wanted[name]=nil
+    end
+   end
+  end
+  if #clouds~=count then
+   -- Map downloads can replace a level before the next Starter package
+   -- supplies its matching descriptor.
+   states[key]=true
+   report('WEATHER_2026_UNAVAILABLE|map='..descriptor.name..'|reason=missing_cooked_actors')
+   return
+  end
+  configure_lighting(weather.lighting,descriptor,world,valid)
+  local parameters={}
+  for i in ipairs(boxes)do
+   local prefix='WeatherBox'..i..'_'
+   parameters[i]={center=FName(prefix..'Center'),half=FName(prefix..'Half'),axis=FName(prefix..'Axis')}
+  end
+  for _,cloud in ipairs(clouds)do
+   local enabled=math.floor((cloud.index+1)*active/count)>math.floor(cloud.index*active/count)
+   if enabled then
+    local mesh=cloud.actor.StaticMeshComponent
+    if tint then mesh:SetVectorParameterValueOnMaterials(FName('WeatherColor'),tint) end
+    for i,box in ipairs(boxes)do
+     local names=parameters[i]
+     mesh:SetVectorParameterValueOnMaterials(names.center,box.center)
+     mesh:SetVectorParameterValueOnMaterials(names.half,box.half)
+     mesh:SetVectorParameterValueOnMaterials(names.axis,box.axis)
+    end
+   else
+    cloud.actor:SetActorHiddenInGame(true)
+   end
+   cloud.enabled=enabled
+  end
+  local fade=weather.fade_when_camera_inside and #boxes>0 and active>0 and camera_fade(boxes,clouds,valid)
+  local statics=StaticFindObject('/Script/Engine.Default__GameplayStatics');assert(valid(statics))
+  states[key]=true;local last=nil;local ticks=0
+  local function tick()
+   ExecuteInGameThreadWithDelay(50,function()
+    if not valid(context)or not valid(pc)or not valid(world)then return end
+    if context:GetWorld():GetAddress()~=world:GetAddress()or pc:GetWorld():GetAddress()~=world:GetAddress()then return end
+    local ok,why=pcall(function()
+     env.scope()
+     local manager=pc.PlayerCameraManager;if not valid(manager)then return end
+     local p=manager:GetCameraLocation();local now=statics:GetTimeSeconds(context)
+     local dt=last and math.max(0,math.min(now-last,1))or 0;last=now
+     if fade then fade(p,dt) end
+     for _,cloud in ipairs(clouds)do
+      assert(valid(cloud.actor),'weather_2026_owned_actor_lost')
+      if cloud.enabled then
+      local x,y,z,yaw
+      if not sand then
+       local old=cloud.z or(p.Z-1900+(cloud.index+.5)*4500/count)
+       local fall=windOnly and 0 or speed*(180+(cloud.index*37)%201)/280
+       z=p.Z-1900+((old-fall*dt-(p.Z-1900))%4500);cloud.z=z
+       local dx=now*(windX or (windOnly and speed or 240+(cloud.index*7)%220))+(cloud.index*317)%8000
+       local dy=now*(windY or (windOnly and 0 or -110+(cloud.index*11)%180))+(cloud.index*683)%8000
+       x=math.floor((p.X-dx)/8000+.5)*8000+dx;y=math.floor((p.Y-dy)/8000+.5)*8000+dy;yaw=(cloud.index%4)*90
+      else
+       local drift=now*(windX or speed)
+       local crosswind=now*(windY or 0)
+       x=math.floor((p.X-drift)/25000)*25000+drift+(cloud.index-3)*25000
+       y=math.floor((p.Y-crosswind)/100000+.5)*100000+crosswind;z=p.Z-5000;yaw=0
+      end
+      assert(cloud.actor:K2_TeleportTo({X=x,Y=y,Z=z},{Pitch=sand and 90 or 0,Yaw=yaw,Roll=0}),'weather_2026_move_failed')
+      end
+     end
+     ticks=ticks+1
+     if ticks%200==0 then report('WEATHER_2026_SAMPLE|kind='..weather.kind..'|ticks='..ticks)end
+    end)
+    if not ok then report('WEATHER_2026_ERROR|'..tostring(why));return end
+    tick()
+   end)
+  end
+  report('WEATHER_2026_READY|kind='..kind..'|groups='..active..'|local_cosmetic=true');tick()
+ end
+end
+
+end)()
+return function(env)
+ local original=originalFactory(env);local newer=mapWeatherFactory(env)
+ return function(...) original(...);newer(...) end
+end

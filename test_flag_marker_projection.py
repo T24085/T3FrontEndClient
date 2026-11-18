@@ -50,8 +50,8 @@ class FlagMarkerProjectionTest(unittest.TestCase):
         end = SOURCE.index('-- Use the original overlay widgets', start)
         return LuaRuntime().execute(FIXTURE + SOURCE[start:end] + """
             local project=flag_marker_projection(valid)
-            function f.project(x,y,z)
-                return project(f.entry,f.pc,{X=x,Y=y,Z=z or 0})
+            function f.project(x,y,z,lift)
+                return project(f.entry,f.pc,{X=x,Y=y,Z=z or 0},lift)
             end
             return f
         """)
@@ -80,10 +80,19 @@ class FlagMarkerProjectionTest(unittest.TestCase):
         fixture = self.fixture()
         for front, target in ((True, (5000, 540)), (False, (-40, 800))):
             fixture.front = front
-            self.assertTrue(fixture.project(*target))
+            self.assertTrue(fixture.project(*target, 0, 40))
             anchor = fixture.entry.widget.Slot.anchor
             self.assertAlmostEqual(anchor.X * 1920, 1920 - (40+8)*1.5)
             self.assertAlmostEqual(anchor.Y * 1080, 540)
+
+    def test_vertical_lift_keeps_horizontal_alignment_and_respects_the_top_edge(self):
+        fixture = self.fixture()
+        for lift, screen_y, expected_y in ((8, 500, 488), (40, 500, 440), (40, 70, 57)):
+            with self.subTest(lift=lift, screen_y=screen_y):
+                self.assertTrue(fixture.project(800, screen_y, 0, lift))
+                anchor = fixture.entry.widget.Slot.anchor
+                self.assertAlmostEqual(anchor.X * 1920, 800)
+                self.assertAlmostEqual(anchor.Y * 1080, expected_y)
 
     def test_hud_pulse_updates_pickup_toss_and_return_without_a_native_widget_tick(self):
         start = SOURCE.index('local function enabled_flag_markers(env)')
@@ -185,10 +194,11 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             local function FText(value) return value end
             local nextPulse
             local function ExecuteInGameThreadWithDelay(_,fn) nextPulse=fn end
-            local function flag_marker_projection() return function(entry,_,target)
+            local function flag_marker_projection() return function(entry,_,target,lift)
                 entry.widget.projectedX=target.X
                 entry.widget.projectedY=target.Y
                 entry.widget.projectedZ=target.Z
+                entry.widget.lift=lift
                 return true
             end end
         """ + SOURCE[start:end] + r"""
@@ -206,10 +216,37 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             flags[2].holderInfo={bReturned=false}
             nextPulse()
             assert(parent.visibility==4 and enemy.shown and enemy.projectedX==1500)
-            assert(enemy.projectedY==15 and enemy.projectedZ==20)
+            assert(enemy.projectedY==15 and enemy.projectedZ==120 and enemy.lift==8)
+            local carrier=actor(1300)
+            carrier.Mesh={K2_GetComponentLocation=function()return {X=carrier.x,Y=-35,Z=100}end}
+            flags[2].holderInfo.Holder=carrier
+            flags[2].owner=carrier
+            flags[2].mode=2
+            flags[2].x=900
+            nextPulse()
+            assert(enemy.shown and enemy.projectedX==1300 and enemy.projectedY==-35)
+            assert(enemy.projectedZ==290 and enemy.lift==40)
+            carrier.x=1400
+            flags[2].x=13000
+            nextPulse()
+            assert(enemy.projectedX==1400 and enemy.projectedZ==290 and enemy.lift==24)
+            carrier.Mesh=nil
+            nextPulse()
+            assert(enemy.projectedX==1400 and enemy.projectedY==0 and enemy.projectedZ==190)
+            flags[2].owner=nil -- A stale Holder must not keep the glyph on the thrower.
+            flags[2].x=1000
+            flags[2].mode=4
+            nextPulse()
+            assert(enemy.projectedX==1000 and enemy.projectedY==15 and enemy.projectedZ==120 and enemy.lift==8)
+            local flagMesh=flags[2].Mesh
+            flags[2].Mesh=nil
+            nextPulse()
+            assert(enemy.projectedX==1000 and enemy.projectedY==0 and enemy.projectedZ==150)
+            flags[2].Mesh=flagMesh
             flags[2].r_HeldBy=flags[2].holderInfo
             flags[2].holderInfo.Holder=pawn
             flags[2].owner=pawn
+            flags[2].mode=2
             nextPulse()
             assert(not enemy.shown and home.ActionText.text=='GO HERE')
             flags[2].owner=nil
@@ -220,7 +257,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             enemy.projectedX=-1
             flags[2].Mesh.centerZ=75
             nextPulse()
-            assert(enemy.projectedX==900 and enemy.projectedZ==75)
+            assert(enemy.projectedX==900 and enemy.projectedZ==175)
             assert(enemy.translation.X==0 and enemy.translation.Y==0)
             assert(enemy.Content.translation.X==0 and enemy.Content.translation.Y==0)
             enemy.timerActive,enemy.timerShown=true,true
@@ -268,7 +305,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             nextPulse()
             assert(enemy.shown and enemy.visibility==4 and enemy.cachedReturned)
             assert(not enemy.timerActive and not enemy.timerShown and enemy.projectedX==1500)
-            assert(enemy.projectedZ==20)
+            assert(enemy.projectedZ==120 and enemy.lift==8)
             return true
         """)
         self.assertTrue(result)

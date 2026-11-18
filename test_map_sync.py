@@ -67,7 +67,8 @@ class MapSyncTest(unittest.TestCase):
             revision = self.sync.revision_for('Stonehenge', fingerprint)
             download.assert_called_once()
         self.assertEqual(self.sync.status, 'Maps up to date.')
-        entries, catalog, custom = load_overlay(self.root, revision, self.bundled)
+        entries, catalog, custom, objectives = load_overlay(self.root, revision, self.bundled)
+        self.assertFalse(objectives)
         self.assertEqual(custom, {})
         self.assertEqual(catalog['Stonehenge'], fingerprint)
         paths = {item['path']: (bundled, download) for item, bundled, download in entries}
@@ -89,6 +90,30 @@ class MapSyncTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'Map update failed'):
                     self.sync.refresh()
                 self.assertEqual(list((self.root / 'map-downloads').iterdir()), [])
+
+    def test_objectives_refresh_even_when_the_cooked_fingerprint_is_unchanged(self):
+        self.remote = dict(self.remote_for(self.bundled['files'][1:]), format=2,
+                           community_maps=['Stonehenge'], map_definitions={})
+        map_id = 'Stonehenge'
+        fingerprint = self.remote['maps'][map_id]
+        path = 'lua/Stonehenge/objectives.lua'
+        self.sync.available = True
+        self.sync.version = 2
+        revisions = []
+        for raw in (b'return {weather=false}', b'return {weather={kind="rain"}}'):
+            entry = row(path, raw)
+            self.remote['objectives'] = [entry]
+            with patch.object(self.sync, '_download', side_effect=lambda item, target:
+                    self.sync._write_verified(BytesIO(gzip.compress(raw)), target, item['sha256'], item['bytes'])):
+                revision = self.sync.revision_for(map_id, fingerprint)
+            revisions.append(revision)
+            entries, catalog, _, objectives = load_overlay(self.root, revision, self.bundled)
+            self.assertTrue(objectives)
+            self.assertEqual(catalog[map_id], fingerprint)
+            self.assertEqual(entries[-1][2].read_bytes(), raw)
+        self.assertNotEqual(*revisions)
+        with self.assertRaisesRegex(ValueError, 'Invalid map objectives'):
+            overlay(self.bundled, dict(self.remote, objectives=[row('lua/client.lua', b'return {}')]))
 
     def test_non_map_file_and_mismatched_fingerprint_rejected_before_download(self):
         with self.assertRaisesRegex(ValueError, 'Invalid or duplicate'):
@@ -124,7 +149,8 @@ class MapSyncTest(unittest.TestCase):
         with patch.object(self.sync, '_download', side_effect=fetch):
             revision = self.sync.revision_for('NewMap', self.remote['maps']['NewMap'])
         self.assertCountEqual(requested, [name for name in extra if not name.endswith('.uexp')])
-        entries, catalog, definitions = load_overlay(self.root, revision, self.bundled)
+        entries, catalog, definitions, objectives = load_overlay(self.root, revision, self.bundled)
+        self.assertFalse(objectives)
         self.assertEqual(catalog, self.remote['maps'])
         selected = custom_definitions(definitions)['NewMap']
         self.assertEqual(map_name(CONTRACT, 'NewMap', definitions={selected.id: selected}), selected.package)

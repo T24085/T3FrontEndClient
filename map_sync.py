@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import ssl
 import threading
 import uuid
 import zlib
@@ -14,7 +15,7 @@ import zlib
 from bulk_asset_cache import DISK_RESERVE_BYTES
 from community_transport import CommunityError, PinnedHTTPSConnection
 from map_sync_contract import (CATALOG_ROUTE, CATALOG_VERSION, CHUNK, FILE_ROUTE, MANIFEST_ROUTE, MAX_MANIFEST, SHA, VERSION,
-                               cooked_rows, encode, map_catalog)
+                               OBJECTIVES_HEADER, cooked_rows, encode, map_catalog, map_objective_rows)
 from community_maps import BY_ID, declared_definitions
 from verified_file_cache import digest
 
@@ -41,16 +42,14 @@ def overlay(package, remote):
     fields = {'format', 'maps', 'files', 'shared_content'}
     if version == CATALOG_VERSION:
         fields.update(('community_maps', 'map_definitions'))
+        if 'objectives' in remote:
+            fields.add('objectives')
     if version not in (VERSION, CATALOG_VERSION) or set(remote) != fields:
         raise ValueError('Unsupported map download inventory.')
     rows = cooked_rows(remote['files'])
     bundled = [row for row in package['files'] if row['path'].startswith('content/')]
     local_files = {(row['sha256'], row['bytes']): row['path'] for row in bundled}
     local_paths = {row['path']: row for row in bundled}
-    sources = {}
-    for name, row in rows.items():
-        key = (row['sha256'], row['bytes'])
-        sources[name] = name if local_paths.get(name) == row else local_files.get(key)
     effective = dict(package, shared_content=remote['shared_content'],
                      files=[row for row in package['files'] if not row['path'].startswith('content/')] + list(rows.values()))
     custom = {}
@@ -64,6 +63,12 @@ def overlay(package, remote):
     catalog = map_catalog(effective)
     if catalog != remote['maps']:
         raise ValueError('Server maps require a newer Starter or matching base game.')
+    sources = {name: name if local_paths.get(name) == row else local_files.get((row['sha256'], row['bytes']))
+               for name, row in rows.items()}
+    if 'objectives' in fields:
+        authored = map_objective_rows(remote['objectives'], selected)
+        rows.update(authored)
+        sources.update(dict.fromkeys(authored))
     return rows, sources, catalog, custom
 
 
@@ -74,9 +79,10 @@ def load_overlay(workspace, revision, package):
         raw = bounded_read(stream)
     if hashlib.sha256(raw).hexdigest() != revision:
         raise ValueError('The cached map revision changed. Reopen Starter to refresh it.')
-    rows, sources, catalog, custom = overlay(package, json.loads(raw))
+    manifest = json.loads(raw)
+    rows, sources, catalog, custom = overlay(package, manifest)
     return [(row, sources[name], cache_path(workspace, row['sha256'] + '.asset') if sources[name] is None else None)
-            for name, row in rows.items()], catalog, custom
+            for name, row in rows.items()], catalog, custom, 'objectives' in manifest
 
 
 class MapSync:
@@ -112,16 +118,31 @@ class MapSync:
                                      timeout=15, source_address=(lobby.test_source, 0) if lobby.test_source else None)
 
     def _inventory(self):
-        try:
-            with closing(self._connection()) as connection:
-                path = CATALOG_ROUTE if self.version == CATALOG_VERSION else MANIFEST_ROUTE
-                connection.request('GET', path, headers=self.lobby.request_headers())
-                with connection.getresponse() as response:
-                    if response.status != 200 or response.getheader('Content-Type', '').split(';')[0] != 'application/json':
-                        raise CommunityError('Server map inventory is unavailable.')
-                    return json.loads(bounded_read(response))
-        except (http.client.HTTPException, OSError) as exc:
-            raise CommunityError('Could not securely download the map inventory.') from exc
+        path = CATALOG_ROUTE if self.version == CATALOG_VERSION else MANIFEST_ROUTE
+        for attempt in range(3):
+            self._check_cancelled()
+            try:
+                with closing(self._connection()) as connection:
+                    headers = self.lobby.request_headers()
+                    if self.version == CATALOG_VERSION:
+                        headers[OBJECTIVES_HEADER] = '1'
+                    connection.request('GET', path, headers=headers)
+                    with connection.getresponse() as response:
+                        if response.status != 200 or response.getheader('Content-Type', '').split(';')[0] != 'application/json':
+                            raise CommunityError('Server map inventory is unavailable.')
+                        remaining = response.length
+                        if remaining is not None and remaining > MAX_MANIFEST:
+                            raise ValueError('Map inventory exceeds its size limit.')
+                        raw = bounded_read(response)
+                        if remaining is not None and len(raw) < remaining:
+                            raise http.client.IncompleteRead(raw, remaining - len(raw))
+                return json.loads(raw)
+            except ssl.SSLError as exc:
+                raise CommunityError('Could not securely download the map inventory.') from exc
+            except (http.client.HTTPException, OSError) as exc:
+                if attempt == 2:
+                    raise CommunityError('The map catalog download was interrupted. Try again shortly.') from exc
+                self.cancelled.wait(attempt + 1)
 
     def _download(self, row, output):
         sha, length = row['sha256'], row['bytes']
@@ -175,6 +196,10 @@ class MapSync:
         return self.bundled
 
     def revision_for(self, map_id, fingerprint):
+        if self.available and self.version == CATALOG_VERSION:
+            # Weather may change without changing the cooked-map fingerprint.
+            revision, _ = self.refresh(required=(map_id, fingerprint), recheck=True)
+            return revision
         revision, catalog = self.current
         if catalog.get(map_id) == fingerprint:
             return revision
@@ -186,9 +211,9 @@ class MapSync:
                 return revision
         raise CommunityError('Your map files do not match this match. Update the community client.')
 
-    def refresh(self, *, required=None):
+    def refresh(self, *, required=None, recheck=False):
         with self.lock:
-            if required and self.current[1].get(required[0]) == required[1]:
+            if required and not recheck and self.current[1].get(required[0]) == required[1]:
                 return self.current
             self._check_cancelled()
             self.status = 'Checking for map updates...'
@@ -207,7 +232,7 @@ class MapSync:
         rows, sources, catalog, _ = overlay(package, remote)
         if required and catalog.get(required[0]) != required[1]:
             raise CommunityError('The server map version changed. Refresh the lobby and try again.')
-        if catalog == self.bundled_catalog():
+        if 'objectives' not in remote and catalog == self.bundled_catalog():
             self.current = (None, catalog)
         else:
             raw = encode(remote)
