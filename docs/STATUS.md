@@ -57,11 +57,16 @@ Rendered minimap verification is pending.
 
 # Client staging cleanup
 
-Starter retires the private `game` folder when a session's owned Job reports zero
-processes. It also retires cancelled or replaced preparations and descriptors
-whose join was abandoned before launch. Session logs, saved profiles, the game
-install, and shared caches stay in place. A Job without a confirmed empty state
-keeps its staging data for investigation.
+Starter now launches the game from a stable private path per installation and
+workspace. Each preparation creates a fresh `client-*` record for the lobby,
+profile and log evidence. The game executable and runtime files are reused when
+their digests match. Each preparation refreshes its map inventory and removes
+stale files inside its private game tree. An exclusive lease and owned Job
+receipts keep preparation from changing a running game's files.
+
+Starter still retires historical per-session `game` folders after confirmed Job
+cleanup. Session logs and saved profiles remain available for troubleshooting
+and settings migration.
 
 Run `python tools/cleanup_client_sessions.py --workspace <workspace> --package
 <installed-Starter>` for a dry run of historical cleanup. Add `--apply` with

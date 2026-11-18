@@ -1,13 +1,14 @@
 """One-use, identity-guarded client file preparation; never starts the game.
 
-Preparation owns a fresh isolated directory. Only immutable bulk assets may be
-linked. Executable/runtime/configuration bytes are private. A joining child must
+Preparation owns fresh session metadata and an exclusive game directory. Only
+immutable bulk assets may be linked. Executable/runtime bytes are private. A joining child must
 receive the descriptor digest from the successful owned preparer, verify fresh
 input and output identities, and win an exclusive claim before using the files.
 Profiles and match destinations deliberately do not exist during preparation.
 """
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -63,10 +64,225 @@ def _copy_private(source,destination):
  """Copy mutable runtime bytes exclusively into a fresh private file."""
  with destination.open('xb')as output,source.open('rb')as stream:shutil.copyfileobj(stream,output,1024*1024)
 
+def _plain_directory(path):
+    path.mkdir(exist_ok=True)
+    if path.resolve(strict=True) != path or path.is_symlink() or path.is_junction() or not path.is_dir():
+        raise ValueError('Stable client directory escaped the workspace.')
+
+
+def _read_json(path, limit=MAX_DESCRIPTOR_BYTES):
+    if path.resolve(strict=True) != path or path.is_symlink() or not path.is_file():
+        raise ValueError('Unexpected stable client record location.')
+    with path.open('rb') as stream:
+        raw = stream.read(limit+1)
+    if len(raw) > limit:
+        raise ValueError('Stable client record exceeds its bound.')
+    return json.loads(raw)
+
+
+class StableGame:
+    """A game tree whose lock is held through native Job cleanup."""
+
+    def __init__(self, root, source, workspace):
+        self.package = root
+        self.workspace = workspace
+        key = hashlib.sha256(os.path.normcase(str(root)).encode('utf-8')).hexdigest()[:24]
+        self.slot = workspace / ('game-install-'+key)
+        self.game = self.slot / 'game'
+        self.ready = self.slot / 'ready.json'
+        self.native = self.slot / 'native.json'
+        if any(self.slot == boundary or self.slot in boundary.parents or boundary in self.slot.parents
+               for boundary in (root, source)):
+            raise ValueError('Stable client files must be outside the Starter package and original game.')
+
+    def check_idle(self):
+        if not os.path.lexists(self.native):
+            return
+        try:
+            pending = _read_json(self.native, 65536)
+            run = staged_session(self.workspace, pending['run'])
+            if pending['argv'][0] != str(self.game/EXECUTABLE):
+                raise ValueError('Unexpected pending game path.')
+            if self._native_job_empty(run, pending['argv']) or self._desktop_job_empty(pending.get('desktop')):
+                self.native.unlink()
+                return
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
+            pass
+        raise ValueError('The previous game Job has no confirmed cleanup. The stable game files are still reserved.')
+
+    def _native_job_empty(self, run, argv):
+        try:
+            receipt = _read_json(run/'execution/execution.json', 65536)
+            return receipt['argv'] == argv and Path(receipt['cwd']) == self.game and _terminal_job_empty(receipt)
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
+    def _desktop_job(self, path):
+        attempt = path.parent.parent
+        control = attempt.parent
+        if (path.name != 'execution.json' or path.parent.name != 'owner'
+                or control.parent != self.workspace or control.name not in ('desktop-control','direct-desktop-control')
+                or not re.fullmatch(r'[0-9a-f]{32}', attempt.name)):
+            raise ValueError('Unexpected desktop Job location.')
+        receipt = _read_json(path,65536)
+        argv = receipt['argv']
+        if (Path(receipt['cwd']) != self.package or Path(argv[0]) != self.package/'python/python.exe'
+                or Path(argv[3]) != self.package/'client.py' or '--workspace' not in argv
+                or Path(argv[argv.index('--workspace')+1]) != self.workspace
+                or receipt.get('assigned_suspended') is not True):
+            raise ValueError('Unexpected desktop Job binding.')
+        return receipt
+
+    def _desktop_job_empty(self, desktop):
+        if desktop is None:
+            return False
+        receipt = self._desktop_job(Path(desktop['path']))
+        return receipt['pid'] == desktop['pid'] and receipt['argv'] == desktop['argv'] and _terminal_job_empty(receipt)
+
+    def starting(self, run, argv, desktop_job=None):
+        staged_session(self.workspace, run)
+        if os.path.lexists(self.native) or argv[0] != str(self.game/EXECUTABLE):
+            raise ValueError('Native game path differs from the reserved installation.')
+        pending = {'run': str(run), 'argv': argv}
+        if desktop_job is not None:
+            receipt = self._desktop_job(Path(desktop_job))
+            if receipt['pid'] != os.getpid() or receipt['status'] != 'running':
+                raise ValueError('The desktop Job does not own this client process.')
+            pending['desktop'] = {'path':str(desktop_job), 'pid':receipt['pid'], 'argv':receipt['argv']}
+        _replace_file(self.native, lambda temporary: _write(temporary, pending))
+
+
+def _terminal_job_empty(receipt):
+    return (receipt.get('assigned_suspended') is True and empty_client_job(receipt)
+            and receipt['status'] in ('terminal','cancelled_by_owner_request','deadline_terminated','supervisor_error'))
+
+
+def stable_session_executable(root, run, execution):
+    """Resolve the executable for consumers of a running client's Job receipt."""
+    run = staged_session(run.parent, run)
+    session = _read_json(run/'session.json', 65536)
+    stable = StableGame(Path(root).resolve(strict=True), Path(session['source']).resolve(strict=True), run.parent)
+    executable = stable.game/EXECUTABLE
+    argv = execution['argv']
+    pending = _read_json(stable.native, 65536)
+    if (not argv or argv[0] != str(executable) or session['argv'] != argv or Path(execution['cwd']) != stable.game
+            or pending['run'] != str(run) or pending['argv'] != argv):
+        raise ValueError('The running session does not own this stable executable.')
+    return _member(stable.game, EXECUTABLE.as_posix())
+
+
+@contextmanager
+def lock_stable_game(root, source, workspace):
+    root, source, workspace = (Path(value).resolve(strict=True) for value in (root, source, workspace))
+    stable = StableGame(root, source, workspace)
+    _plain_directory(stable.slot)
+    lock = stable.slot/'game.lock'
+    if os.path.lexists(lock):
+        _member(stable.slot, 'game.lock')
+    with lock.open('a+b') as handle:
+        if lock.stat().st_size == 0:
+            handle.write(b'\0')
+            handle.flush()
+        handle.seek(0)
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise ValueError('This Starter installation is already preparing or running the game.') from exc
+        stable.check_idle()
+        _plain_directory(stable.game)
+        yield stable
+
+
+def _game_files(game):
+    if game.resolve(strict=True) != game or game.is_symlink() or game.is_junction() or not game.is_dir():
+        raise ValueError('Unexpected staged game directory.')
+    result = {}
+    for directory, directories, files in os.walk(game):
+        for name in (*directories, *files):
+            path = Path(directory)/name
+            if path.is_symlink() or path.is_junction() or path.resolve(strict=True) != path:
+                raise ValueError('Unexpected link in the staged game: '+name)
+        for name in files:
+            path = Path(directory)/name
+            if not path.is_file():
+                raise ValueError('Unexpected item in the staged game: '+name)
+            result[path.relative_to(game).as_posix()] = path
+    return result
+
+
+def _replace_file(target, populate):
+    temporary = target.with_name('.staging-'+uuid.uuid4().hex)
+    try:
+        populate(temporary)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _patched_digest(source, original_sha, patches):
+    original = hashlib.sha256()
+    patched = hashlib.sha256()
+    with source.open('rb') as stream:
+        for offset, before in sorted(patches):
+            remaining = offset-stream.tell()
+            if remaining < 0:
+                raise ValueError('Executable patch ranges overlap.')
+            while remaining:
+                block = stream.read(min(remaining,1024*1024))
+                if not block:
+                    raise ValueError('Executable patch is outside the original file.')
+                original.update(block)
+                patched.update(block)
+                remaining -= len(block)
+            before = bytes.fromhex(before)
+            if stream.read(len(before)) != before:
+                raise ValueError('Unsupported prepared executable at '+hex(offset))
+            original.update(before)
+            patched.update(b'\x90'*len(before))
+        for block in iter(lambda: stream.read(1024*1024), b''):
+            original.update(block)
+            patched.update(block)
+    if original.hexdigest() != original_sha:
+        raise ValueError('Original executable differs from the verified inventory.')
+    return patched.hexdigest()
+
+
+def _stage_executable(source, target, original_sha, patches, stable):
+    expected = _patched_digest(source, original_sha, patches) if stable else None
+    if stable and target.is_file() and target.stat().st_nlink == 1 and digest(target) == expected:
+        return expected
+
+    def populate(temporary):
+        _copy_private(source, temporary)
+        if os.path.samefile(temporary, source) or digest(temporary) != original_sha:
+            raise ValueError('Private prepared executable verification failed.')
+        with temporary.open('r+b') as output:
+            for offset, before in patches:
+                before = bytes.fromhex(before)
+                output.seek(offset)
+                if output.read(len(before)) != before:
+                    raise ValueError('Unsupported prepared executable at '+hex(offset))
+                output.seek(offset)
+                output.write(b'\x90'*len(before))
+        if expected is not None and digest(temporary) != expected:
+            raise ValueError('Patched executable verification failed.')
+
+    if stable:
+        _replace_file(target, populate)
+    else:
+        populate(target)
+    return expected if stable else digest(target)
+
+
 def stage(root,source,workspace,package,original,original_identities,verification,*,catalog,
           emit=print,cache_factory=BulkStageCache,patches=PATCHES,map_overlay=None,custom_maps=None,
-          objectives_downloaded=False):
- """Stage exactly the verified inventories into a fresh private directory."""
+          objectives_downloaded=False,stable=None):
+ """Stage the verified inventory while the caller owns any stable slot."""
  root=Path(root).resolve(strict=True);source=Path(source).resolve(strict=True);workspace=Path(workspace).resolve(strict=True)
  if workspace==source or source in workspace.parents:raise ValueError('Client workspace must be outside the original game.')
  package_path=root/'package-manifest.json'
@@ -75,32 +291,28 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
  source_ids={entry['path']:list(original_identities[entry['path']])for entry in original['files']}
  _check_stamps(source,source_ids)
  run=workspace/('client-'+uuid.uuid4().hex[:12]);run.mkdir(exist_ok=False)
- game=run/'game';game.mkdir()
+ game=stable.game if stable else run/'game'
+ prior={}
+ if stable:
+  existing=_game_files(game)
+  if os.path.lexists(stable.ready):
+   prior=_read_json(stable.ready).get('bulk',{})
+   stable.ready.unlink()  # Any partial update invalidates every previous descriptor.
+ else:
+  game.mkdir()
  emit('Session: '+str(run))
  cache=cache_factory(workspace/'asset-cache')
  jobs=[]
+ runtimes=[]
  for item in original['files']:
   rel=_relative(item['path']);src=_member(source,item['path']);dst=game/rel
   if list(identity(src))!=source_ids[item['path']]:raise ValueError('Original changed during client preparation.')
   dst.parent.mkdir(parents=True,exist_ok=True)
-  if rel==EXECUTABLE:
-   _copy_private(src,dst)
-  else:jobs.append((src,dst,item['sha256'],item['bytes'],source_ids[item['path']]))
- exe=game/EXECUTABLE
- if os.path.samefile(exe,source/EXECUTABLE)or digest(exe)!=original['executable_sha256']:
-  raise ValueError('Private prepared executable verification failed.')
- with exe.open('r+b')as output:
-  for offset,before in patches:
-   output.seek(offset)
-   if output.read(len(bytes.fromhex(before)))!=bytes.fromhex(before):raise ValueError('Unsupported prepared executable at '+hex(offset))
-  for offset,before in patches:output.seek(offset);output.write(b'\x90'*len(bytes.fromhex(before)))
+  if rel!=EXECUTABLE:jobs.append((src,dst,item['sha256'],item['bytes'],source_ids[item['path']]))
  for item in package['files']:
   name=item['path']
   if name.startswith('runtime/'):
-   src=_member(root,name);dst=game/REL/_relative(name[len('runtime/'):]);dst.parent.mkdir(parents=True,exist_ok=True)
-   # Never overwrite a destination which might share original immutable bytes.
-   _copy_private(src,dst)
-   if digest(dst)!=item['sha256']:raise ValueError('Prepared runtime copy differs: '+name)
+   runtimes.append((_member(root,name),game/REL/_relative(name[len('runtime/'):]),item['sha256']))
   elif name.startswith('content/') and map_overlay is None:
    jobs.append((_member(root,name),game/'Topaz/Content'/_relative(name[len('content/'):]),item['sha256'],item['bytes'],None))
  map_objectives=[]
@@ -117,9 +329,33 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
     map_objectives.append(item)
     continue
    jobs.append((src,game/'Topaz/Content'/_relative(name[len('content/'):]),item['sha256'],item['bytes'],None))
+ exe=game/EXECUTABLE
+ required=[exe,*[job[1] for job in jobs],*[job[1] for job in runtimes]]
+ wanted={os.path.normcase(str(path)) for path in required}
+ if len(required)!=len(wanted):raise ValueError('Game preparation inventories overlap.')
+ if stable:
+  # Remove only unexpected files in the owned game tree, including prior per-run Lua.
+  for path in existing.values():
+   if os.path.normcase(str(path)) not in wanted:path.unlink()
+ exe_sha=_stage_executable(_member(source,EXECUTABLE.as_posix()),exe,original['executable_sha256'],patches,stable)
+ for src,dst,expected in runtimes:
+  dst.parent.mkdir(parents=True,exist_ok=True)
+  if stable and dst.is_file() and dst.stat().st_nlink==1 and digest(dst)==expected:continue
+  def populate(path):
+   _copy_private(src,path)
+   if digest(path)!=expected:raise ValueError('Prepared runtime copy differs: '+str(dst))
+  if stable:_replace_file(dst,populate)
+  else:populate(dst)
  def stage_bulk(job):
   src,dst,expected,size,source_identity=job
-  cache.stage(src,dst,expected_sha256=expected,expected_bytes=size,expected_source_identity=source_identity)
+  name=dst.relative_to(game).as_posix()
+  if stable and dst.is_file() and prior.get(name)==[expected,list(identity(dst))]:return
+  def populate(path):
+   cache.stage(src,path,expected_sha256=expected,expected_bytes=size,expected_source_identity=source_identity)
+  if stable:
+   dst.parent.mkdir(parents=True,exist_ok=True)
+   _replace_file(dst,populate)
+  else:populate(dst)
  # Bound metadata I/O to four workers. All work finishes (including on an
  # error) before the original input/output guards can publish a descriptor.
  emit('CLIENT_PREPARATION_PROGRESS|0/'+str(len(jobs)))
@@ -128,14 +364,20 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
    if done%128==0 or done==len(jobs):emit('CLIENT_PREPARATION_PROGRESS|'+str(done)+'/'+str(len(jobs)))
  _check_stamps(root,package_ids);_check_stamps(source,source_ids)
  if digest(package_path)!=package_sha:raise ValueError('Package manifest changed during client preparation.')
- output_names=[path.relative_to(game).as_posix()for path in sorted(game.rglob('*'))if path.is_file()]
+ output_names=sorted(_game_files(game))
+ if {os.path.normcase(str(game/name)) for name in output_names}!=wanted:
+  raise ValueError('Prepared game file inventory changed.')
  outputs=_stamps(game,output_names)
  record={'format':1,'contract':CONTRACT,'created_at':time.time(),'root':str(root),'source':str(source),'workspace':str(workspace),
          'run':str(run),'package_manifest_sha256':package_sha,'package_inputs':package_ids,'source_inputs':source_ids,
-         'game_outputs':outputs,'catalog':catalog,'verification':verification,'private_executable_sha256':digest(exe),
+         'game_outputs':outputs,'catalog':catalog,'verification':verification,'private_executable_sha256':exe_sha,
          'bulk_stage':cache.snapshot(),'native_started':False,'profile_created':False}
  if custom_maps:record['custom_maps']=custom_maps
  if objectives_downloaded:record['map_objectives']=map_objectives
+ if stable:
+  record['stable_game']=str(game)
+  bulk={dst.relative_to(game).as_posix():[expected,outputs[dst.relative_to(game).as_posix()]]for _,dst,expected,_,_ in jobs}
+  _replace_file(stable.ready,lambda temp:_write(temp,{'run':str(run),'bulk':bulk}))
  path=run/'prepared.json';sha=_write(path,record)
  emit('BULK_STAGE_SUMMARY|'+json.dumps(cache.snapshot(),separators=(',',':')))
  result={'path':str(path),'sha256':sha}
@@ -186,7 +428,7 @@ def empty_client_job(result):
     return type(active) is int and active == 0
 
 
-def consume(root,source,workspace,descriptor,expected_sha,*,expected_map=None,expected_content_hash=None,clock=time.time):
+def consume(root,source,workspace,descriptor,expected_sha,*,expected_map=None,expected_content_hash=None,clock=time.time,stable=None):
  """Freshly validate a completed stage and claim it once before profile/native use."""
  root=Path(root).resolve(strict=True);source=Path(source).resolve(strict=True);workspace=Path(workspace).resolve(strict=True)
  path=Path(descriptor).absolute()
@@ -207,8 +449,14 @@ def consume(root,source,workspace,descriptor,expected_sha,*,expected_map=None,ex
  package_path=root/'package-manifest.json'
  if digest(package_path)!=record['package_manifest_sha256']:raise ValueError('Client was updated after preparation.')
  _check_stamps(root,record['package_inputs']);_check_stamps(source,record['source_inputs'])
- game=path.parent/'game';_check_stamps(game,record['game_outputs'])
- actual={p.relative_to(game).as_posix()for p in game.rglob('*')if p.is_file()}
+ if 'stable_game' in record:
+  if (stable is None or record['stable_game']!=str(stable.game)
+      or not stable.ready.is_file() or _read_json(stable.ready).get('run')!=str(path.parent)):
+   raise ValueError('Prepared stable game was replaced; prepare the client again.')
+  game=stable.game
+ else:game=path.parent/'game'
+ _check_stamps(game,record['game_outputs'])
+ actual=set(_game_files(game))
  if actual!=set(record['game_outputs']):raise ValueError('Prepared game file inventory changed.')
  if expected_map is not None and record['catalog'].get(expected_map)!=expected_content_hash:
   raise ValueError('Your map files do not match this match. Update the community client.')

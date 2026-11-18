@@ -181,6 +181,9 @@ class OwnedGameFocus:
     def __init__(self, run):
         record = json.loads((run / 'execution/execution.json').read_bytes())
         executable = run / 'game/Topaz/Binaries/Win64/TribesRivals.exe'
+        if pathlib.Path(record['argv'][0]) != executable:
+            from client_preparation import stable_session_executable
+            executable = stable_session_executable(ROOT, run, record)
         self.pid = record.get('pid')
         if (record.get('status') != 'running' or record.get('assigned_suspended') is not True
                 or type(self.pid) is not int or self.pid < 1

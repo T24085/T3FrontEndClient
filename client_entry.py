@@ -5,6 +5,7 @@ SHA256 3baeb559c717aaad2316cdd2298e9c8e521cf373f87c358a398064dbaf8ce190.
 Source manifest SHA256 740081ed79694c486fcff871b4e5ff3329100e5f7407eaf01985d3ed4c44a009.
 """
 import argparse
+from contextlib import nullcontext
 import json
 import os
 import re
@@ -174,7 +175,6 @@ def main():
     elif args.match_id is not None or args.watch_id is not None:
         raise ValueError('Watcher identity is only valid for a spectator session.')
     args.game_dir, selected_workspace = installation_options(args.game_dir, args.workspace)
-    from client_preparation import CONTRACT, stage, consume
     from startup_timing import StartupTiming
     startup = StartupTiming()
     if bool(args.prepared) != bool(args.prepared_sha256):
@@ -200,15 +200,21 @@ def main():
         raise ValueError('The lobby must provide both the selected map and content fingerprint.')
     if args.expected_content_hash is not None and not re.fullmatch('[0-9a-f]{64}',args.expected_content_hash):
         raise ValueError('Invalid expected map content fingerprint.')
+    from client_preparation import lock_stable_game
+    with (nullcontext() if args.check else lock_stable_game(ROOT, source, workspace)) as stable:
+        prepare_or_join(args, source, workspace, startup, stable)
+
+
+def prepare_or_join(args, source, workspace, startup, stable):
+    from client_preparation import CONTRACT, stage, consume
+
     if args.prepared:
         if args.rehash or args.check:
             raise ValueError('A prepared join cannot change verification policy.')
         startup_progress('checking_prepared')
         with startup.phase('prepared-validation'):
             prepared=consume(ROOT,source,workspace,args.prepared,args.prepared_sha256,
-                             expected_map=args.expected_map,expected_content_hash=args.expected_content_hash)
-        verification=prepared['verification'];run=Path(prepared['run']);game=run/'game'
-        private_executable_sha256=prepared['private_executable_sha256']
+                             expected_map=args.expected_map,expected_content_hash=args.expected_content_hash,stable=stable)
         package=json.loads((ROOT/'package-manifest.json').read_text())
     else:
         startup_progress('verifying_package')
@@ -232,13 +238,13 @@ def main():
         startup_progress('staging_game')
         with startup.phase('client-preparation'):
             descriptor=stage(ROOT,source,workspace,package,manifest,identities,verification,catalog=catalog,map_overlay=map_overlay,
-                             custom_maps=custom_maps, objectives_downloaded=objectives_downloaded,
+                             custom_maps=custom_maps, objectives_downloaded=objectives_downloaded, stable=stable,
                              emit=lambda line:print(line,flush=True))
         if args.prepare_only:return
         prepared=consume(ROOT,source,workspace,descriptor['path'],descriptor['sha256'],
-                         expected_map=args.expected_map,expected_content_hash=args.expected_content_hash)
-        verification=prepared['verification'];run=Path(prepared['run']);game=run/'game'
-        private_executable_sha256=prepared['private_executable_sha256']
+                         expected_map=args.expected_map,expected_content_hash=args.expected_content_hash,stable=stable)
+    verification=prepared['verification'];run=Path(prepared['run']);game=Path(prepared.get('stable_game', run/'game'))
+    private_executable_sha256=prepared['private_executable_sha256']
     contract=package.get('startup_contract')
     if contract not in (None,'verified-child-map-v1',CONTRACT):
         raise ValueError('Unsupported client startup contract.')
@@ -329,9 +335,13 @@ def main():
         watcher.start()
         from owned_native_session import run_owned_job
         try:
+            if 'stable_game' in prepared:
+                stable.starting(run, argv, os.environ.get('T3_CLIENT_DESKTOP_EXECUTION'))
             player_profile.starting_native()
             result = run_owned_job(argv, game, dict(os.environ, SteamAppId='2687970', SteamGameId='2687970'), run / 'execution', budget=args.seconds, cancellation_path=run / 'cancel.json')
             player_profile.confirm_cleanup(result)
+            if 'stable_game' in prepared:
+                stable.check_idle()
         finally:
             stopped.set()
             watcher.join(timeout=2)

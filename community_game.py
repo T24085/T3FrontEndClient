@@ -339,7 +339,9 @@ class CommunityGame:
     def _run(self, argv, artifacts):
         retire = None
         try:
-            result = self.owner.run_owned_job(argv, self.package, dict(os.environ), artifacts / 'owner',
+            owner = artifacts / 'owner'
+            env = dict(os.environ, T3_CLIENT_DESKTOP_EXECUTION=str(owner/'execution.json'))
+            result = self.owner.run_owned_job(argv, self.package, env, owner,
                                               budget=None, cancellation_path=artifacts / 'stop.json')
             empty = empty_client_job(result)
             if empty:
