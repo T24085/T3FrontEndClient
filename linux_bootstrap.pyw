@@ -80,6 +80,7 @@ def main():
     parser.add_argument('--launch-dir', type=Path, required=True)
     parser.add_argument('--ca-sha256', required=True)
     parser.add_argument('--probe-only', action='store_true')
+    parser.add_argument('--ubuntu-join', type=Path)
     args = parser.parse_args()
     args.launch_dir.mkdir(parents=True, exist_ok=True)
     with (args.launch_dir/'bridge.log').open('x', encoding='utf-8', buffering=1) as log:
@@ -96,6 +97,9 @@ def main():
             os.environ['TCL_LIBRARY'] = str(ROOT/'python/tcl/tcl8.6')
             os.environ['TK_LIBRARY'] = str(ROOT/'python/tcl/tk8.6')
             ownership = check_owned_jobs(args.launch_dir)
+            if args.ubuntu_join is not None:
+                from ubuntu_join_worker import serve
+                return serve(args.ubuntu_join, ROOT, args.game_dir, args.workspace, context)
             import tkinter as tk
             probe = tk.Tk()
             probe.withdraw()
@@ -112,7 +116,7 @@ def main():
             return 0
         except Exception as exc:
             traceback.print_exc()
-            if not args.probe_only:
+            if not args.probe_only and args.ubuntu_join is None:
                 ctypes.windll.user32.MessageBoxW(None, str(exc)+'\n\nDetails: '+str(args.launch_dir/'bridge.log'),
                                                 'TRIBES 3 Community Starter', 0x10)
             return 1

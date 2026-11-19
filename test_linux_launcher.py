@@ -5,6 +5,7 @@ from pathlib import Path
 import runpy
 import shlex
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
@@ -86,8 +87,23 @@ class LinuxLauncherTest(unittest.TestCase):
         sessions = list((self.root/'User Data/Tribes3CommunityStarter/linux-launches').iterdir())
         self.assertEqual(len(sessions), 1)
         self.assertTrue((sessions[0]/'ca-bundle.pem').is_file())
+        self.assertIn('exited with code 0', (sessions[0]/'proton-preflight.log').read_text())
         self.assertEqual((sessions[0]/'ca-bundle.pem').stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads((sessions[0]/'launch.json').read_text())['game_source'], str(self.game))
+
+    def test_wrapper_probe_logs_before_proton_and_does_not_launch_it(self):
+        for name in ('Start Community Starter.sh', 'linux_launcher.py'):
+            shutil.copyfile(Path(__file__).with_name(name), self.package/name)
+        script = str(self.package/'Start Community Starter.sh')
+        command = ['/bin/sh', script, '--steam-probe', '--', *self.command]
+        result = subprocess.run(command, env=self.env, timeout=10)
+        self.assertEqual(result.returncode, 0)
+        data = self.root/'User Data/Tribes3CommunityStarter'
+        log = (data/'launcher-start.log').read_text()
+        self.assertIn('Clan Wars wrapper entered (--steam-probe)', log)
+        self.assertIn('No game or Proton process was started', log)
+        self.assertFalse((data/'linux-launches').exists())
+        self.assertFalse((self.root/'captured.json').exists())
 
     def test_steam_outer_separator_keeps_nested_separators(self):
         command = ['/Steam/reaper', 'SteamLaunch', 'AppId=2687970', '--',

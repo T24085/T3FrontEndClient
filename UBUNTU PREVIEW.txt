@@ -1,0 +1,29 @@
+CLAN WARS FOR UBUNTU — NATIVE STARTER PREVIEW
+
+Use Ubuntu 24.04 LTS Desktop on an x86-64 PC with native Steam and
+TRIBES 3: Rivals installed. This preview uses separate application
+files, lobby identity, game staging and Proton prefix.
+
+1. Run the .run installer from a terminal. It opens the native Starter.
+   To reopen it later, run "Start Clan Wars Ubuntu.sh" in the installed
+   "~/Games/Clan Wars Ubuntu Preview" folder.
+2. Open Steam Setup in the Starter. In Steam, enable Proton under
+   TRIBES 3: Rivals > Properties > Compatibility. Copy the complete
+   launch option into Properties > General > Launch Options.
+   Save any earlier launch option so you can switch back to it.
+3. Enter your Steam display name in the Starter. Create or join a lobby,
+   choose a team, and click Join Game once the match is ready. Use
+   Join Public CTF from its own panel for public play.
+
+Opening the Starter, browsing matches, and working in a lobby use
+native Linux Python. Clicking Join Game requests Steam and Proton.
+Steam Play without a Clan Wars join request runs the ordinary Steam
+game command. The Steam launch-option setting belongs to that Steam
+game and must be switched manually if another Starter uses it.
+
+For a headless check of the server connection, run:
+    sh "Start Clan Wars Ubuntu.sh" --check-lobby
+
+Native window, Steam launch, and gameplay qualification require a test
+on an Ubuntu desktop. This preview covers lobby and player joins.
+Spectating and the Windows armor picker are outside this preview.

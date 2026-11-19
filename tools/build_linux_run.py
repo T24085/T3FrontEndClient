@@ -1,5 +1,6 @@
 """Wrap the official Linux ZIP in a single portable self-extracting installer."""
 import argparse
+from base64 import b64encode
 from hashlib import file_digest, md5, sha256
 import json
 from pathlib import Path
@@ -7,6 +8,8 @@ import shutil
 from zipfile import ZipFile
 
 SOURCE = Path(__file__).resolve().parents[1]
+PREVIEW_FILES = ('Start Community Starter.sh', 'Start Clan Wars Ubuntu.sh', 'ubuntu_starter.py',
+                 'ubuntu_join_worker.py', 'linux_bootstrap.pyw', 'linux_launcher.py', 'UBUNTU PREVIEW.txt')
 HEADER = r'''#!/bin/sh
 set -eu
 if [ "$(uname -m)" != x86_64 ]; then
@@ -33,7 +36,7 @@ exit $?
 '''
 
 
-def build(package, proof_path, output):
+def build(package, proof_path, output, *, ubuntu_preview=False):
     proof = json.loads(proof_path.read_bytes())
     with package.open('rb') as payload:
         assert file_digest(payload, 'sha256').hexdigest() == proof['sha256']
@@ -44,6 +47,10 @@ def build(package, proof_path, output):
         assert len(manifest['community_maps']) == proof['maps']
         assert manifest['starter_update_revision'] == proof['revision']
     code = (SOURCE/'linux_self_install.py').read_text(encoding='utf-8').rstrip()
+    if ubuntu_preview:
+        overlay = {name:b64encode((SOURCE/name).read_text(encoding='utf-8').encode()).decode('ascii')
+                   for name in PREVIEW_FILES}
+        code = code.replace('PREVIEW = None', 'PREVIEW = '+repr(overlay), 1)
     values = {'RUNTIME_SIZE':str(len(runtime)), 'RUNTIME_SHA':sha256(runtime).hexdigest(),
               'ZIP_SHA':proof['sha256'], 'PYTHON_CODE':code}
     template = HEADER
@@ -88,8 +95,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('package','package-proof','output','proof'):
         parser.add_argument('--'+name, type=Path, required=True)
+    parser.add_argument('--ubuntu-preview', action='store_true')
     args = parser.parse_args()
-    result = build(args.package,args.package_proof,args.output)
+    result = build(args.package,args.package_proof,args.output,ubuntu_preview=args.ubuntu_preview)
     args.proof.write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(result),flush=True)
 

@@ -1,5 +1,16 @@
 #!/bin/sh
 set -eu
+# Steam may reject the launch before Python or Wine ever starts. Record the
+# wrapper entry itself and keep shell and bundled-runtime errors in one place.
+case "${1:-}" in
+    --steam-launch|--steam-probe)
+        umask 077
+        state="${XDG_DATA_HOME:-$HOME/.local/share}/Tribes3CommunityStarter"
+        mkdir -p -- "$state"
+        exec > "$state/launcher-start.log" 2>&1
+        printf 'Clan Wars wrapper entered (%s)\n' "$1"
+        ;;
+esac
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if [ "$(uname -m)" != x86_64 ]; then
     printf '%s\n' 'Clan Wars requires an x86-64 Linux PC or Steam Deck.' >&2
@@ -38,6 +49,16 @@ if [ -f "$bundle" ]; then
         trap - EXIT
     fi
 fi
+case "${1:-}" in
+    --ubuntu-native)
+        shift
+        exec "$launcher_python" -I -B "$root/ubuntu_starter.py" "$@"
+        ;;
+    --ubuntu-dispatch)
+        shift
+        exec "$launcher_python" -I -B "$root/ubuntu_starter.py" --dispatch "$@"
+        ;;
+esac
 if [ "${1:-}" = --guided-install ]; then
     shift
     exec "$launcher_python" -I -B "$root/install_clan_wars.py" "$@"

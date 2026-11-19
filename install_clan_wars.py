@@ -2,7 +2,6 @@
 import argparse
 import os
 from pathlib import Path
-import shlex
 import shutil
 import subprocess
 import sys
@@ -29,8 +28,8 @@ def data_directory():
     return base/'Tribes3CommunityStarter'
 
 
-def launch_option(root, data):
-    return '/bin/sh ' + setup_option(root) + ' > ' + shlex.quote(str(data/'launcher-start.log')) + ' 2>&1'
+def launch_option(root):
+    return '/bin/sh ' + setup_option(root)
 
 
 def diagnostics(data):
@@ -38,10 +37,10 @@ def diagnostics(data):
     folders = data/'linux-launches'
     if folders.is_dir():
         sessions = [item for item in folders.iterdir()
-                    if item.is_dir() and (item/'linux-launcher.log').is_file()]
+                    if item.is_dir() and (item/'proton-preflight.log').is_file()]
         if sessions:
-            recent = max(sessions, key=lambda item:(item/'linux-launcher.log').stat().st_mtime)
-            logs.extend(recent/name for name in ('linux-launcher.log','bridge.log'))
+            recent = max(sessions, key=lambda item:(item/'proton-preflight.log').stat().st_mtime)
+            logs.extend(recent/name for name in ('proton-preflight.log','linux-launcher.log','bridge.log'))
     report = []
     for path in logs:
         if not path.is_file():
@@ -118,7 +117,7 @@ def main():
         if not (ROOT/name).is_file():
             raise ValueError('Extract the complete Clan Wars ZIP before running this installer.')
     data.mkdir(parents=True,exist_ok=True)
-    option = launch_option(ROOT,data)
+    option = launch_option(ROOT)
     if args.print_launch_option:
         print(option)
         return 0
