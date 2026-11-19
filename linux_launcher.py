@@ -101,8 +101,12 @@ def prepare_launch(root, command, env, *, run=subprocess.run):
         raise ValueError('Community staging must be outside the original game.')
     # Import the Linux trust bundle into this launch, without disabling TLS or
     # installing anything into the Wine/Windows certificate store.
-    cafile = ssl.get_default_verify_paths().cafile
-    if not cafile or not Path(cafile).is_file() or not 0 < Path(cafile).stat().st_size <= 4*1024*1024:
+    ca_candidates = (ssl.get_default_verify_paths().cafile,
+                     '/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt',
+                     '/etc/ssl/cert.pem')
+    cafile = next((Path(name) for name in ca_candidates if name and Path(name).is_file()
+                   and 0 < Path(name).stat().st_size <= 4*1024*1024), None)
+    if cafile is None:
         raise ValueError('Linux system CA certificates are unavailable. Install your distribution CA certificates.')
     ca = session/'ca-bundle.pem'
     shutil.copyfile(cafile, ca)
