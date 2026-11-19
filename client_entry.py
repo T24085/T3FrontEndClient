@@ -320,6 +320,7 @@ def prepare_or_join(args, source, workspace, startup, stable):
             template = template.replace('@@DAMNATION_WATER@@', json.dumps(water_runtime.as_posix(), ensure_ascii=False))
         template = template.replace('@@SHOW_FLAG_INDICATORS@@', 'true' if args.show_flag_indicators else 'false')
         template = template.replace('@@STOCK_CLOUD_MAP@@', json.dumps(cloud_map))
+        template = template.replace('@@GAME_CONTENT@@', json.dumps((game / 'Topaz/Content').as_posix(), ensure_ascii=False))
         settings_path = profile / 'Saved/Config/Windows/GameUserSettings.ini'
         template = template.replace('@@MUSIC_SETTINGS@@', json.dumps(settings_path.as_posix(), ensure_ascii=False))
         weather_module = weather_runtime_path(ROOT, run, package)
