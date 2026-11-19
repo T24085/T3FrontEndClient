@@ -1277,11 +1277,15 @@ local function ensure_flag_release_handoff(gs)
  if ok then flagReleaseService=service
  else report('FLAG_RELEASE_HANDOFF_UNAVAILABLE|'..tostring(service)) end
 end
-local soundSettingsWorld
-local function apply_saved_sound_settings(pc)
-    local world = pc:GetWorld()
-    if not valid(world) or same_object(soundSettingsWorld, world) then return end
-    soundSettingsWorld = world
+local soundSettingsWorld, soundSettingsAttempts, soundSettingsApplied
+local SOUND_SETTINGS_MAX_ATTEMPTS = 10
+local function apply_saved_sound_settings(world)
+    if not valid(world) then return end
+    if not same_object(soundSettingsWorld, world) then
+        soundSettingsWorld, soundSettingsAttempts, soundSettingsApplied = world, 0, false
+    end
+    if soundSettingsApplied or soundSettingsAttempts >= SOUND_SETTINGS_MAX_ATTEMPTS then return end
+    soundSettingsAttempts = soundSettingsAttempts + 1
     local ok, why = pcall(function()
         signature('/Script/Engine.GameUserSettings:GetGameUserSettings',{{'ReturnValue','ObjectProperty',0}})
         signature('/Script/Valhalla.ValGameUserSettings:ApplySoundSettings',{})
@@ -1291,9 +1295,13 @@ local function apply_saved_sound_settings(pc)
         local class = loaded('/Script/Valhalla.ValGameUserSettings','Class /Script/Valhalla.ValGameUserSettings')
         assert(valid(settings) and settings:IsA(class),'native_sound_settings_required')
         settings:ApplySoundSettings()
-        report('SAVED_SOUND_SETTINGS_APPLIED')
     end)
-    if not ok then report('SAVED_SOUND_SETTINGS_UNAVAILABLE|'..tostring(why):sub(1,300)) end
+    if ok then
+        soundSettingsApplied = true
+        report('SAVED_SOUND_SETTINGS_APPLIED')
+    elseif soundSettingsAttempts == SOUND_SETTINGS_MAX_ATTEMPTS then
+        report('SAVED_SOUND_SETTINGS_UNAVAILABLE|'..tostring(why):sub(1,300))
+    end
     return ok
 end
 
@@ -1501,6 +1509,7 @@ local function client_tick(sys)
         local modes=FindAllOf("TopGameMode_Topaz") or {};if #modes~=1 or not valid(modes[1]) then return end
         local gm=modes[1]
         assert(gm:GetClass():GetFullName()==MODE and gm:GetFullName():find("/Game/Maps/Active/Drydock/Arena_Drydock_P.Arena_Drydock_P:",1,true) and gm:HasAuthority() and sys:IsStandalone(gm)==true,"initial_standalone_drydock_required")
+        apply_saved_sound_settings(gm:GetWorld())
         signature("/Script/Engine.GameplayStatics:OpenLevel",{{"WorldContextObject","ObjectProperty",0},{"LevelName","NameProperty",8},{"bAbsolute","BoolProperty",16},{"Options","StrProperty",24}})
         local name=FName(DESTINATION);assert(name:ToString()==DESTINATION)
         joined=true;lastJoin=os.time();report("JOIN_REQUESTED")
@@ -1513,7 +1522,10 @@ local function client_tick(sys)
     configure_stock_clouds(gs,sys)
     if clientWorld~=gs:GetFullName() then clientWorld=gs:GetFullName();report("CLIENT_WORLD|"..clientWorld) end
     local pcs=FindAllOf("ValPlayerController") or {};if #pcs~=1 or not valid(pcs[1]) then return end
-    local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() or not valid(pc.PlayerState) then return end
+    local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() then return end
+    local world=pc:GetWorld()
+    local settingsApplied=same_object(world,gs:GetWorld()) and apply_saved_sound_settings(world)
+    if not valid(pc.PlayerState) then return end
     configure_weather(gs,pc)
     configure_base_lighting(gs)
     configure_water(gs)
@@ -1539,7 +1551,6 @@ local function client_tick(sys)
         end
     end
     local pawnReady=valid(pc.Pawn) and pc.Pawn.bInitialized==true
-    local settingsApplied=pawnReady and apply_saved_sound_settings(pc)
     update_match_music(pc,gs,settingsApplied)
     configure_shield_wall_preview()
     if not scoreBarFailed then
