@@ -1,3 +1,11 @@
+# Native Ubuntu Starter Preview 4
+
+Join Game stages verified files by private copy when its Windows compatibility
+layer rejects a nested Linux mount with WinError 144. Confirmed NTFS retains its
+existing hardlink path. The Ubuntu installer keeps the r59 payload and all 24
+maps, plus the Preview 3 inventory fixes. Preview 4 uses a separate install
+folder, so refresh Steam's launch options through Steam Setup after installing.
+
 # Native flag widget callback
 
 Both original flag widgets require the flag actor, current holder info and

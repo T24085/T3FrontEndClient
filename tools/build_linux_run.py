@@ -9,6 +9,8 @@ from zipfile import ZipFile
 from ubuntu_preview_inventory import inventory_overlay
 
 SOURCE = Path(__file__).resolve().parents[1]
+# Keep the r59 payload pinned; overlay the canonical cache only for Ubuntu.
+PREVIEW_CACHE_BASE_SHA256 = 'ef4d3662d7982df24a3f3c43f38bf1f230e15e4568c49a428981fd8d3b2e78f7'
 PREVIEW_FILES = ('Start Community Starter.sh', 'Start Clan Wars Ubuntu.sh', 'ubuntu_starter.py',
                  'ubuntu_join_worker.py', 'linux_bootstrap.pyw', 'linux_launcher.py', 'UBUNTU PREVIEW.txt')
 HEADER = r'''#!/bin/sh
@@ -48,11 +50,14 @@ def build(package, proof_path, output, *, ubuntu_preview=False):
         assert len(manifest['community_maps']) == proof['maps']
         assert manifest['starter_update_revision'] == proof['revision']
         readers = inventory_overlay(client) if ubuntu_preview else {}
+        if ubuntu_preview and sha256(client.read('bulk_asset_cache.py')).hexdigest() != PREVIEW_CACHE_BASE_SHA256:
+            raise ValueError('Review the changed Ubuntu package cache module.')
     code = (SOURCE/'linux_self_install.py').read_text(encoding='utf-8').rstrip()
     if ubuntu_preview:
         overlay = {name:b64encode((SOURCE/name).read_text(encoding='utf-8').encode()).decode('ascii')
                    for name in PREVIEW_FILES}
         overlay.update({name:b64encode(raw).decode('ascii') for name,(_,raw) in readers.items()})
+        overlay['bulk_asset_cache.py'] = b64encode((SOURCE/'bulk_asset_cache.py').read_bytes()).decode('ascii')
         code = code.replace('PREVIEW = None', 'PREVIEW = '+repr(overlay), 1)
     values = {'RUNTIME_SIZE':str(len(runtime)), 'RUNTIME_SHA':sha256(runtime).hexdigest(),
               'ZIP_SHA':proof['sha256'], 'PYTHON_CODE':code}
