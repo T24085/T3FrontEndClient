@@ -9,6 +9,10 @@ TRIBES 3 • Windows Direct Starter • r12
    when the match is ready. The first match can take longer while Starter
    checks and stages your game files.
 
+If your host shares a Clan Wars Maps.zip, put it next to the Starter launcher
+without extracting it. Reopen Starter. It checks the host's map list and uses
+matching files from the ZIP before downloading updates.
+
 If your host supports proximity voice, hold your proximity key while the
 game is in the foreground to talk to enemy players within 100 meters.
 The default is F9. Use Change key in Starter to pick another keyboard

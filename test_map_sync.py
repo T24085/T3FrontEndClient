@@ -7,9 +7,10 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from zipfile import ZipFile
 
 from map_sync import MapSync, load_overlay, overlay
-from map_sync_contract import map_catalog
+from map_sync_contract import MAP_ARCHIVE_ASSETS, MAP_ARCHIVE_NAME, map_catalog
 from community_maps import custom_definitions, lua_map_definitions
 from client_bootstrap import CONTRACT, map_name
 
@@ -114,6 +115,39 @@ class MapSyncTest(unittest.TestCase):
         with patch.object(restarted, '_download') as download:
             self.assertEqual(restarted.refresh(), (revision, catalog))
         download.assert_not_called()
+
+    def test_shared_zip_beside_launcher_supplies_only_authenticated_map_files(self):
+        package = self.root / 'Client Files'
+        package.mkdir()
+        self.manifest.replace(package / 'package-manifest.json')
+        self.sync.package = package
+        sha = row(ASSET, b'new')['sha256']
+        with ZipFile(self.root / MAP_ARCHIVE_NAME, 'w') as archive:
+            archive.writestr(MAP_ARCHIVE_ASSETS + sha + '.asset', b'new')
+            archive.writestr('../outside.dat', b'not an install member')
+        with patch.object(self.sync, '_download') as download:
+            revision, catalog = self.sync.refresh()
+        download.assert_not_called()
+        self.assertEqual(catalog, self.remote['maps'])
+        entries, _, _, _ = load_overlay(self.root, revision, self.bundled)
+        imported = {entry['path']: target for entry, _, target in entries}
+        self.assertEqual(imported[ASSET].read_bytes(), b'new')
+        self.assertFalse((self.root.parent / 'outside.dat').exists())
+
+    def test_bad_zip_asset_falls_back_to_host_download(self):
+        sha = row(ASSET, b'new')['sha256']
+        with ZipFile(self.root / MAP_ARCHIVE_NAME, 'w') as archive:
+            archive.writestr(MAP_ARCHIVE_ASSETS + sha + '.asset', b'bad')
+
+        def download(entry, target):
+            self.assertFalse(target.exists())
+            self.sync._write_verified(BytesIO(gzip.compress(b'new')), target, sha, entry['bytes'])
+
+        with patch.object(self.sync, '_download', side_effect=download) as fetch:
+            revision, _ = self.sync.refresh()
+        fetch.assert_called_once()
+        self.assertEqual((self.root / 'map-downloads' / (sha + '.asset')).read_bytes(), b'new')
+        self.assertTrue((self.root / 'map-downloads' / (revision + '.json')).is_file())
 
     def test_bad_gzip_hash_or_size_cannot_publish_revision(self):
         bad_payloads = (gzip.compress(b'bad'), gzip.compress(b'new extra'), gzip.compress(b'new')[:-4])

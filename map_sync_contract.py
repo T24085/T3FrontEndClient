@@ -9,6 +9,8 @@ from verified_file_cache import MAX_PACKAGE_FILES, MAX_PACKAGE_MANIFEST_BYTES
 VERSION = 1
 MANIFEST_ROUTE = '/api/map-files-v1'
 FILE_ROUTE = MANIFEST_ROUTE + '/'
+MAP_ARCHIVE_NAME = 'Clan Wars Maps.zip'
+MAP_ARCHIVE_ASSETS = 'map-downloads/'
 CATALOG_VERSION = 2
 CATALOG_HEADER = 'X-T3-Map-Catalog'
 OBJECTIVES_HEADER = 'X-T3-Map-Objectives'

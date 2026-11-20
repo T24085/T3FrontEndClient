@@ -1,6 +1,6 @@
 """Fetch and stage immutable cooked-map revisions without changing the client ZIP's files."""
 import gzip
-from contextlib import closing
+from contextlib import closing, contextmanager
 import hashlib
 import http.client
 import json
@@ -11,11 +11,13 @@ import ssl
 import threading
 import uuid
 import zlib
+from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 from bulk_asset_cache import DISK_RESERVE_BYTES
 from community_transport import CommunityError, PinnedHTTPSConnection
 from map_sync_contract import (CATALOG_ROUTE, CATALOG_VERSION, CHUNK, FILE_ROUTE, MANIFEST_ROUTE, MAX_MANIFEST, SHA, VERSION,
-                               OBJECTIVES_HEADER, cooked_rows, encode, map_catalog, map_objective_rows)
+                               MAP_ARCHIVE_ASSETS, MAP_ARCHIVE_NAME, MAX_PACKAGE_FILES, OBJECTIVES_HEADER,
+                               cooked_rows, encode, map_catalog, map_objective_rows)
 from community_maps import BY_ID, declared_definitions
 from verified_file_cache import digest
 
@@ -83,6 +85,26 @@ def load_overlay(workspace, revision, package):
     rows, sources, catalog, custom = overlay(package, manifest)
     return [(row, sources[name], cache_path(workspace, row['sha256'] + '.asset') if sources[name] is None else None)
             for name, row in rows.items()], catalog, custom, 'objectives' in manifest
+
+
+@contextmanager
+def shared_map_zip(package):
+    folders = [package]
+    if package.name.casefold() == 'client files':
+        folders.append(package.parent)
+    for folder in folders:
+        path = folder / MAP_ARCHIVE_NAME
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            archive = ZipFile(path)
+        except (OSError, BadZipFile, UnicodeError):
+            continue
+        with archive:
+            if len(archive.infolist()) <= MAX_PACKAGE_FILES + 2:
+                yield archive
+                return
+    yield None
 
 
 class MapSync:
@@ -161,10 +183,14 @@ class MapSync:
         raise CommunityError('The map download server is busy. Try joining again.')
 
     def _write_verified(self, response, output, sha, length):
+        with gzip.GzipFile(fileobj=response) as incoming:
+            self._write_asset(incoming, output, sha, length)
+
+    def _write_asset(self, incoming, output, sha, length):
         temporary = output.with_name(output.name + '.' + uuid.uuid4().hex + '.tmp')
         checksum = hashlib.sha256()
         try:
-            with temporary.open('xb') as stream, gzip.GzipFile(fileobj=response) as incoming:
+            with temporary.open('xb') as stream:
                 remaining = length
                 while chunk := incoming.read(min(CHUNK, remaining + 1)):
                     self._check_cancelled()
@@ -185,6 +211,18 @@ class MapSync:
                     os.replace(temporary, output)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _import_archive_asset(self, archive, row, output):
+        try:
+            info = archive.getinfo(MAP_ARCHIVE_ASSETS + output.name)
+            if (info.is_dir() or info.file_size != row['bytes'] or info.flag_bits & 1
+                    or info.compress_type not in (ZIP_STORED, ZIP_DEFLATED)):
+                return False
+            with archive.open(info) as incoming:
+                self._write_asset(incoming, output, row['sha256'], row['bytes'])
+        except (KeyError, BadZipFile, zlib.error, EOFError, ValueError, NotImplementedError):
+            return False
+        return True
 
     def _check_cancelled(self):
         if self.cancelled.is_set():
@@ -256,6 +294,16 @@ class MapSync:
         size = sum(row['bytes'] for row, _ in pending)
         if size and shutil.disk_usage(manifest_path.parent).free < DISK_RESERVE_BYTES + size:
             raise CommunityError('Free up space on the game workspace drive to download map updates.')
+        if pending:
+            with shared_map_zip(self.package) as archive:
+                if archive is not None:
+                    missing = []
+                    for number, (row, path) in enumerate(pending, 1):
+                        self._check_cancelled()
+                        self.status = f'Checking maps ZIP ({number:,}/{len(pending):,} files)...'
+                        if not self._import_archive_asset(archive, row, path):
+                            missing.append((row, path))
+                    pending = missing
         for number, (row, path) in enumerate(pending, 1):
             self.status = f'Downloading map updates ({number:,}/{len(pending):,} files)...'
             self._download(row, path)
