@@ -80,6 +80,14 @@ class PackagedMapWeatherTest(unittest.TestCase):
                 self.assertTrue(maps[KATA.id].hide_minimap)
                 self.assertIsNone(maps[BLIZZARD.id].hide_minimap)
 
+    def test_private_and_public_catalogs_keep_authored_radar_counts(self):
+        for public in (False, True):
+            with self.subTest(public=public):
+                self.run = self.root / str(public)
+                self.run.mkdir()
+                source = 'return {descriptor=function(row) row.base_layout={radars_per_team=2};return row end}'
+                self.assertEqual(self.catalog([self.add_adapter(source)], public=public)[KATA.id].radars_per_team, 2)
+
     def test_hiding_is_ignored_when_descriptor_does_not_omit_radars(self):
         source = '''return {descriptor=function(row)
           row.base_layout={radars_per_team=1};row.hide_minimap=true;return row end}'''

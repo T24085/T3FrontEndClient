@@ -120,7 +120,7 @@ local function apply_weather(id,path)
  else return end
  local radars
  if type(layout)=='table' then radars=layout.radars_per_team end
- assert(radars==nil or radars==0 or radars==1,'radar_catalog_count_required')
+ assert(radars==nil or (type(radars)=='number' and radars%1==0 and radars>=0 and radars<=10),'radar_catalog_count_required')
  local hide=authored.hide_minimap
  assert(hide==nil or hide==false or (hide==true and radars==0),'radar_catalog_hide_requires_no_radars')
  row.radars_per_team=radars

@@ -860,28 +860,44 @@ return function(env)
   local canvas=widget.RadarSensors
   if not valid(canvas) then return false end
   local before=canvas:GetChildrenCount();assert(type(before)=='number' and before>=0 and before<=64,'radar_client_native_radar_canvas_capacity')
-  local actors,teams={},{}
+  local perTeam=env.descriptor.radars_per_team or 1
+  local expected=2*perTeam
+  local teams={0,0}
   for _,actor in ipairs(FindAllOf('BP_Objective_RadarSensor_C') or {}) do
    if valid(actor) and same(actor:GetWorld(),state.world) then
     assert(actor:GetClass():GetFullName()=='BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_RadarSensor.BP_Objective_RadarSensor_C','radar_client_original_radar_class_required')
-    actors[#actors+1]=actor
-    local team=actor.r_TeamId;if team==1 or team==2 then assert(not teams[team],'radar_client_ambiguous_native_radar_team');teams[team]=actor end
+    local team=actor.r_TeamId
+    if team~=1 and team~=2 then return false end
+    teams[team]=teams[team]+1
    end
   end
-  if #actors~=2 or not teams[1] or not teams[2] then return false end
+  if teams[1]~=perTeam or teams[2]~=perTeam then return false end
+  -- Native initialization can run while only some replicated sensors exist.
+  -- Rebuild that partial sensor layer once, after every team ID has arrived.
+  if perTeam>1 and before>0 and before<expected and not record.rebuilt_partial_radars then
+   local radarClass=StaticFindObject('/Game/UI/Components/Game/UI_Game_Minimap_Radar.UI_Game_Minimap_Radar_C')
+   if not valid(radarClass) then return false end
+   for index=0,before-1 do
+    local child=canvas:GetChildAt(index)
+    if not valid(child) or not same(child:GetClass(),radarClass) then return false end
+   end
+   record.rebuilt_partial_radars=true
+   canvas:ClearChildren()
+   before=canvas:GetChildrenCount()
+  end
   if before==0 then
    -- Invoke the exact original zero-parameter Blueprint only on its empty
    -- native canvas; it owns creation, binding, friendliness and positions.
    widget:BindRadarSensors()
-   local after=canvas:GetChildrenCount();assert(after==2,'radar_client_original_bind_radar_canvas_count')
+   local after=canvas:GetChildrenCount()
+   if after~=expected then return false end
    record.radar_canvas_ready=true
-   report('BASE_RADAR_CLIENT_RADAR_CANVAS_BOUND|widget='..widget:GetFullName()..'|before=0|after='..after..'|radarActors=2|owner=OriginalBindRadarSensors|onlineFlagWrites=0')
+   report('BASE_RADAR_CLIENT_RADAR_CANVAS_BOUND|widget='..widget:GetFullName()..'|before=0|after='..after..'|radarActors='..expected..'|owner=OriginalBindRadarSensors|onlineFlagWrites=0')
    return true
   end
-  -- Native initialization may already have populated the canvas. Never
-  -- clear/rebind it or create duplicate widgets to repair partial state.
-  if before~=2 then return false end
-  if not record.radar_canvas_ready then report('BASE_RADAR_CLIENT_RADAR_CANVAS_READY|widget='..widget:GetFullName()..'|before=2|nativeBindCalls=0|radarActors=2');record.radar_canvas_ready=true end
+  -- Native initialization may already have populated the full canvas.
+  if before~=expected then return false end
+  if not record.radar_canvas_ready then report('BASE_RADAR_CLIENT_RADAR_CANVAS_READY|widget='..widget:GetFullName()..'|before='..before..'|nativeBindCalls=0|radarActors='..expected);record.radar_canvas_ready=true end
   return true
  end
  local service={}

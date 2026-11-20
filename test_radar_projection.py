@@ -61,7 +61,9 @@ function api:BeginDeferredActorSpawnFromClass(context,klass,transform)
 end
 function api:FinishSpawningActor(actor) return actor end
 local contracts=releaseRadarBlueprintContracts
+local radarWidgetClass=object('Radar widget class')
 function StaticFindObject(path)
+    if path=='/Game/UI/Components/Game/UI_Game_Minimap_Radar.UI_Game_Minimap_Radar_C' then return radarWidgetClass end
     if path=='/Script/ValhallaUI.Default__UILibrary' then return lib end
     if path=='/Script/Engine.Default__GameplayStatics' then return api end
     if path=='/Game/Common/Blueprints/Cameras/BP_MinimapCapture.BP_MinimapCapture_C' then
@@ -89,9 +91,11 @@ widget.Material=object('Map material')
 widget.MapTexture={Brush={ResourceObject=widget.Material}}
 widget.CachedZoom,widget.TargetZoom=1,1
 widget.RadarSensors={children=0,GetChildrenCount=function(self) return self.children end}
+function widget.RadarSensors:GetChildAt() return {GetClass=function()return radarWidgetClass end} end
+function widget.RadarSensors:ClearChildren() self.children=0 end
 function widget:GetOwningPlayer() return pc end
 function widget:UpdateSublevel() self.CachedMapScale=1024/settings.MapSize;self.MapScale=self.CachedMapScale end
-function widget:BindRadarSensors() self.RadarSensors.children=2 end
+function widget:BindRadarSensors() self.RadarSensors.children=#f.radars;f.binds=(f.binds or 0)+1 end
 local foreignWidget=object('Foreign map widget');foreignWidget.world=foreign
 foreignWidget.GetOwningPlayer=widget.GetOwningPlayer
 function foreignWidget:SetVisibility() error('foreign minimap changed') end
@@ -189,6 +193,18 @@ class RadarProjectionTest(unittest.TestCase):
         self.assertTrue(f.tick())
         self.assertEqual(f.widget.RadarSensors.children, 2)
         self.assertEqual((f.requests, f.spawns), (1, 1))
+
+    def test_two_radars_per_team_bind_once_after_both_pairs_arrive(self):
+        f = self.fixture(*MAPS[-1], radar_count=2)
+        f.add_radars()
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.RadarSensors.children, 0)
+        # The native widget drew the first two replicated sensors between ticks.
+        f.widget.RadarSensors.children = 2
+        f.add_radars()
+        self.assertTrue(f.tick())
+        self.assertTrue(f.tick())
+        self.assertEqual((f.widget.RadarSensors.children, f.binds), (4, 1))
 
     def test_no_radar_map_keeps_the_minimap_by_default(self):
         f = self.fixture(*MAPS[-1], radar_count=0)
