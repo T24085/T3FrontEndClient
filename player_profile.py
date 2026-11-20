@@ -16,6 +16,8 @@ from pathlib import Path
 import re
 import uuid
 
+from verified_file_cache import MAX_PACKAGE_FILES, MAX_PACKAGE_MANIFEST_BYTES
+
 
 class ProfileError(ValueError):
     pass
@@ -237,11 +239,11 @@ def _trusted_profile(workspace, receipt):
     package = scripts[0].parent.resolve(strict=True)
     if Path(execution['cwd']).resolve(strict=True) != package:
         return None
-    manifest = _json(package/'package-manifest.json', 2*1024*1024)
+    manifest = _json(package/'package-manifest.json', MAX_PACKAGE_MANIFEST_BYTES)
     if manifest.get('capabilities') != ['join-only']:
         return None
     files = manifest.get('files')
-    if not isinstance(files, list) or len(files) > 10000 or any(not isinstance(x, dict) for x in files):
+    if not isinstance(files, list) or len(files) > MAX_PACKAGE_FILES or any(not isinstance(x, dict) for x in files):
         return None
     member = [x for x in files if x.get('path') == 'client.py']
     if len(member) != 1 or hashlib.sha256(_read(scripts[0], INI_LIMIT)).hexdigest() != member[0].get('sha256'):

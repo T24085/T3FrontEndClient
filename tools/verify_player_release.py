@@ -3,6 +3,7 @@ import argparse,ast,hashlib,json,re,sys,zipfile
 from pathlib import Path,PurePosixPath
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from map_sync_contract import map_catalog
+from verified_file_cache import MAX_PACKAGE_FILES, MAX_PACKAGE_MANIFEST_BYTES
 
 def safe_name(name):
  p=PurePosixPath(name)
@@ -18,8 +19,9 @@ def verify(archive,server_catalog,output):
   if len(names)!=len({n.casefold()for n in names}):raise ValueError('Duplicate ZIP members')
   candidates=[n for n in names if n.endswith('/package-manifest.json')and n.count('/')==1]
   if len(candidates)!=1:raise ValueError('One complete top-level client required')
+  if z.getinfo(candidates[0]).file_size>MAX_PACKAGE_MANIFEST_BYTES:raise ValueError('Manifest is too large')
   root=candidates[0].split('/')[0]+'/';manifest=json.loads(z.read(candidates[0]));rows=manifest['files']
-  if not 1<=len(rows)<=10000:raise ValueError('Inventory bounds exceeded')
+  if not 1<=len(rows)<=MAX_PACKAGE_FILES:raise ValueError('Inventory bounds exceeded')
   expected={};total=0
   for row in rows:
    name=row['path'];p=safe_name(name)

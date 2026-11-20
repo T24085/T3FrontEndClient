@@ -8,7 +8,7 @@ from pathlib import Path
 import threading
 import uuid
 
-from client_preparation import empty_client_job, logged_stage, remove_staged_game
+from client_preparation import MAX_DESCRIPTOR_BYTES, MAX_PREPARED_IDENTITIES, empty_client_job, logged_stage, remove_staged_game
 from community_transport import CommunityError
 from map_catalog import verified_catalog
 from runtime_health import runtime_failure
@@ -141,7 +141,7 @@ class CommunityGame:
                 raise CommunityError(observed_failure(lines) or 'Client file preparation did not finish.')
             descriptor=json.loads(descriptors[0]);path=Path(descriptor['path'])
             if (path.name!='prepared.json' or path.parent.parent!=self.workspace or not path.parent.name.startswith('client-')
-                    or path.resolve(strict=True)!=path or path.stat().st_size>4*1024*1024
+                    or path.resolve(strict=True)!=path or path.stat().st_size>MAX_DESCRIPTOR_BYTES
                     or hashlib.sha256(path.read_bytes()).hexdigest()!=descriptor['sha256']):
                 raise CommunityError('Client preparation returned an invalid owned descriptor.')
             if unused is not None and unused != path.parent:
@@ -438,7 +438,7 @@ class CommunityGame:
                         match=re.fullmatch(r'CLIENT_PREPARATION_PROGRESS\|([0-9]{1,5})/([0-9]{1,5})',line)
                         if match:
                             done,total=map(int,match.groups())
-                            if 0<=done<=total<=10000 and total>0:
+                            if 0<=done<=total<=MAX_PREPARED_IDENTITIES and total>0:
                                 progress=f'Preparing game files: {done:,} / {total:,} files…'
                                 break
             return {'status':self.preparation_status,'error':self.preparation_error,

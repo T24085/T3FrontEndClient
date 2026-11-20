@@ -4,6 +4,7 @@ import json
 import re
 
 from community_maps import declared_definitions, declared_shared_content
+from verified_file_cache import MAX_PACKAGE_FILES, MAX_PACKAGE_MANIFEST_BYTES
 
 VERSION = 1
 MANIFEST_ROUTE = '/api/map-files-v1'
@@ -12,7 +13,7 @@ CATALOG_VERSION = 2
 CATALOG_HEADER = 'X-T3-Map-Catalog'
 OBJECTIVES_HEADER = 'X-T3-Map-Objectives'
 CATALOG_ROUTE = '/api/map-files-v2'
-MAX_MANIFEST = 2 * 1024**2
+MAX_MANIFEST = MAX_PACKAGE_MANIFEST_BYTES
 MAX_FILE = 256 * 1024**2
 MAX_TOTAL = 8 * 1024**3
 CHUNK = 128 * 1024
@@ -27,7 +28,7 @@ def encode(value):
 
 
 def cooked_rows(rows):
-    if not isinstance(rows, list) or not 1 <= len(rows) <= 10000:
+    if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_PACKAGE_FILES:
         raise ValueError('Invalid cooked map file count.')
     result = {}
     seen = set()

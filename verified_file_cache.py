@@ -27,6 +27,9 @@ def identity(path):
     return (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
 
 
+MAX_PACKAGE_FILES = 20_000
+MAX_PACKAGE_MANIFEST_BYTES = 8 * 1024 * 1024
+
 class VerifiedFileCache:
     def __init__(self, *, max_entries=10000, max_age_seconds=86400, clock=time.monotonic):
         if type(max_entries) is not int or not 1 <= max_entries <= 10000:
@@ -135,14 +138,14 @@ def verify_package(root, *, force=False, merge_manifest=None):
     manifest_path = root / 'package-manifest.json'
     before = identity(manifest_path)
     with manifest_path.open('rb') as stream:
-        raw = stream.read(2 * 1024 * 1024 + 1)
-    if len(raw) > 2 * 1024 * 1024 or identity(manifest_path) != before:
+        raw = stream.read(MAX_PACKAGE_MANIFEST_BYTES + 1)
+    if len(raw) > MAX_PACKAGE_MANIFEST_BYTES or identity(manifest_path) != before:
         raise ValueError('Package manifest is too large or changed while reading.')
     result = json.loads(raw)
     if merge_manifest is not None and isinstance(result, dict):
         result = merge_manifest(root, result)
     items = result.get('files') if isinstance(result, dict) else None
-    if not isinstance(items, list) or not 1 <= len(items) <= 10000:
+    if not isinstance(items, list) or not 1 <= len(items) <= MAX_PACKAGE_FILES:
         raise ValueError('Invalid package inventory.')
     seen = set()
     for item in items:
@@ -165,7 +168,7 @@ def verify_package(root, *, force=False, merge_manifest=None):
         if digest(path, force=force) != expected:
             raise ValueError('Package file failed verification: ' + name)
     with manifest_path.open('rb') as stream:
-        current_raw = stream.read(2 * 1024 * 1024 + 1)
+        current_raw = stream.read(MAX_PACKAGE_MANIFEST_BYTES + 1)
     if identity(manifest_path) != before or current_raw != raw:
         raise ValueError('Package manifest changed while verifying members.')
     if merge_manifest is not None and merge_manifest(root, json.loads(raw)) != result:

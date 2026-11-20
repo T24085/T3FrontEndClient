@@ -4,17 +4,17 @@
   "files": {
     "community_maps.py": "0f08811d792c852fb1bca161192225f31e6ef27e2fb07fe38f5a75094c5b62e3",
     "community_transport.py": "3d52b68c1e06276cde58be7624ca2e6b86cbf4a1e235b39add985cd7de7d652b",
-    "compare_map_packages.py": "a37c824491b17f3298a76ff1c6cf37e65367e795a741dd13cba18100cceb51b9",
+    "compare_map_packages.py": "62e040f8cf54e7a5d4f6c1c13338a61a5b152fa7542f0d42ba0676d52a4f2047",
     "map_catalog.py": "e3d5544be8ee18d23a87e8b128a699f64fa928fd7f3dee1b2d56a86e01bd97f1",
     "player_names.py": "cd8667b6f015bcf12de9f9053e00bcc168d6e2b8bcbc8072bb60fe7ee2b18ea4",
     "runtime_health.py": "c06dda6c9789f94e1347e762f6c3d909775780d19633f98db2f893d5968e8e8c",
-    "verified_file_cache.py": "39d3c3e19e03c738ed431eed3f6d72999dd57165b7aee8a6f5028d4072ea67d7",
+    "verified_file_cache.py": "10972685422411900c505455383227e26df63ac5d223c8ec675e7cca850e21cb",
     "bulk_verification_receipts.py": "5cc957b393b036755527352abb42a0479184673ea888070d2aee30ebbf514be2",
     "dynamic_destination.py": "e3a94c755b1f3b6d9650752714c37e70874443a606533e670b1095c90cc58cba",
     "experimental/direct-hosting/src/direct_network.py": "e3bf290f0aa2cabb85828725fb3633f246b932e349ce1bac941088b59c7afd7f",
     "tools/apply_lobby_recovery_update.py": "7b1acd94cc25c80948b66789befc289df3ff880c69dcb7abfcdcb08b1fe76068",
     "server_access_contract.py": "62155a3c7e5d8a314c4e7928e0ddee92cb0d6417d72253d305dd996deec84e1a",
-    "map_sync_contract.py": "ee924c4f769fa1fb687a1214ffabaa46757333b8792e41f1958521b65714f36a",
+    "map_sync_contract.py": "c23ac5f6c882e315ecef157a6dbccd88aebc2dcd8516222f9ccc3b856a7acffe",
     "direct_update_contract.py": "3609373a057a05a9988cf695d04d7eba8e776087f4bc2e7c79493af7521ca683"
   }
 }
