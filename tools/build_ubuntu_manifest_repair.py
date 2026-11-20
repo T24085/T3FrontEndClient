@@ -8,7 +8,16 @@ from ubuntu_preview_inventory import inventory_overlay
 
 HEADER = r'''#!/bin/sh
 set -eu
-root=${1:-"$HOME/Games/Clan Wars Ubuntu Preview"}
+if [ "$#" -gt 0 ]; then
+    root=$1
+else
+    root="$HOME/Games/Clan Wars Ubuntu Preview"
+    for newer in "$HOME/Games/Clan Wars Ubuntu Preview 2" "$HOME/Games/Clan Wars Ubuntu Preview 3"; do
+        if [ -f "$newer/package-manifest.json" ]; then
+            root=$newer
+        fi
+    done
+fi
 python=python3
 for bundled in "$root"/.linux-python/*/python/bin/python3; do
     if [ -x "$bundled" ]; then
@@ -44,9 +53,9 @@ manifest_path = root/'package-manifest.json'
 with manifest_path.open('rb') as stream:
     original = stream.read(4*1024*1024+1)
 if len(original)>4*1024*1024:
-    sys.exit('Unexpected package manifest size. Use the Ubuntu Preview 2 installer.')
+    sys.exit('Unexpected package manifest size. Use the Ubuntu Preview 3 installer.')
 manifest = json.loads(original)
-if manifest.get('build_id') not in ('ClanWarsUbuntuNativePreview1','ClanWarsUbuntuNativePreview2'):
+if manifest.get('build_id') not in ('ClanWarsUbuntuNativePreview1','ClanWarsUbuntuNativePreview2','ClanWarsUbuntuNativePreview3'):
     sys.exit('This repair only applies to the native Ubuntu preview.')
 rows = {row['path']:row for row in manifest['files']}
 pending = {}
@@ -58,7 +67,7 @@ for name,(old,encoded) in PATCHES.items():
     new = sha256(updated).hexdigest()
     current = sha256(target.read_bytes()).hexdigest()
     if current not in (old,new) or rows[name]['sha256'] not in (old,new):
-        sys.exit(f'This preview has a different {name}. Use the Ubuntu Preview 2 installer.')
+        sys.exit(f'This preview has a different {name}. Use the Ubuntu Preview 3 installer.')
     if current != new:
         pending[target] = updated
     rows[name] = {'path':name,'bytes':len(updated),'sha256':new}
@@ -70,7 +79,7 @@ for target,raw in pending.items():
     replace(target,raw)
 if compact != original:
     replace(manifest_path,compact)
-print('Clan Wars Ubuntu package verification repaired. Reopen the Starter.')
+print('Clan Wars Ubuntu package verification and preparation repaired. Reopen the Starter.')
 '''
 
 
