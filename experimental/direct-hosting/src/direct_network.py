@@ -217,6 +217,29 @@ def unframe(key,identity,packet,direction,window):
     if not window.accept(sequence):return None
     return packet[28:-32]
 
+UDP_GRANT_LIFETIME = 7200
+UDP_GRANT_HEADER = 'X-T3-Udp-Grant'
+UDP_GRANT_RELATIVE = 'relative-v1'
+UDP_GRANT_IDENTITY = {'id', 'key', 'matchId', 'port'}
+
+
+def grant_deadline(grant, clock):
+    if grant.keys() == UDP_GRANT_IDENTITY | {'expires_in', 'renewal'}:
+        seconds, renewal = grant['expires_in'], grant['renewal']
+        if (type(seconds) is not int or not 0 < seconds <= UDP_GRANT_LIFETIME
+                or type(renewal) is not int or renewal < 0):
+            raise ValueError('Invalid UDP grant lifetime.')
+    elif grant.keys() == UDP_GRANT_IDENTITY | {'expires'}:
+        expiry = grant['expires']
+        now = time.time()
+        if type(expiry) is not int or not now < expiry <= now + UDP_GRANT_LIFETIME + 1:
+            raise ValueError('Invalid UDP grant deadline.')
+        seconds = expiry - now
+    else:
+        raise ValueError('Invalid UDP grant fields.')
+    return clock() + seconds
+
+
 class UdpServer:
     def __init__(self,bind,public_port,native_port,permitted,*,clock=time.monotonic,forward=None,renew=False,route=None,probe=None):
         self.forward = forward if forward is not None else permitted
@@ -230,17 +253,19 @@ class UdpServer:
         self.socket.bind((bind,public_port));self.public_port=self.socket.getsockname()[1]
         self.thread=threading.Thread(target=self.run,daemon=True);self.thread.start()
 
-    def grant(self,match_id,peer_id,session=''):
+    def grant(self,match_id,peer_id,session='',*,relative=False):
         if not self.permitted(match_id,peer_id):raise ValueError('No live match admission exists.')
         with self.lock:
             old=self.identities.get((match_id,peer_id));r=self.grants.get(old)
             if r is not None and r['session']==session:
-                now = int(time.time())
+                remaining = r['deadline'] - self.clock()
                 renewable = self.renew(match_id) if callable(self.renew) else self.renew
-                if renewable and now < r['expires'] <= now+600:
-                    r['expires'] = now+7200
-                if r['expires']>now+60:
-                    return self.public(r)
+                if renewable and 0 < remaining <= 600:
+                    r['deadline'] = self.clock() + UDP_GRANT_LIFETIME
+                    r['expires'] = int(time.time()) + UDP_GRANT_LIFETIME
+                    r['renewal'] += 1
+                if r['deadline'] - self.clock() > 60:
+                    return self.public(r, relative=relative)
             if r is not None:
                 r['socket'].close();del self.grants[old];self.identities.pop((match_id,peer_id),None)
             # A stopped lease must not retain sockets or consume capacity.
@@ -249,21 +274,29 @@ class UdpServer:
             ident=secrets.token_hex(16);key=secrets.token_bytes(32)
             native = ('127.0.0.1', self.route(match_id)) if self.route is not None else self.native
             upstream=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);upstream.bind((InviteStore.address(peer_id),0));upstream.connect(native)
-            r={'id':ident,'key':key,'match':match_id,'peer':peer_id,'session':session,'expires':int(time.time())+7200,'socket':upstream,'remote':None,'window':ReplayWindow(),'sent':0}
-            self.grants[ident]=r;self.identities[(match_id,peer_id)]=ident;return self.public(r)
+            r={'id':ident,'key':key,'match':match_id,'peer':peer_id,'session':session,
+               'expires':int(time.time()) + UDP_GRANT_LIFETIME,
+               'deadline':self.clock() + UDP_GRANT_LIFETIME,'renewal':0,
+               'socket':upstream,'remote':None,'window':ReplayWindow(),'sent':0}
+            self.grants[ident]=r;self.identities[(match_id,peer_id)]=ident
+            return self.public(r, relative=relative)
 
     def voice_admitted(self, match_id, peer_id, session, grant_id):
         with self.lock:
             grant = self.grants.get(grant_id)
             return bool(grant and self.identities.get((match_id, peer_id)) == grant_id
-                        and grant['session'] == session and grant['expires'] > time.time())
+                        and grant['session'] == session and grant['deadline'] > self.clock())
 
-    def public(self,r):return {'id':r['id'],'key':r['key'].hex(),'matchId':r['match'],'expires':r['expires'],'port':self.public_port}
+    def public(self, r, *, relative):
+        wire = {'id':r['id'],'key':r['key'].hex(),'matchId':r['match'],'port':self.public_port}
+        if relative:
+            return dict(wire, expires_in=int(r['deadline'] - self.clock()), renewal=r['renewal'])
+        return dict(wire, expires=r['expires'])
 
     def prune(self):
         with self.lock:
             for identity,r in list(self.grants.items()):
-                if r['expires']<=time.time() or not self.permitted(r['match'],r['peer']):
+                if r['deadline']<=self.clock() or not self.permitted(r['match'],r['peer']):
                     r['socket'].close();del self.grants[identity];self.identities.pop((r['match'],r['peer']),None)
 
     def run(self):
@@ -303,19 +336,21 @@ class UdpServer:
         self.socket.close()
 
 class UdpClient:
-    def __init__(self,address,grant):
-        if set(grant)!={'id','key','matchId','expires','port'}:raise ValueError('Invalid UDP grant fields.')
+    def __init__(self,address,grant,*,clock=time.monotonic):
+        self.clock = clock
+        self.deadline = grant_deadline(grant, clock)
         if len(bytes.fromhex(grant['id']))!=16 or len(bytes.fromhex(grant['key']))!=32 or type(grant['port'])is not int or not 1024<=grant['port']<=65535:raise ValueError('Invalid UDP grant.')
-        if type(grant['expires'])is not int or not time.time()<grant['expires']<=time.time()+7201:raise ValueError('Invalid UDP grant deadline.')
         self.grant=dict(grant);self.key=bytes.fromhex(grant['key']);self.window=ReplayWindow();self.sent=0;self.remote=(str(ipaddress.IPv4Address(address)),grant['port']);self.client=None
         self.rebind_until=0
         self.local=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);self.local.bind(('127.0.0.1',0));self.port=self.local.getsockname()[1]
         self.wire=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);self.wire.connect(self.remote);self.stop=threading.Event();self.thread=threading.Thread(target=self.run,daemon=True);self.thread.start()
 
     def run(self):
-        while not self.stop.is_set()and time.time()<self.grant['expires']:
+        while not self.stop.is_set() and self.clock() < self.deadline:
             try:
                 ready,_,_=select.select([self.local,self.wire],[],[],.2)
+                if self.clock() >= self.deadline:
+                    continue
                 for sock in ready:
                     if sock is self.local:
                         payload,source=sock.recvfrom(65535)
@@ -331,12 +366,23 @@ class UdpClient:
             except OSError:
                 if self.stop.is_set():break
 
-    def renew(self, grant):
+    def renew(self, grant, *, allow_extension=True):
         previous = self.grant
-        expiry = grant.get('expires')
-        if (type(expiry) is not int or not previous['expires'] <= expiry <= time.time()+7201
-                or dict(grant, expires=previous['expires']) != previous):
+        deadline = grant_deadline(grant, self.clock)
+        if (grant.keys() != previous.keys()
+                or any(grant[field] != previous[field] for field in UDP_GRANT_IDENTITY)):
             raise ValueError('Invalid public UDP renewal.')
+        if 'expires_in' in grant:
+            if grant['renewal'] < previous['renewal']:
+                return
+            extended = grant['renewal'] > previous['renewal']
+        else:
+            if grant['expires'] < previous['expires']:
+                raise ValueError('Invalid public UDP renewal.')
+            extended = grant['expires'] > previous['expires']
+        if extended and not allow_extension:
+            raise ValueError('Unexpected UDP grant renewal.')
+        self.deadline = deadline if extended else min(self.deadline, deadline)
         self.grant = dict(grant)
 
     def allow_rebind(self):

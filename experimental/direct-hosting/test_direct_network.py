@@ -28,6 +28,7 @@ class DirectNetworkTests(unittest.TestCase):
         }
         client = DirectClient(connection, test_source='127.0.0.2')
         self.addCleanup(client.close)
+        self.assertEqual(client.request_headers()['X-T3-Udp-Grant'], 'relative-v1')
         match = {'id':'match', 'map':'Stonehenge', 'contentHash':'a'*64,
                  'address':'127.0.0.1', 'port':18004}
         grant = {'matchId':'match', 'id':'grant', 'port':18004}
@@ -44,6 +45,26 @@ class DirectNetworkTests(unittest.TestCase):
             target = client._validated_target(dict(match, udpGrant=grant), 'Stonehenge')
             self.assertEqual(target['endpoint'], '127.0.0.1:20500')
             proxy.assert_called_once_with('127.0.0.1', grant)
+
+    def test_udp_admission_logs_the_cause_and_preserves_the_user_error(self):
+        from community_transport import CommunityError
+        from direct_client import DirectClient
+
+        connection = {'format': 1, 'hostname': 'localhost', 'public_address': '127.0.0.1',
+                      'https_port': 18443, 'first_udp_port': 18443, 'last_udp_port': 18443,
+                      'access_token': 'x'*43}
+        client = DirectClient(connection, test_source='127.0.0.2')
+        self.addCleanup(client.close)
+        grant = {'id':'a'*32, 'key':'b'*64, 'matchId':'match', 'port':18443,
+                 'expires_in':7201, 'renewal':0}
+        match = {'id':'match', 'map':'Stonehenge', 'contentHash':'a'*64,
+                 'address':'127.0.0.1', 'port':18443, 'udpGrant':grant}
+        with self.assertLogs('direct_client', level='WARNING') as messages:
+            with self.assertRaisesRegex(CommunityError, 'UDP match admission could not be opened.'):
+                client._validated_target(match, 'Stonehenge')
+        self.assertIn('ValueError): Invalid UDP grant lifetime.', messages.output[0])
+        self.assertNotIn(grant['key'], messages.output[0])
+        self.assertNotIn(connection['access_token'], messages.output[0])
 
     def test_stock_invitation_accepts_migrated_ports_with_pinned_address_and_grant(self):
         from community_transport import CommunityError
