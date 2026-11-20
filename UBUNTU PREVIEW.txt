@@ -6,7 +6,7 @@ files, lobby identity, game staging and Proton prefix.
 
 1. Run the .run installer from a terminal. It opens the native Starter.
    To reopen it later, run "Start Clan Wars Ubuntu.sh" in the installed
-   "~/Games/Clan Wars Ubuntu Preview" folder.
+   "~/Games/Clan Wars Ubuntu Preview 2" folder.
 2. Open Steam Setup in the Starter. In Steam, enable Proton under
    TRIBES 3: Rivals > Properties > Compatibility. Copy the complete
    launch option into Properties > General > Launch Options.

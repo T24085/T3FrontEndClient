@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shutil
 from zipfile import ZipFile
+from ubuntu_preview_inventory import inventory_overlay
 
 SOURCE = Path(__file__).resolve().parents[1]
 PREVIEW_FILES = ('Start Community Starter.sh', 'Start Clan Wars Ubuntu.sh', 'ubuntu_starter.py',
@@ -46,10 +47,12 @@ def build(package, proof_path, output, *, ubuntu_preview=False):
         manifest = json.loads(client.read('package-manifest.json'))
         assert len(manifest['community_maps']) == proof['maps']
         assert manifest['starter_update_revision'] == proof['revision']
+        readers = inventory_overlay(client) if ubuntu_preview else {}
     code = (SOURCE/'linux_self_install.py').read_text(encoding='utf-8').rstrip()
     if ubuntu_preview:
         overlay = {name:b64encode((SOURCE/name).read_text(encoding='utf-8').encode()).decode('ascii')
                    for name in PREVIEW_FILES}
+        overlay.update({name:b64encode(raw).decode('ascii') for name,(_,raw) in readers.items()})
         code = code.replace('PREVIEW = None', 'PREVIEW = '+repr(overlay), 1)
     values = {'RUNTIME_SIZE':str(len(runtime)), 'RUNTIME_SHA':sha256(runtime).hexdigest(),
               'ZIP_SHA':proof['sha256'], 'PYTHON_CODE':code}

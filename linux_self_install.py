@@ -96,9 +96,12 @@ def install_preview(root):
         if name.endswith('.sh'):
             target.chmod(0o755)
         rows[name] = {'path':name,'bytes':len(raw),'sha256':sha256(raw).hexdigest()}
-    manifest.update(files=list(rows.values()), build_id='ClanWarsUbuntuNativePreview1',
-                    revision_id='ClanWarsUbuntuNativePreview1')
-    manifest_path.write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+    manifest.update(files=list(rows.values()), build_id='ClanWarsUbuntuNativePreview2',
+                    revision_id='ClanWarsUbuntuNativePreview2')
+    compact = json.dumps(manifest,separators=(',',':'),ensure_ascii=True)+'\n'
+    if len(compact.encode())>4*1024*1024 or len(rows)>16384:
+        raise ValueError('Ubuntu preview exceeds the local package verifier limits.')
+    manifest_path.write_text(compact,encoding='utf-8')
 
 
 def main():
@@ -118,7 +121,7 @@ def main():
         if options.verify:
             print(f'Clan Wars r{revision} verified with {len(manifest["community_maps"])} maps.')
             return 0
-        title = 'Clan Wars Ubuntu Preview' if PREVIEW is not None else f'Clan Wars Linux r{revision}'
+        title = 'Clan Wars Ubuntu Preview 2' if PREVIEW is not None else f'Clan Wars Linux r{revision}'
         destination = options.destination or Path.home()/'Games'/title
         destination = destination.expanduser().absolute()
         install(archive, entries, destination, installer_id)
