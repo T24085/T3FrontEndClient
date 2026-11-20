@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import uuid
 
 from verified_file_cache import MAX_PACKAGE_FILES, MAX_PACKAGE_MANIFEST_BYTES
@@ -31,6 +32,10 @@ _RETAINED_LEASES = []
 INI_LIMIT = 1024 * 1024
 MIGRATE_FILES = ('GameUserSettings.ini', 'Input.ini', 'EnhancedInput.ini', 'Scalability.ini')
 BOOTSTRAP_SECTION = '/Script/EngineSettings.GameMapsSettings'
+CONFIG_DIRECTORY = 'Saved/Config/Windows'
+RETAIL_INPUT_SECTION = '/Script/Valhalla.ValPlayerInput'
+RETAIL_INPUT_KEYS = {'customactionkeymappings', 'savedsettingsconfig'}
+RETAIL_GAME_SECTIONS = ('/Script/Valhalla.ValGameUserSettings', 'ScalabilityGroups')
 
 
 def user_profile_root():
@@ -123,6 +128,16 @@ def _ini(raw):
     return text, rows
 
 
+def _encode_ini(text, original):
+    if original.startswith(b'\xff\xfe'):
+        return b'\xff\xfe' + text.encode('utf-16-le')
+    if original.startswith(b'\xfe\xff'):
+        return b'\xfe\xff' + text.encode('utf-16-be')
+    if original.startswith(b'\xef\xbb\xbf'):
+        return b'\xef\xbb\xbf' + text.encode('utf-8')
+    return text.encode('utf-8')
+
+
 def _backup(path, root, raw):
     directory = root/'backups'
     directory.mkdir(exist_ok=True)
@@ -192,11 +207,7 @@ def update_bootstrap(profile, control, mode, *, map_name='/Game/Maps/Active/Dryd
             output.append(newline)
         output.append('['+BOOTSTRAP_SECTION+']'+newline)
         output.extend(value+newline for value in values)
-    text = ''.join(output)
-    if raw.startswith(b'\xff\xfe'): updated = b'\xff\xfe'+text.encode('utf-16-le')
-    elif raw.startswith(b'\xfe\xff'): updated = b'\xfe\xff'+text.encode('utf-16-be')
-    elif raw.startswith(b'\xef\xbb\xbf'): updated = b'\xef\xbb\xbf'+text.encode('utf-8')
-    else: updated = text.encode('utf-8')
+    updated = _encode_ini(''.join(output), raw)
     if updated != raw:
         if path.exists():
             _backup(path, control, raw)
@@ -305,6 +316,209 @@ def migration_candidate(workspaces):
     return selected[0]
 
 
+def _initialize_profile(root, workspaces):
+    profile = root/'profile'
+    if os.path.lexists(profile):
+        _plain(profile)
+        return profile
+    chosen = migration_candidate(tuple(workspaces) + (root.parent/'sessions',))
+    temp = root/('profile-initializing-'+uuid.uuid4().hex)
+    directory = temp/CONFIG_DIRECTORY
+    directory.mkdir(parents=True)
+    if chosen:
+        migrated = []
+        for name in MIGRATE_FILES:
+            source = _child(chosen['profile'], f'{CONFIG_DIRECTORY}/{name}')
+            if source.exists():
+                raw = _read(source, INI_LIMIT)
+                _ini(raw)
+                with (directory/name).open('xb') as stream:
+                    stream.write(raw)
+                migrated.append(name)
+        (temp/'community-migration.json').write_text(json.dumps({
+            'source_profile': str(chosen['profile']), 'receipt': str(chosen['receipt']), 'files': migrated,
+        }), encoding='utf-8')
+    if os.path.lexists(profile):
+        raise ProfileError('A durable profile appeared during initialization; retained both paths.')
+    os.rename(temp, profile)
+    return profile
+
+
+def _acquire_profile_lock(root):
+    root.mkdir(parents=True, exist_ok=True)
+    _plain(root)
+    lock = _child(root, 'profile.lock')
+    handle = lock.open('a+b')
+    try:
+        os.set_inheritable(handle.fileno(), False)
+        if os.fstat(handle.fileno()).st_size == 0:
+            handle.write(b'\0')
+            handle.flush()
+        handle.seek(0)
+        if os.name == 'nt':
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) or getattr(exc, 'winerror', None) in (33, 36):
+            raise ProfileBusy('Your community game is already using its saved settings. Close it and try again.') from exc
+        raise ProfileError('The player-settings lock is unavailable: '+str(exc)) from exc
+    return handle
+
+
+def _unlock_profile(handle):
+    if os.name == 'nt':
+        import msvcrt
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    handle.close()
+
+
+def _sections(raw):
+    text, rows = _ini(raw)
+    sections = [('', '', [])]
+    for line, section, key in rows:
+        if key is None and line.lstrip().startswith('['):
+            sections.append((section.casefold(), line, []))
+        else:
+            sections[-1][2].append((line, key))
+    return text, sections
+
+
+def _merge_retail_ini(name, retail, current):
+    retail_text, retail_sections = _sections(retail)
+    input_file = name == 'Input.ini'
+    owned = {item.casefold() for item in ((RETAIL_INPUT_SECTION,) if input_file else RETAIL_GAME_SECTIONS)}
+    updates = {}
+    for section, header, rows in retail_sections:
+        if section in owned:
+            selected = ([(line, key) for line, key in rows
+                         if key and key.lstrip('+-!.').casefold() in RETAIL_INPUT_KEYS] if input_file else rows)
+            if any(key is not None for _, key in selected):
+                update = updates.setdefault(section, (header, []))
+                update[1].extend(selected)
+    if not updates:
+        return None
+
+    text, community_sections = _sections(current or b'')
+    ending_source = text or retail_text
+    newline = '\r\n' if '\r\n' in ending_source else '\n'
+    imported_keys = {key.lstrip('+-!.').casefold() for _, rows in updates.values()
+                     for _, key in rows if key is not None}
+    output = []
+    applied = set()
+
+    def append_imported(section, existing_header=''):
+        header, rows = updates[section]
+        if output and not output[-1].endswith(('\r', '\n')):
+            output.append(newline)
+        output.append((existing_header or header).rstrip('\r\n') + newline)
+        output.extend(line.rstrip('\r\n') + newline for line, _ in rows)
+        applied.add(section)
+
+    for section, header, rows in community_sections:
+        if section not in updates:
+            if header:
+                output.append(header)
+            output.extend(line for line, _ in rows)
+        elif input_file:
+            if section in applied:
+                output.append(header)
+            else:
+                append_imported(section, header)
+            output.extend(line for line, key in rows
+                          if key is None or key.lstrip('+-!.').casefold() not in imported_keys)
+        elif section not in applied:
+            append_imported(section)
+    for section in updates:
+        if section not in applied:
+            append_imported(section)
+    updated = _encode_ini(''.join(output), retail if current is None else current)
+    if len(updated) > INI_LIMIT:
+        raise ProfileError('The imported settings file is too large.')
+    return updated
+
+
+def _require_closed_game():
+    from client_support import running_image
+    try:
+        active = running_image('TribesRivals.exe')
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProfileError('Could not check whether the game is closed. Try again.') from exc
+    if active:
+        raise ProfileBusy('Close TRIBES 3 before importing retail settings.')
+
+
+def _read_existing(path):
+    try:
+        return _read(path, INI_LIMIT)
+    except FileNotFoundError:
+        return None
+
+
+def import_retail_settings(*, root=None, workspaces=()):
+    """Copy the selected retail preferences while holding the native profile lock."""
+    root = Path(root) if root is not None else user_profile_root()
+    _require_closed_game()
+    local_app_data = root.parents[1]
+    sources = {}
+    for name in ('Input.ini', 'GameUserSettings.ini'):
+        path = _child(local_app_data, f'Topaz/{CONFIG_DIRECTORY}/{name}')
+        raw = _read_existing(path)
+        if raw is not None and _merge_retail_ini(name, raw, None) is not None:
+            sources[name] = (path, raw)
+    if not sources:
+        raise ProfileError('No saved retail settings found. Open TRIBES 3 from Steam and save your settings first.')
+
+    handle = _acquire_profile_lock(root)
+    try:
+        profile = _initialize_profile(root, workspaces)
+        changes = []
+        for name, (source, retail) in sources.items():
+            path = _child(profile, f'{CONFIG_DIRECTORY}/{name}')
+            current = _read_existing(path)
+            updated = _merge_retail_ini(name, retail, current)
+            if updated != current:
+                changes.append((path, current, updated))
+        if not changes:
+            return ()
+        for path, current, _ in changes:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if current is not None:
+                _backup(path, root, current)
+        _require_closed_game()
+        if (any(_read_existing(source) != raw for source, raw in sources.values())
+                or any(_read_existing(path) != current for path, current, _ in changes)):
+            raise ProfileError('Settings changed during import. Close the game and try again.')
+
+        published = []
+        try:
+            for path, current, updated in changes:
+                _atomic(path, updated)
+                published.append((path, current, updated))
+        except Exception:
+            try:
+                for path, current, updated in reversed(published):
+                    if _read_existing(path) != updated:
+                        raise ProfileError('A settings file changed during rollback.')
+                    if current is None:
+                        path.unlink()
+                    else:
+                        _atomic(path, current)
+            except (OSError, ProfileError) as exc:
+                raise ProfileError(f'Import could not be rolled back. Original settings are in {root / "backups"}.') from exc
+            raise
+        return tuple(path.name for path, _, _ in changes)
+    finally:
+        _unlock_profile(handle)
+
+
 class ProfileSession:
     def __init__(self, *, mode, workspaces=(), diagnostic=False, root=None, source_game=None, package_root=None,
                  bootstrap_map='/Game/Maps/Active/Drydock/Arena_Drydock_P'):
@@ -328,27 +542,7 @@ class ProfileSession:
     def __enter__(self):
         if self.diagnostic:
             return self
-        self.root.mkdir(parents=True, exist_ok=True)
-        _plain(self.root)
-        lock = self.root/'profile.lock'
-        if lock.exists(): _plain(lock)
-        self.handle = lock.open('a+b')
-        os.set_inheritable(self.handle.fileno(), False)
-        if lock.stat().st_size == 0:
-            self.handle.write(b'\0'); self.handle.flush()
-        self.handle.seek(0)
-        try:
-            if os.name == 'nt':
-                import msvcrt
-                msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            self.handle.close(); self.handle = None
-            if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) or getattr(exc, 'winerror', None) in (33, 36):
-                raise ProfileBusy('Your community game is already using its saved settings. Close it before starting another game.') from exc
-            raise ProfileError('The player-settings lock is unavailable: '+str(exc)) from exc
+        self.handle = _acquire_profile_lock(self.root)
         try:
             self._prepare()
         except BaseException:
@@ -357,25 +551,7 @@ class ProfileSession:
         return self
 
     def _prepare(self):
-        if os.path.lexists(self.profile): _plain(self.profile)
-        if not self.profile.exists():
-            chosen = migration_candidate(self.workspaces+(self.root.parent/'sessions',))
-            temp = self.root/('profile-initializing-'+uuid.uuid4().hex)
-            directory = temp/'Saved/Config/Windows'
-            directory.mkdir(parents=True)
-            if chosen:
-                migrated = []
-                for name in MIGRATE_FILES:
-                    source = _child(chosen['profile'], 'Saved/Config/Windows/'+name)
-                    if source.exists():
-                        raw = _read(source, INI_LIMIT); _ini(raw)
-                        with (directory/name).open('xb') as stream: stream.write(raw)
-                        migrated.append(name)
-                (temp/'community-migration.json').write_text(json.dumps({'source_profile':str(chosen['profile']), 'receipt':str(chosen['receipt']), 'files':migrated}), encoding='utf-8')
-            if self.profile.exists():
-                raise ProfileError('A durable profile appeared during initialization; retained both paths.')
-            os.rename(temp, self.profile)
-        _plain(self.profile)
+        _initialize_profile(self.root, self.workspaces)
         settings = _child(self.profile, 'Saved/Config/Windows/GameUserSettings.ini')
         if settings.exists():
             raw = _read(settings, INI_LIMIT)
@@ -407,13 +583,7 @@ class ProfileSession:
     def _release(self):
         if self.handle is not None:
             try:
-                if os.name == 'nt':
-                    import msvcrt
-                    self.handle.seek(0); msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
-                self.handle.close()
+                _unlock_profile(self.handle)
             except OSError as exc:
                 self._retain()
                 raise ProfileError('Player-settings lease cleanup failed; ownership retained.') from exc
