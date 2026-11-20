@@ -80,6 +80,7 @@ class Desktop:
         self.messages = queue.Queue()
         self.access_messages = queue.Queue()
         self.access_window = None
+        self.settings_window = None
         self.players = []
         self.closing = False
         self.copy_reset_handle = None
@@ -145,6 +146,9 @@ class Desktop:
             self.map_status = tk.StringVar(value='')
             tk.Label(side,textvariable=self.map_status,bg='#0d1927',fg=MUTED,font=('Segoe UI',10),
                      anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
+        if sys.platform == 'win32':
+            self.button(side, 'Settings', self.show_settings, False).pack(
+                side='bottom', fill='x', padx=18, pady=(8, 14))
         main = tk.Frame(root, bg=BG)
         self.lobby_panel=main
         main.pack(side='left', fill='both', expand=True, padx=32, pady=20)
@@ -678,6 +682,42 @@ class Desktop:
         panel.pack(side='left',fill='both',expand=True,padx=32,pady=28)
         self.render_live_controls()
         if name=='live':self.refresh_live_matches()
+
+    def show_settings(self):
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.lift()
+            return
+        from player_profile import ProfileError, import_retail_settings
+
+        window = tk.Toplevel(self.root, bg=BG, padx=24, pady=20)
+        self.settings_window = window
+        window.title('Settings')
+        window.transient(self.root)
+        window.resizable(False, False)
+        self.label(window, 'Game settings', 21, True).pack(anchor='w')
+        description = self.label(
+            window, 'Copy your retail key bindings, sensitivity, and game options. '
+            'Starter backs up any community settings files it replaces.', 11, color=MUTED)
+        description.configure(wraplength=420, justify='left')
+        description.pack(anchor='w', pady=(8, 14))
+        status = tk.StringVar(window, value='Close TRIBES 3 before importing.')
+
+        def import_settings():
+            if self.controls_busy or self.game_status not in ('idle', 'stopped', 'finished', 'failed'):
+                status.set('Close TRIBES 3 and wait for Starter to finish its current action.')
+                return
+            try:
+                changed = import_retail_settings()
+            except (OSError, ProfileError) as exc:
+                status.set(str(exc))
+                return
+            status.set('Retail settings imported. They apply the next time you open the game.'
+                       if changed else 'Your community settings already match the saved retail settings.')
+
+        self.button(window, 'Import settings from retail', import_settings).pack(anchor='w')
+        tk.Label(window, textvariable=status, bg=BG, fg=MUTED, font=('Segoe UI', 10),
+                 justify='left', wraplength=420, anchor='w').pack(fill='x', pady=(12, 0))
+        window.bind('<Escape>', lambda _event: window.destroy())
 
     def render_live_controls(self):
         supported=self.caps.get('spectateEnabled')is True
