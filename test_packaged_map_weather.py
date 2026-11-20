@@ -173,12 +173,16 @@ class PackagedMapWeatherTest(unittest.TestCase):
 
     def test_exclusion_material_setup_and_opt_in_camera_fade(self):
         self.lua.globals().runtime = (ROOT / 'lua/weather.lua').as_posix()
-        for count, fade in ((0, 'true'), (1, 'false'), (16, 'true')):
-            with self.subTest(count=count, fade=fade):
-                self.run = self.root / str(count)
+        for count, fade, legacy in ((0, 'true', True), (1, 'false', True),
+                                     (16, 'true', True), (16, 'true', False)):
+            with self.subTest(count=count, fade=fade, legacy=legacy):
+                self.run = self.root / f'{count}-{legacy}'
                 self.run.mkdir()
                 boxes = ['{center_cm={100,-200,250},half_cm={5,20,30},yaw=90}']
                 boxes += ['{center_cm={10000,10000,10000},half_cm={1,2,3},yaw=0}'] * 15
+                if not legacy:
+                    boxes = [box.replace('center_cm=', 'center=').replace('half_cm=', 'half=') for box in boxes]
+                self.lua.globals().legacy_indices = legacy
                 descriptor = DESCRIPTOR.replace('row.objectives=',
                     f'row.weather.exclusions={{{",".join(boxes[:count])}}};'
                     f'row.weather.fade_when_camera_inside={fade};row.objectives=')
@@ -200,6 +204,7 @@ class PackagedMapWeatherTest(unittest.TestCase):
               assert(not self.vectors[name]);self.vectors[name]=value;self.writes=self.writes+1
             end
             function body:SetScalarParameterValueOnMaterials(name,value)
+              if name=='WeatherBoxCount' then self.boxes=value;return end
               assert(name=='WeatherOpacity');self.opacity[#self.opacity+1]=value
             end
             local actor={StaticMeshComponent=body,GetWorld=getWorld,
@@ -221,17 +226,19 @@ class PackagedMapWeatherTest(unittest.TestCase):
           assert(actors[1].hidden and disabled.writes==0 and #disabled.opacity==0)
           local count=#row.weather.exclusions
           local expectedWrites=1+3*count
-          assert(active.writes==expectedWrites and not active.vectors['WeatherBox'..(count+1)..'_Center'])
+          local first=legacy_indices and 1 or 0
+          assert(active.writes==expectedWrites and not active.vectors['WeatherBox'..(first+count)..'_Center'])
+          assert(active.boxes==(not legacy_indices and count or nil))
           assert(active.vectors.WeatherColor.Z==1)
           if count>0 then
-            local center=active.vectors.WeatherBox1_Center
-            local half=active.vectors.WeatherBox1_Half
-            local axis=active.vectors.WeatherBox1_Axis
+            local center=active.vectors['WeatherBox'..first..'_Center']
+            local half=active.vectors['WeatherBox'..first..'_Half']
+            local axis=active.vectors['WeatherBox'..first..'_Axis']
             assert(center.X==100 and center.Y==-200 and center.Z==250)
             assert(half.X==5 and half.Y==20 and half.Z==30)
             assert(math.abs(axis.X)<1e-12 and axis.Y==1 and axis.Z==0)
           end
-          if count==16 then assert(active.vectors.WeatherBox16_Half.Z==3) end
+          if count==16 then assert(active.vectors['WeatherBox'..(first+15)..'_Half'].Z==3) end
           step(0);step(.25)
           position={X=115,Y=-200,Z=250};step(.25);step(.25);step(.25)
           position.Z=281;step(.25);step(.25);step(.25)

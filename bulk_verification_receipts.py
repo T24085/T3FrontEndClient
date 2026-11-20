@@ -13,8 +13,11 @@ import re
 import time
 import uuid
 
-LIMIT = 8 * 1024 * 1024
-MAX_ENTRIES = 10000
+from verified_file_cache import MAX_PACKAGE_FILES
+
+
+LIMIT = 16 * 1024 * 1024
+MAX_ENTRIES = MAX_PACKAGE_FILES
 MAX_AGE = 86400
 
 

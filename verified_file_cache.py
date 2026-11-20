@@ -31,8 +31,8 @@ MAX_PACKAGE_FILES = 20_000
 MAX_PACKAGE_MANIFEST_BYTES = 8 * 1024 * 1024
 
 class VerifiedFileCache:
-    def __init__(self, *, max_entries=10000, max_age_seconds=86400, clock=time.monotonic):
-        if type(max_entries) is not int or not 1 <= max_entries <= 10000:
+    def __init__(self, *, max_entries=MAX_PACKAGE_FILES, max_age_seconds=86400, clock=time.monotonic):
+        if type(max_entries) is not int or not 1 <= max_entries <= MAX_PACKAGE_FILES:
             raise ValueError('Invalid digest cache entry bound.')
         if not 0 < max_age_seconds <= 86400:
             raise ValueError('Invalid digest cache lifetime.')

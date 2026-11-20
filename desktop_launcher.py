@@ -250,7 +250,21 @@ class Desktop:
         live_scroll=ttk.Scrollbar(live_card,orient='vertical',command=self.live_list.yview)
         self.live_list.configure(yscrollcommand=live_scroll.set)
         live_scroll.pack(side='right',fill='y');self.live_list.pack(side='left',fill='both',expand=True)
-        self.live_list.bind('<<TreeviewSelect>>',lambda event:self.render_live_controls())
+        self.live_selection = None
+        self.live_list.bind('<<TreeviewSelect>>',self.select_live_match)
+        roster_panel = tk.Frame(self.live_panel,bg=PANEL,padx=18,pady=9)
+        roster_panel.pack(fill='x',pady=(8,0))
+        self.live_roster_status = tk.StringVar(value='Select a match to see its assigned players.')
+        tk.Label(roster_panel,textvariable=self.live_roster_status,bg=PANEL,fg=MUTED,anchor='w').pack(fill='x')
+        self.live_roster_table = ttk.Treeview(roster_panel,columns=('blue','red'),show='headings',
+                                             height=4,style='Live.Treeview')
+        for team in ('blue','red'):
+            self.live_roster_table.heading(team,text='Team '+team.title())
+            self.live_roster_table.column(team,width=160,minwidth=80)
+        roster_scroll=ttk.Scrollbar(roster_panel,orient='vertical',command=self.live_roster_table.yview)
+        self.live_roster_table.configure(yscrollcommand=roster_scroll.set)
+        roster_scroll.pack(side='right',fill='y')
+        self.live_roster_table.pack(side='left',fill='x',expand=True)
         live_actions=tk.Frame(self.live_panel,bg=BG);live_actions.pack(fill='x',pady=(14,0))
         self.spectate_button=self.button(live_actions,'Spectate',self.spectate_selected)
         self.spectate_button.pack(side='left',padx=(0,8))
@@ -686,6 +700,31 @@ class Desktop:
         self.live_refresh_button.configure(state='normal'if supported and not self.controls_busy else'disabled')
         if not supported and self.capabilities_loaded:self.live_status.set('Spectating is unavailable on this server version.')
 
+    def select_live_match(self,event):
+        self.render_live_controls()
+        self.render_live_roster()
+        selected = self.live_list.selection()
+        match_id = selected[0] if selected else None
+        if match_id != self.live_selection:
+            self.live_selection = match_id
+            if match_id:
+                self.refresh_live_matches(background=True)
+
+    def render_live_roster(self):
+        from itertools import zip_longest
+
+        selected = self.live_list.selection()
+        item = self.live_targets.get(selected[0], {}) if selected else {}
+        roster = item.get('roster')
+        self.live_roster_status.set('Assigned players' if roster else
+                                    'Roster unavailable' if selected else 'Select a match to see its assigned players.')
+        children = self.live_roster_table.get_children()
+        if children:
+            self.live_roster_table.delete(*children)
+        if roster:
+            for blue,red in zip_longest(roster['blue'],roster['red'],fillvalue=''):
+                self.live_roster_table.insert('',tk.END,values=(blue,red))
+
     def render_live_matches(self,matches):
         selected=self.live_list.selection()
         previous=selected[0]if selected else None
@@ -703,12 +742,15 @@ class Desktop:
         if self.watch_id is None:
             self.live_status.set('Select a match to watch.'if matches else'No spectator-enabled matches are live right now.')
         self.render_live_controls()
+        self.render_live_roster()
 
     def refresh_live_matches(self, *, background=False):
         if self.controls_busy or self.closing or self.caps.get('spectateEnabled')is not True:return
         if background and self.busy:return
         if self.current_panel!='live'and self.watch_id is None:return
         watch_id=self.watch_id
+        selected = self.live_list.selection()
+        roster_match_id = selected[0] if selected else None
         def work():
             stopped=False
             if watch_id is not None:
@@ -718,7 +760,8 @@ class Desktop:
                     else:self.lobby.release_spectator(watch_id)
                     stopped=True
                 else:self.lobby.spectator_target(watch_id)
-            return self.lobby.live_matches(),stopped
+            options = {'roster_match_id':roster_match_id} if roster_match_id else {}
+            return self.lobby.live_matches(**options),stopped
         def refreshed(value):
             matches,stopped=value
             if stopped and self.watch_id==watch_id:self.watch_id=None

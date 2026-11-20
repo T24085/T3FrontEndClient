@@ -42,6 +42,35 @@ class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
 
+    def test_selected_live_match_displays_and_refreshes_team_names(self):
+        root = tk.Tk()
+        root.withdraw()
+        app = Desktop(root, FakeLobby(), lambda _: FakeGame())
+        try:
+            first = dict(id='a'*32, label='Stonehenge', playerCount=3, playerCapacity=24,
+                         spectatorCount=0, spectatorCapacity=25, canSpectate=True,
+                         roster={'blue':['Blue A','Blue B'],'red':['Red A']})
+            second = dict(first, id='b'*32, roster={'blue':['Blue C'],'red':['Red B']})
+            app.render_live_matches([first, second])
+            app.live_list.selection_set(first['id'])
+            app.select_live_match(None)
+            table = app.live_roster_table
+            self.assertEqual([list(table.item(row, 'values')) for row in table.get_children()],
+                             [['Blue A','Red A'],['Blue B','']])
+            app.render_live_matches([dict(first, roster={'blue':['Blue B'],'red':['Red D']}), second])
+            self.assertEqual(app.live_list.selection(), (first['id'],))
+            self.assertEqual(table.item(table.get_children()[0], 'values'), ('Blue B','Red D'))
+            app.live_list.selection_set(second['id'])
+            app.select_live_match(None)
+            self.assertEqual(table.item(table.get_children()[0], 'values'), ('Blue C','Red B'))
+            legacy = {key:value for key,value in second.items() if key!='roster'}
+            app.render_live_matches([legacy])
+            self.assertEqual(app.live_roster_status.get(), 'Roster unavailable')
+            self.assertFalse(table.get_children())
+        finally:
+            app.close()
+            app.close_worker.join(2)
+
     def test_match_rules_controls_respect_map_and_leader(self):
         root = tk.Tk()
         root.withdraw()

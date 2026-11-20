@@ -102,18 +102,23 @@ end
 
 local function exclusion_boxes(values)
  local boxes={}
- if values==nil then return boxes end
- local count=ordered_count(values,16,'weather_exclusions_require_ordered_boxes')
+ if values==nil then return boxes,true end
+ local count=ordered_count(values,16,'weather_2026_exclusion_contract: ordered_boxes')
+ local legacy
  for i=1,count do
   local row=values[i]
-  assert(type(row)=='table' and finite(row.yaw),'weather_exclusion_requires_yaw')
-  local center=box_vector(row.center_cm,'weather_exclusion_requires_center_xyz')
-  local half=box_vector(row.half_cm,'weather_exclusion_requires_half_xyz')
-  assert(half.X>0 and half.Y>0 and half.Z>0,'weather_exclusion_requires_positive_half_extents')
+  assert(type(row)=='table' and finite(row.yaw),'weather_2026_exclusion_contract: requires_yaw')
+  local old=row.center_cm~=nil or row.half_cm~=nil
+  assert((legacy==nil or legacy==old) and (not old or (row.center==nil and row.half==nil)),
+         'weather_2026_exclusion_contract: inconsistent_box_fields')
+  legacy=old
+  local center=box_vector(old and row.center_cm or row.center,'weather_2026_exclusion_contract: center_xyz')
+  local half=box_vector(old and row.half_cm or row.half,'weather_2026_exclusion_contract: half_xyz')
+  assert(half.X>0 and half.Y>0 and half.Z>0,'weather_2026_exclusion_contract: positive_half_extents')
   local angle=math.rad(row.yaw%360)
   boxes[i]={center=center,half=half,axis={X=math.cos(angle),Y=math.sin(angle),Z=0}}
  end
- return boxes
+ return boxes,legacy
 end
 
 local function camera_fade(boxes,clouds,valid)
@@ -201,7 +206,7 @@ return function(env)
          (not lightingOnly and count>=1 and count<=64),'weather_2026_actor_contract')
   local key=descriptor.world..'|'..string.format('%x',world:GetAddress())
   if states[key]then return end
-  local boxes=exclusion_boxes(weather.exclusions)
+  local boxes,legacyBoxes=exclusion_boxes(weather.exclusions)
   assert(weather.fade_when_camera_inside==nil or type(weather.fade_when_camera_inside)=='boolean',
          'weather_camera_fade_requires_boolean')
   if lightingOnly then
@@ -256,7 +261,7 @@ return function(env)
   configure_lighting(weather.lighting,descriptor,world,valid)
   local parameters={}
   for i in ipairs(boxes)do
-   local prefix='WeatherBox'..i..'_'
+   local prefix='WeatherBox'..(legacyBoxes and i or i-1)..'_'
    parameters[i]={center=FName(prefix..'Center'),half=FName(prefix..'Half'),axis=FName(prefix..'Axis')}
   end
   for _,cloud in ipairs(clouds)do
@@ -264,6 +269,10 @@ return function(env)
    if enabled then
     local mesh=cloud.actor.StaticMeshComponent
     if tint then mesh:SetVectorParameterValueOnMaterials(FName('WeatherColor'),tint) end
+    if #boxes>0 and not legacyBoxes then
+     mesh:SetScalarParameterValueOnMaterials(FName('WeatherBoxCount'),#boxes)
+     if not weather.fade_when_camera_inside then mesh:SetScalarParameterValueOnMaterials(FName('WeatherOpacity'),1) end
+    end
     for i,box in ipairs(boxes)do
      local names=parameters[i]
      mesh:SetVectorParameterValueOnMaterials(names.center,box.center)

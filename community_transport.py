@@ -13,7 +13,8 @@ import threading
 
 from dynamic_destination import destination,isolated_source
 from community_maps import BY_ID, MAX_MAPS, valid_id, valid_label
-from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION
+from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION, LIVE_ROSTER_HEADER
+from player_names import display_name
 
 MAX_LOBBY_BOTS = 12
 DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True, 'fallDamage': False}
@@ -114,8 +115,10 @@ class CommunityClient:
     def request_headers(self):
         return {'Host': self.authority, 'Accept': 'application/json', CATALOG_HEADER: str(CATALOG_VERSION), 'X-T3-Map-Labels': '1'}
 
-    def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True):
+    def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True, live_roster=None):
         headers = self.request_headers()
+        if live_roster is not None:
+            headers[LIVE_ROSTER_HEADER] = live_roster
         method, body = 'GET', None
         if data is not None:
             method = 'POST'
@@ -275,15 +278,19 @@ class CommunityClient:
         if spectator:target['role']='spectator'
         return target
 
-    def live_matches(self):
+    def live_matches(self, *, roster_match_id=None):
+        if roster_match_id is not None and (not isinstance(roster_match_id, str) or
+                not re.fullmatch('[0-9a-f]{32}', roster_match_id)):
+            raise CommunityError('Invalid live match roster request.')
         with self.lock:
-            value=self._request('matches',use_lobby_token=False)
+            options = {'live_roster': roster_match_id} if roster_match_id is not None else {}
+            value=self._request('matches',use_lobby_token=False,**options)
             matches=value.get('matches')
             if not isinstance(matches,list):raise CommunityError('Invalid live match list.')
             seen=set();result=[]
             fields={'id','map','label','playerCount','playerCapacity','spectatorCount','spectatorCapacity','canSpectate'}
             for item in matches:
-                if (not isinstance(item,dict) or set(item)!=fields or not isinstance(item['id'],str)
+                if (not isinstance(item,dict) or not fields <= set(item) <= fields|{'roster'} or not isinstance(item['id'],str)
                         or re.fullmatch('[0-9a-f]{32}',item['id'])is None or item['id']in seen
                         or self.map_label(item['map']) is None or item['label']!=self.map_label(item['map'])
                         or type(item['canSpectate'])is not bool
@@ -291,6 +298,17 @@ class CommunityClient:
                                ('playerCount','playerCapacity','spectatorCount','spectatorCapacity'))
                         or item['playerCount']>item['playerCapacity']):
                     raise CommunityError('Invalid live match list.')
+                if 'roster' in item:
+                    roster = item['roster']
+                    if (item['id'] != roster_match_id or not isinstance(roster, dict) or set(roster) != {'blue','red'}
+                            or any(not isinstance(names,list) or len(names)>12 for names in roster.values())
+                            or sum(map(len,roster.values())) > item['playerCount']):
+                        raise CommunityError('Invalid live match roster.')
+                    try:
+                        item = dict(item, roster={team:[display_name(name) for name in names]
+                                                  for team,names in roster.items()})
+                    except ValueError as exc:
+                        raise CommunityError('Invalid live match roster.') from exc
                 seen.add(item['id']);result.append(dict(item))
             # _request's existing64KiB wire bound limits the whole projection.
             return result

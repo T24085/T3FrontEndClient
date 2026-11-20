@@ -95,6 +95,8 @@ def build_candidate(source, output):
         shutil.copyfile(original, target)
     shutil.copyfile(ROOT / 'client_entry.py', output / 'client.py')
     copy_spectator_runtime(manifest, output)
+    for name in ('lua/client.lua', 'lua/weather.lua', 'lua/damnation_water.lua'):
+        shutil.copyfile(ROOT/name, output/name)
     shutil.copyfile(ROOT / 'dynamic_destination.py', output / 'lib/dynamic_destination.py')
     for name in CANONICAL_HELPERS:
         shutil.copyfile(ROOT / name, output / name)

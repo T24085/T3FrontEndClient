@@ -160,6 +160,8 @@ def main():
     # stale generated CLI from its otherwise verified content source.
     shutil.copyfile(ROOT/'client_entry.py', OUTPUT/'client.py')
     copy_spectator_runtime(manifest, OUTPUT)
+    for name in ('lua/client.lua', 'lua/weather.lua', 'lua/damnation_water.lua'):
+        shutil.copyfile(ROOT/name, OUTPUT/name)
     shutil.copyfile(ROOT/'player_profile.py', OUTPUT/'player_profile.py')
     shutil.copyfile(PYTHON/'pythonw.exe',OUTPUT/'python/pythonw.exe')
     shutil.copytree(PYTHON/'Lib/tkinter',OUTPUT/'python/tkinter',ignore=shutil.ignore_patterns('__pycache__','*.pyc','test'))
