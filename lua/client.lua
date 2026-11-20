@@ -1083,8 +1083,9 @@ local releaseRadarRuntime=releaseRadarRuntimeFactory({valid=valid,report=report,
 
 local postMatchEscapeBound=false
 local observe_post_match_result
-local function bind_post_match_escape()
- if postMatchEscapeBound then return end
+local function bind_post_match_escape(gs)
+ if postMatchEscapeBound or not valid(gs) or gs:HasAuthority()
+  or gs.r_GameplayPhaseInfo.Phase.TagName:ToString()~='GamePhase.GameplayEndedPhase' then return end
  local path='/Game/UI/RallyHereUpdates/UI_Scene_Result_Frontier_RH_v2.UI_Scene_Result_Frontier_RH_v2_C'
  local menuClass='WidgetBlueprintGeneratedClass /Game/UI/RallyHereUpdates/Shared/Scenes/UI_Scene_Menu_RH_v2.UI_Scene_Menu_RH_v2_C'
  local menuHide='/Script/RallyHereStart.RHWidget:OnHide'
@@ -1128,9 +1129,10 @@ local function bind_post_match_escape()
   failed=true
   report('POST_MATCH_ESCAPE_ERROR|'..tostring(reason))
  end
- local returning=false
+ local returning,resultAcceptsEscape=false,false
  observe_post_match_result=function()
-  if returning or not active_result() then return end
+  resultAcceptsEscape=active_result()~=nil
+  if returning or not resultAcceptsEscape then return end
   returning=true
   report('POST_MATCH_SCOREBOARD_VISIBLE')
   ExecuteInGameThreadWithDelay(8000,function()
@@ -1139,7 +1141,7 @@ local function bind_post_match_escape()
   end)
  end
  local function on_escape()
-  if closing or pending or failed or stopped then return end
+  if not resultAcceptsEscape or closing or pending or failed or stopped then return end
   pending=true
   local queued,reason=pcall(ExecuteInGameThread,function()
    local ok,why=pcall(function()
@@ -1562,7 +1564,7 @@ local function client_tick(sys)
         if not ok then shockLanceVisualFailed=true;report('SHOCK_LANCE_CAMERA_EFFECTS_ERROR|'..tostring(why):sub(1,300)) end
     end
     ensure_flag_release_handoff(gs)
-    bind_post_match_escape()
+    bind_post_match_escape(gs)
     if observe_post_match_result then observe_post_match_result() end
     local plc=pc.PlayerLoadoutComponent;if not valid(plc) then return end
     local r=player_record(pc,ps)
