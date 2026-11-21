@@ -435,24 +435,97 @@ local function same_object(a,b)
     return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
 end
 
-local function prune_generator_icons(panel,world)
+local generatorIconClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_GeneratorIcon.WBP_Game_GeneratorIcon_C'
+local bindGeneratorsPath='/Game/UI/Components/Game/WBP_Game_ScoreBar_CTF.WBP_Game_ScoreBar_CTF_C:BindGenerators'
+local generatorIconRepairs={}
+
+local function replicated_generators(gs,world)
+    local generators=gs.r_Generators
+    if not generators then return end
+    local count=generators:GetArrayNum()
+    -- Wait for every weak reference and its team before touching either panel.
+    if count==0 or count>32 then return end
+    local teams={{},{}}
+    local keys={}
+    for i=1,count do
+        local weak=generators[i]
+        local actor=weak and weak:Get()
+        if not valid(actor) or not same_object(actor:GetWorld(),world) then return end
+        local team=actor.r_TeamId
+        if team~=1 and team~=2 then return end
+        local key=actor:GetAddress()
+        if not teams[team][key] then
+            teams[team][key]=true
+            keys[#keys+1]=team..':'..tostring(key)
+        end
+    end
+    table.sort(keys)
+    return teams,table.concat(keys,',')
+end
+
+local function inspect_generator_panel(panel,world,expected)
     if not valid(panel) then return end
     local count=panel:GetChildrenCount()
-    if count<2 or count>32 then return end
+    if count<0 or count>32 then return end
     local seen,duplicates={},{}
     for index=0,count-1 do
         local icon=panel:GetChildAt(index)
-        if valid(icon) and icon:GetClass():GetFullName()==
-                'WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_GeneratorIcon.WBP_Game_GeneratorIcon_C' then
+        if valid(icon) and icon:GetClass():GetFullName()==generatorIconClass then
             local generator=icon.CachedActor
             if valid(generator) and same_object(generator:GetWorld(),world) then
                 local key=generator:GetAddress()
-                if seen[key] then duplicates[#duplicates+1]=index end
-                seen[key]=true
+                if expected[key] then
+                    if seen[key] then duplicates[#duplicates+1]=index end
+                    seen[key]=true
+                end
             end
         end
     end
-    for index=#duplicates,1,-1 do panel:RemoveChildAt(duplicates[index]) end
+    for key in pairs(expected) do
+        if not seen[key] then return false end
+    end
+    return true,duplicates
+end
+
+local function refresh_generator_icons(widget,gs,world,team)
+    local teams,key=replicated_generators(gs,world)
+    if not teams then return end
+    local friendly,enemy=widget.FriendlyGenerators,widget.EnemyGenerators
+    local haveFriendly,friendlyDuplicates=inspect_generator_panel(friendly,world,teams[team])
+    local haveEnemy,enemyDuplicates=inspect_generator_panel(enemy,world,teams[3-team])
+    if haveFriendly==nil or haveEnemy==nil then return end
+    local address=widget:GetAddress()
+    if haveFriendly and haveEnemy then
+        for index=#friendlyDuplicates,1,-1 do friendly:RemoveChildAt(friendlyDuplicates[index]) end
+        for index=#enemyDuplicates,1,-1 do enemy:RemoveChildAt(enemyDuplicates[index]) end
+        generatorIconRepairs[address]=nil
+        return
+    end
+
+    local now=gs:GetServerWorldTimeSeconds()
+    local attempt=generatorIconRepairs[address]
+    if not attempt or attempt.key~=key then
+        attempt={key=key,nextAt=now+.5,tries=0}
+        generatorIconRepairs[address]=attempt
+    end
+    if now<attempt.nextAt or attempt.tries>=3 then return end
+    attempt.tries=attempt.tries+1
+    attempt.nextAt=now+1
+    local binding=StaticFindObject(bindGeneratorsPath)
+    if not valid(binding) or binding:GetFullName()~='Function '..bindGeneratorsPath then return end
+    local initialized=widget.bGeneratorsInitialized
+    if type(initialized)~='boolean' then return end
+
+    -- Let the shipped Blueprint create and bind the actual generator widgets.
+    -- Keep existing children until both sides have their full replicated roster.
+    local ok,why=pcall(function()
+        widget.bGeneratorsInitialized=false
+        widget:BindGenerators()
+    end)
+    if not ok then
+        widget.bGeneratorsInitialized=initialized
+        if attempt.tries==1 then report('CTF_GENERATOR_HUD_REBIND_FAILED|'..tostring(why)) end
+    end
 end
 
 local function refresh_ctf_score_bar(pc,ps,gs)
@@ -464,6 +537,7 @@ local function refresh_ctf_score_bar(pc,ps,gs)
         scoreBarWorld,scoreBarController=world,pc
         scoreBarScanDelay=0
         scoreBarReported=false
+        generatorIconRepairs={}
     end
     if scoreBarScanDelay==0 then
         scoreBars={}
@@ -494,8 +568,7 @@ local function refresh_ctf_score_bar(pc,ps,gs)
     local friendly,enemy=scores[team],scores[3-team]
     for _,widget in ipairs(scoreBars) do
         if valid(widget) and widget:IsVisible() then
-            prune_generator_icons(widget.FriendlyGenerators,world)
-            prune_generator_icons(widget.EnemyGenerators,world)
+            refresh_generator_icons(widget,gs,world,team)
             local updated=false
             local function sync_counter(score,fill,counter)
                 if score==nil or not valid(fill) or not valid(counter) or not valid(counter.ScoreText) then return end
