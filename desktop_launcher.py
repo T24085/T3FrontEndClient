@@ -83,6 +83,9 @@ class Desktop:
         self.map_retry_at = 0
         self.watch_id = None
         self.game_status = 'idle'
+        self.last_game_error = None
+        self.last_preparation_error = None
+        self.shown_game_error = None
         self.join_attempted_match = None
         self.current_panel = 'lobbies'
         self.live_targets = {}
@@ -434,13 +437,21 @@ class Desktop:
                     self.status.set(state.get('progress') or {'starting':'Opening game…','playing':'Game connected.','stopping':'Closing game…'}[state['status']])
                     if self.watch_id is not None:
                         self.live_status.set(state.get('progress') or {'starting':'Opening spectator view…','playing':'Watching match.','stopping':'Closing spectator view…'}[state['status']])
-                elif state['error']:
-                    self.status.set(state['error'])
+                elif state['error'] and state['error'] != self.last_game_error:
+                    message = state['error']
+                    if self.room and self.room.get('phase') == 'ready' and state.get('role', 'player') == 'player':
+                        message += ' Select Join game to retry.'
+                    self.shown_game_error = message
+                    self.status.set(message)
                 elif previous_status != self.game_status and state.get('progress'):
                     self.status.set(state['progress'])
+                self.last_game_error = state['error']
                 preparation=state.get('preparation')
                 if isinstance(preparation,dict):
-                    self.preparation.set(preparation.get('error') or preparation.get('progress') or '')
+                    error = preparation.get('error')
+                    if not error or error != self.last_preparation_error:
+                        self.preparation.set(error or preparation.get('progress') or '')
+                    self.last_preparation_error = error
             except Exception as exc: self.status.set(str(exc))
         self.maybe_auto_join()
         self.render_live_controls()
@@ -477,6 +488,7 @@ class Desktop:
         self.pending_map = (self.room['code'], matches[0])
         self.map_retry_count = 0
         self.map_retry_at = 0
+        self.clear_match_messages()
         self.status.set('Applying map selection…')
         self.render(self.room)
         self.flush_map_selection()
@@ -587,8 +599,18 @@ class Desktop:
             self.steam_lookup_at = 0
             self.refresh_steam_name()
 
+    def clear_match_messages(self):
+        if self.status.get() == self.shown_game_error:
+            self.status.set('')
+        if self.preparation.get() == self.last_preparation_error:
+            self.preparation.set('')
+
     def render(self, room):
-        if (self.room or {}).get('code') != (room or {}).get('code'):
+        previous, current = self.room or {}, room or {}
+        if ((previous.get('code'), previous.get('map'), previous.get('phase'))
+                != (current.get('code'), current.get('map'), current.get('phase'))):
+            self.clear_match_messages()
+        if previous.get('code') != current.get('code'):
             self.reset_copy_feedback()
         self.room = room
         if self.map_sync is not None and self.caps.get('mapSessionSync') == SESSION_VERSION:
@@ -696,7 +718,21 @@ class Desktop:
             if operation == 'leave' and self.game and self.game.snapshot()['status'] in ('starting','playing','stopping'):
                 self.game.stop()
             return self.lobby.action(operation,**data)
-        self.run_async(work,self.render)
+        messages = {
+            'start': 'Starting match…', 'stop': 'Stopping match…',
+            'reset': 'Setting up the lobby…', 'leave': 'Leaving lobby…',
+        }
+        if operation not in messages:
+            self.run_async(work, self.render)
+            return
+
+        def completed(room):
+            self.render(room)
+            self.status.set('Left lobby.' if operation == 'leave' else match_phase_text(room))
+
+        if self.run_async(work, completed):
+            self.clear_match_messages()
+            self.status.set(messages[operation])
 
     def move(self,team):
         player = self.selected_player()
@@ -771,6 +807,7 @@ class Desktop:
             self.status.set('Wait for the selected map to be confirmed.');return
         if self.watch_id is not None:
             self.status.set('Stop watching the current match first.');return
+        self.clear_match_messages()
         self.status.set('Checking the selected match…')
         selected_map = self.room['map']
         match = self.room.get('match')

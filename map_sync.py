@@ -84,9 +84,9 @@ def overlay(package, remote):
     if 'objectives' in fields:
         authored = map_objective_rows(remote['objectives'], selected)
         rows.update(authored)
-        bundled_objectives = {row['path']:row for row in package['files'] if row['path'] in authored}
-        sources.update({name: name if version == SESSION_VERSION and bundled_objectives.get(name) == row else None
-                        for name, row in authored.items()})
+        # Objectives are launch inputs pinned to the host revision. Cache them
+        # under that digest even when the archive carries identical bytes.
+        sources.update(dict.fromkeys(authored))
     return rows, sources, catalog, custom
 
 

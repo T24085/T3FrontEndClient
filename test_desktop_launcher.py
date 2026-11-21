@@ -454,6 +454,43 @@ class DesktopTest(unittest.TestCase):
             app.close()
             app.close_worker.join(2)
 
+    def test_previous_preparation_failure_does_not_return_after_map_change(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby, game = FakeLobby(), FakeGame()
+        app = Desktop(root, lobby, lambda _: game)
+        problem = 'Could not stage the old map.'
+        try:
+            app.render(lobby.room)
+            app.game = game
+            game.snapshot = Mock(return_value={
+                'status': 'failed', 'error': problem, 'run': None,
+                'preparation': {'error': problem},
+            })
+            if app.poll_handle is not None:
+                root.after_cancel(app.poll_handle)
+            app.poll()
+            self.assertEqual(app.status.get(), problem)
+            self.assertEqual(app.preparation.get(), problem)
+            app.render(dict(lobby.room, map='Rollercoaster'))
+            if app.poll_handle is not None:
+                root.after_cancel(app.poll_handle)
+            app.poll()
+            self.assertEqual(app.status.get(), '')
+            self.assertEqual(app.preparation.get(), '')
+
+            app.call_action('start')
+            self.assertEqual(app.status.get(), 'Starting match…')
+            game.snapshot.return_value = {'status':'failed','error':'Current map failed.','run':None,
+                                          'preparation':{'error':'Current map failed.'}}
+            if app.poll_handle is not None:
+                root.after_cancel(app.poll_handle)
+            app.poll()
+            self.assertIn('Current map failed.', app.status.get())
+            self.assertEqual(app.preparation.get(), 'Current map failed.')
+        finally:
+            app.close()
+
     def test_match_status_and_roster_use_utf8_punctuation(self):
         source = Path(__file__).with_name('desktop_launcher.py').read_text(encoding='utf-8')
         self.assertNotIn('\u00e2\u20ac', source)

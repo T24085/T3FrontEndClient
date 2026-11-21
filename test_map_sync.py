@@ -54,7 +54,12 @@ class MapSyncTest(unittest.TestCase):
     def test_per_map_sync_has_no_startup_request_and_reuses_only_shared_files(self):
         names = ('Stonehenge', 'Rollercoaster')
         prefix = 'content/Community/SharedFixture/'
-        data = {prefix + 'Shared.uasset': b'shared'}
+        objective_name = 'lua/Stonehenge/objectives.lua'
+        objective_bytes = b'return {}'
+        objective = row(objective_name, objective_bytes)
+        self.bundled['files'].append(objective)
+        self.manifest.write_text(json.dumps(self.bundled), encoding='utf-8')
+        data = {prefix + 'Shared.uasset': b'shared', objective_name: objective_bytes}
         files = {}
         for name in names:
             level = f'content/Maps/Community/{name}/Arena_{name}_P'
@@ -72,7 +77,8 @@ class MapSyncTest(unittest.TestCase):
         meta = []
         for name in names:
             document = {'format':3, 'id':name, 'contentHash':catalog[name], 'coreHash':core_hash,
-                        'sharedHash':shared_hash, 'definition':None, 'files':files[name], 'objectives':[], 'runtime':[]}
+                        'sharedHash':shared_hash, 'definition':None, 'files':files[name],
+                        'objectives':[objective] if name == names[0] else [], 'runtime':[]}
             docs[SESSION_MAP + name] = document
             meta.append({'id':name, 'label':name, 'gameTag':'Community', 'hasObjectives':False,
                          'bytes':sum(item['bytes'] for item in files[name]+shared), 'fileCount':4,
@@ -100,10 +106,14 @@ class MapSyncTest(unittest.TestCase):
             first = meta[0]
             version = self.sync.revision_for(first['id'], first['contentHash'], first['manifestHash'])
             self.assertEqual(requests, [SESSION_INDEX, SESSION_MAP+first['id'], SESSION_CORE, SESSION_SHARED+shared_hash])
-            self.assertEqual(set(transfers), {item['path'] for item in files[first['id']]+shared})
+            self.assertEqual(set(transfers), {item['path'] for item in files[first['id']]+shared} | {objective_name})
             entries, current, _, _ = load_overlay(self.root, version, self.bundled)
             self.assertEqual(current, {first['id']: first['contentHash']})
-            self.assertEqual(len(entries), 4)
+            _, bundled_source, cache = next(entry for entry in entries if entry[0]['path'] == objective_name)
+            self.assertIsNone(bundled_source)
+            self.assertEqual(cache.parent.name, 'session-map-downloads')
+            self.assertEqual(cache.read_bytes(), objective_bytes)
+            self.assertEqual(len(entries), 5)
             requests.clear()
             transfers.clear()
             self.assertEqual(self.sync.revision_for(first['id'], first['contentHash'], first['manifestHash']), version)
