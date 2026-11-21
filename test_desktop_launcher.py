@@ -1,7 +1,10 @@
 """Exercise desktop controls with a fake lobby and game, without network or game launch."""
 import time
 import gc
+from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
+from threading import Event
 import tkinter as tk
 import unittest
 from unittest.mock import patch
@@ -9,6 +12,7 @@ from unittest.mock import patch
 from desktop_launcher import Desktop
 from community_transport import CommunityError
 from community_maps import options
+from steam_identity import SteamIdentityError, read_local_name, save_local_name
 
 
 class FakeLobby:
@@ -321,11 +325,21 @@ class DesktopTest(unittest.TestCase):
         finally:
             app.close()
 
-    def test_steam_name_is_readonly_and_refreshed_before_lobby_entry(self):
+    def test_saved_steam_name_allows_lobby_entry_while_timeout_retries_in_background(self):
+        folder = self.enterContext(TemporaryDirectory())
+        settings = Path(folder)
+        save_local_name(settings/'steam-persona.json', 'Saved Pilot')
         root=tk.Tk();root.withdraw()
         lobby,game=FakeLobby(),FakeGame()
-        names=iter(('Initial Steam','Current Steam','Newest Steam'))
-        app=Desktop(root,lobby,lambda _:game,steam_name_loader=lambda:next(names))
+        release_probe = Event()
+        attempts = []
+        def probe():
+            attempts.append(True)
+            if len(attempts) == 1:
+                release_probe.wait(5)
+                raise SteamIdentityError('Steam name lookup timed out.', reason='timeout')
+            return 'Newest Steam'
+        app=Desktop(root,lobby,lambda _:game,steam_name_loader=probe,name_settings_dir=settings)
         def wait(predicate):
             end=time.monotonic()+5
             while time.monotonic()<end:
@@ -334,15 +348,61 @@ class DesktopTest(unittest.TestCase):
                 time.sleep(.02)
             self.fail('Steam name UI operation did not complete')
         try:
-            wait(lambda:not app.busy and app.name.get()=='Initial Steam')
+            wait(lambda:not app.busy and app.name.get()=='Saved Pilot')
             self.assertEqual(str(app.name_entry['state']),'readonly')
             app.create_button.invoke()
             wait(lambda:not app.busy and app.room is not None)
-            self.assertIn(('create','Current Steam'),lobby.calls)
+            self.assertIn(('create','Saved Pilot'),lobby.calls)
+            self.assertTrue(app.steam_lookup_running)
+            with self.assertLogs('desktop_launcher', level='WARNING') as logs:
+                release_probe.set()
+                wait(lambda:app.steam_retry_handle is not None)
+            self.assertIn('(timeout)', logs.output[0])
+            self.assertNotIn('timed out', app.status.get())
+            wait(lambda:app.name.get()=='Newest Steam')
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(read_local_name(settings/'steam-persona.json'), 'Newest Steam')
             app.render(None);app.code.set('abc234');app.join_button.invoke()
-            wait(lambda:not app.busy and app.name.get()=='Newest Steam')
+            wait(lambda:not app.busy and app.room is not None)
             self.assertIn(('join','ABC234','Newest Steam'),lobby.calls)
-        finally: app.close()
+        finally:
+            release_probe.set()
+            app.close()
+            app.close_worker.join(2)
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Warrior Name is in Windows Starter Settings.')
+    def test_warrior_name_setting_validates_persists_and_can_be_cleared(self):
+        settings = Path(self.enterContext(TemporaryDirectory()))
+        save_local_name(settings/'warrior-name.json', 'Saved Warrior')
+        save_local_name(settings/'steam-persona.json', 'Saved Persona')
+        root=tk.Tk();root.withdraw()
+        lobby=FakeLobby()
+        app=Desktop(root,lobby,lambda _:FakeGame(),steam_name_loader=lambda:'Live Persona',
+                    name_settings_dir=settings)
+        try:
+            self.assertFalse(app.steam_lookup_running)
+            self.assertEqual(app.player_name_for_action(), 'Saved Warrior')
+            app.show_settings()
+            widgets = app.settings_window.winfo_children()
+            entry = next(widget for widget in widgets if isinstance(widget, tk.Entry))
+            save = next(widget for widget in widgets if isinstance(widget, tk.Button)
+                        and widget.cget('text') == 'Save name')
+            entry.delete(0, tk.END)
+            entry.insert(0, 'A'*129)
+            save.invoke()
+            self.assertEqual(read_local_name(settings/'warrior-name.json'), 'Saved Warrior')
+            entry.delete(0, tk.END)
+            entry.insert(0, 'Píløt 🚀')
+            save.invoke()
+            self.assertEqual(app.player_name_for_action(), 'Píløt 🚀')
+            self.assertEqual(read_local_name(settings/'warrior-name.json'), 'Píløt 🚀')
+            entry.delete(0, tk.END)
+            save.invoke()
+            self.assertEqual(app.player_name_for_action(), 'Saved Persona')
+            self.assertEqual(read_local_name(settings/'warrior-name.json'), '')
+        finally:
+            app.close()
+            app.close_worker.join(2)
 
     def test_roster_refresh_preserves_selected_player_and_scroll(self):
         root=tk.Tk();root.attributes('-alpha',0);root.geometry('850x650')
