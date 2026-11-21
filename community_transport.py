@@ -13,7 +13,7 @@ import threading
 
 from dynamic_destination import destination,isolated_source
 from community_maps import BY_ID, MAX_MAPS, valid_id, valid_label
-from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION, LIVE_ROSTER_HEADER
+from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION, LIVE_ROSTER_HEADER, SESSION_HEADER, SESSION_VERSION, valid_sha
 from player_names import display_name
 
 MAX_LOBBY_BOTS = 12
@@ -113,7 +113,8 @@ class CommunityClient:
         return address in ipaddress.ip_network('100.64.0.0/10')
 
     def request_headers(self):
-        return {'Host': self.authority, 'Accept': 'application/json', CATALOG_HEADER: str(CATALOG_VERSION), 'X-T3-Map-Labels': '1'}
+        return {'Host': self.authority, 'Accept': 'application/json', CATALOG_HEADER: str(CATALOG_VERSION),
+                'X-T3-Map-Labels': '1', SESSION_HEADER: str(SESSION_VERSION)}
 
     def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True, live_roster=None):
         headers = self.request_headers()
@@ -177,7 +178,7 @@ class CommunityClient:
             return self.server_maps.get(name)
         return BY_ID[name].label if name in BY_ID else None
 
-    def create(self, name):
+    def create(self, name, *, map_id=None):
         with self.lock:
             if self.code is not None:
                 try:
@@ -185,7 +186,10 @@ class CommunityClient:
                 except CommunityError as exc:
                     if exc.code not in ('lobby_missing', 'session_invalid'):
                         raise
-            return self._remember(self._request('create', {'name':name}))
+            data = {'name':name}
+            if map_id is not None:
+                data['map'] = map_id
+            return self._remember(self._request('create', data))
 
     def join(self, code, name):
         with self.lock:
@@ -271,6 +275,10 @@ class CommunityClient:
         try:endpoint=destination(address+':'+str(port),self.policy,test_source=self.test_source)
         except ValueError as exc:raise CommunityError('The match endpoint is not approved by this client.')from exc
         target={'endpoint':endpoint,'map':name,'contentHash':fingerprint,'matchId':match_id}
+        if 'manifestHash' in match:
+            if not valid_sha(match['manifestHash']):
+                raise CommunityError('The server sent an invalid map manifest hash.')
+            target['manifestHash'] = match['manifestHash']
         if 'flagIndicators' in match:
             if type(match['flagIndicators']) is not bool:
                 raise CommunityError('Invalid flag indicator policy.')
@@ -290,7 +298,8 @@ class CommunityClient:
             seen=set();result=[]
             fields={'id','map','label','playerCount','playerCapacity','spectatorCount','spectatorCapacity','canSpectate'}
             for item in matches:
-                if (not isinstance(item,dict) or not fields <= set(item) <= fields|{'roster'} or not isinstance(item['id'],str)
+                if (not isinstance(item,dict) or not fields <= set(item) <= fields|{'roster','contentHash','manifestHash'} or not isinstance(item['id'],str)
+                        or any(key in item and not valid_sha(item[key]) for key in ('contentHash','manifestHash'))
                         or re.fullmatch('[0-9a-f]{32}',item['id'])is None or item['id']in seen
                         or self.map_label(item['map']) is None or item['label']!=self.map_label(item['map'])
                         or type(item['canSpectate'])is not bool

@@ -252,7 +252,7 @@ class CommunityGame:
                 revision = None
                 if self.map_sync is not None:
                     with self.lock:self.startup_phase='checking_maps'
-                    revision = self.map_sync.revision_for(target['map'], target['contentHash'])
+                    revision = self._map_revision(target)
                 with self.lock:self.startup_phase='preparing_client'
                 prepared=self._prepared_for_join(revision)
                 if prepared is None:
@@ -269,8 +269,23 @@ class CommunityGame:
                     self.startup_phase = 'checking_match'
                 self.lobby.public_map()
                 self.lobby.public_join(public_name)
+                prepared_target = target
                 target = target_loader()
                 self.public_round = target.get('publicRound')
+                if (prepared is not None and getattr(self.map_sync, 'session_enabled', False)
+                        and any(target.get(key) != prepared_target.get(key)
+                                for key in ('map', 'contentHash', 'manifestHash'))):
+                    self._retire_payload(Path(prepared['path']).parent)
+                    prepared = None
+                    with self.lock:self.startup_phase='checking_maps'
+                    revision = self._map_revision(target)
+                    with self.lock:self.startup_phase='preparing_client'
+                    prepared = self._prepared_for_join(revision)
+                    if prepared is None:
+                        with self.lock:self.status = 'stopped'
+                        return self.status
+                    if target_loader() != target:
+                        raise CommunityError('The public round changed while preparing its map. Please join again.')
                 if startup_contract is None and catalog.get(target['map']) != target['contentHash']:
                     raise CommunityError('Your map files do not match this match. Update the community client.')
             elif target_loader() != target:
@@ -316,6 +331,12 @@ class CommunityGame:
         finally:
             if prepared is not None:
                 self._retire_payload(Path(prepared['path']).parent)
+
+    def _map_revision(self, target):
+        args = (target['map'], target['contentHash'])
+        if 'manifestHash' in target:
+            return self.map_sync.revision_for(*args, target['manifestHash'])
+        return self.map_sync.revision_for(*args)
 
     def _session(self, artifacts):
         log = artifacts / 'owner/stdout.log'

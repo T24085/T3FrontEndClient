@@ -73,7 +73,11 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
  if workspace==source or source in workspace.parents:raise ValueError('Client workspace must be outside the original game.')
  package_path=root/'package-manifest.json'
  package_sha=digest(package_path)
- package_ids=_stamps(root,[entry['path']for entry in package['files']]+['package-manifest.json'])
+ selected_inputs = [entry['path'] for entry in package['files']
+                    if map_overlay is None or not entry['path'].startswith('content/')]
+ if map_overlay is not None:
+  selected_inputs.extend(bundled for _, bundled, _ in map_overlay if bundled is not None)
+ package_ids=_stamps(root,list(dict.fromkeys([*selected_inputs,'package-manifest.json'])))
  source_ids={entry['path']:list(original_identities[entry['path']])for entry in original['files']}
  _check_stamps(source,source_ids)
  run=workspace/('client-'+uuid.uuid4().hex[:12]);run.mkdir(exist_ok=False)

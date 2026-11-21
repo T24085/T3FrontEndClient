@@ -28,11 +28,12 @@ def identity(path):
 
 
 MAX_PACKAGE_FILES = 20_000
+MAX_MERGED_HOST_FILES = 65_536
 MAX_PACKAGE_MANIFEST_BYTES = 8 * 1024 * 1024
 
 class VerifiedFileCache:
     def __init__(self, *, max_entries=MAX_PACKAGE_FILES, max_age_seconds=86400, clock=time.monotonic):
-        if type(max_entries) is not int or not 1 <= max_entries <= MAX_PACKAGE_FILES:
+        if type(max_entries) is not int or not 1 <= max_entries <= MAX_MERGED_HOST_FILES:
             raise ValueError('Invalid digest cache entry bound.')
         if not 0 < max_age_seconds <= 86400:
             raise ValueError('Invalid digest cache lifetime.')
@@ -100,7 +101,7 @@ class VerifiedFileCache:
                     'scope': 'SHA256 reuse with fresh file identity guards; optional 24-hour immutable bulk receipts'}
 
 
-_PROCESS_CACHE = VerifiedFileCache()
+_PROCESS_CACHE = VerifiedFileCache(max_entries=MAX_MERGED_HOST_FILES)
 
 
 def enable_bulk_receipts(package, workspace):
@@ -128,7 +129,7 @@ def metrics():
     return _PROCESS_CACHE.snapshot()
 
 
-def verify_package(root, *, force=False, merge_manifest=None):
+def verify_package(root, *, force=False, merge_manifest=None, skip_cooked=False):
     """Verify every current manifest member; reuse only this process's hashes.
 
     Callers' content census/ownership checks remain separate. Manifest bytes are
@@ -145,7 +146,8 @@ def verify_package(root, *, force=False, merge_manifest=None):
     if merge_manifest is not None and isinstance(result, dict):
         result = merge_manifest(root, result)
     items = result.get('files') if isinstance(result, dict) else None
-    if not isinstance(items, list) or not 1 <= len(items) <= MAX_PACKAGE_FILES:
+    limit = MAX_MERGED_HOST_FILES if merge_manifest is not None else MAX_PACKAGE_FILES
+    if not isinstance(items, list) or not 1 <= len(items) <= limit:
         raise ValueError('Invalid package inventory.')
     seen = set()
     for item in items:
@@ -162,6 +164,8 @@ def verify_package(root, *, force=False, merge_manifest=None):
         if (type(size) is not int or size < 0 or not isinstance(expected, str)
                 or re.fullmatch('[0-9a-f]{64}', expected) is None):
             raise ValueError('Invalid package member digest.')
+        if skip_cooked and name.startswith('content/'):
+            continue  # Session staging verifies the selected cooked assets against their map manifest.
         path = root.joinpath(*rel.parts).resolve(strict=True)
         if root not in path.parents or identity(path)[2] != size:
             raise ValueError('Missing, escaped or changed package file: ' + name)

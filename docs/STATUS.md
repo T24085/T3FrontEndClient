@@ -1,3 +1,16 @@
+# Per-session map downloads
+
+Starter connects without checking or downloading map files at startup. It
+downloads the chosen map in the lobby and verifies that map before joining or
+spectating. Server Browser contains Create lobby and the initial map picker.
+The Maps panel shows sizes, versions and local status, and can download,
+update or remove cached maps. Removing a map retains shared files used by
+other cached maps and any files bundled in the Starter archive.
+
+Older hosts still work through the existing catalog API when entering a
+match. The per-map feature requires the paired backend. The production
+deployment and native gameplay check are pending.
+
 # Private-match fall damage
 
 Starter shows **Fall damage** beside **Flag indicators** when a host

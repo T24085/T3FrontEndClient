@@ -220,7 +220,13 @@ def main():
         package=json.loads((ROOT/'package-manifest.json').read_text())
     else:
         startup_progress('verifying_package')
-        with startup.phase('package-verification'):package=verify_package()
+        with startup.phase('package-verification'):
+            from map_sync import has_session_revision
+            if has_session_revision(workspace, args.map_revision):
+                from verified_file_cache import verify_package as verify_client_package
+                package = verify_client_package(ROOT, skip_cooked=True)
+            else:
+                package = verify_package()
         startup_progress('verifying_game')
         with startup.phase('original-verification'):
             manifest,identities,verification=verify_game(source,workspace,args.rehash)

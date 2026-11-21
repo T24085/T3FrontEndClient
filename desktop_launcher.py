@@ -13,7 +13,7 @@ from community_game import CommunityGame
 from startup_paths import installation_options
 from community_transport import CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES, MAX_LOBBY_BOTS
 from community_maps import BY_ID, options, read_options, LEGACY_MAPS
-from map_sync_contract import CATALOG_VERSION
+from map_sync_contract import CATALOG_VERSION, SESSION_VERSION, valid_sha
 
 ROOT = Path(__file__).resolve().parent
 CLIENT_PACKAGE = ROOT if (ROOT / 'connection-policy.json').is_file() else ROOT / 'dynamic-client-development'
@@ -59,6 +59,8 @@ class Desktop:
         self.root, self.lobby, self.game_factory = root, lobby, game_factory
         self.steam_name_loader = steam_name_loader
         self.map_sync = map_sync
+        self.maps_panel = None
+        self.lobby_map_target = None
         self.game = None
         self.room = None
         self.pending_map = None
@@ -129,8 +131,10 @@ class Desktop:
             self.label(side, 'COMMUNITY STARTER', 9, color=ACCENT, bg='#0d1927').pack(anchor='w', padx=26, pady=(4, 32))
         self.lobbies_nav=self.button(side,'Lobbies',lambda:self.show_panel('lobbies'),False)
         self.lobbies_nav.pack(fill='x',padx=18,pady=(0,6))
-        self.live_nav=self.button(side,'Live matches',lambda:self.show_panel('live'),False)
+        self.live_nav=self.button(side,'Server Browser',lambda:self.show_panel('live'),False)
         self.live_nav.pack(fill='x',padx=18)
+        if self.map_sync is not None:
+            self.button(side, 'Maps', lambda: self.show_panel('maps'), False).pack(fill='x', padx=18, pady=(6, 0))
         if server_access is not None:
             from server_access import show_setup
             self.access_button = self.button(side, 'Set up server access', lambda: show_setup(self, server_access), False)
@@ -142,6 +146,7 @@ class Desktop:
             self.map_status = tk.StringVar(value='')
             tk.Label(side,textvariable=self.map_status,bg='#0d1927',fg=MUTED,font=('Segoe UI',10),
                      anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
+            self.map_progress = ttk.Progressbar(side, mode='determinate')
         if sys.platform == 'win32':
             self.button(side, 'Settings', self.show_settings, False).pack(
                 side='bottom', fill='x', padx=18, pady=(8, 14))
@@ -158,8 +163,6 @@ class Desktop:
         self.code_entry = tk.Entry(entry,textvariable=self.code,font=('Segoe UI',12),bg='#20374a',fg=TEXT,insertbackground=TEXT,relief='flat')
         self.code_entry.grid(row=1,column=1,sticky='ew',ipady=7,padx=(12,0),pady=(4,8))
         entry.columnconfigure(0,weight=1);entry.columnconfigure(1,weight=1)
-        self.create_button = self.button(entry,'Create lobby',self.create)
-        self.create_button.grid(row=2,column=0,sticky='w')
         self.join_button = self.button(entry,'Join lobby',self.join,False)
         self.join_button.grid(row=2,column=1,sticky='w',padx=(12,0))
         card = tk.Frame(main,bg=PANEL,padx=18,pady=14)
@@ -241,11 +244,21 @@ class Desktop:
         self.leave_button = self.button(actions,'Leave',lambda:self.call_action('leave'),False);self.leave_button.pack(side='left')
         tk.Label(main,textvariable=self.status,bg=BG,fg=MUTED,font=('Segoe UI',10),anchor='w',wraplength=700).pack(side='bottom',before=actions,fill='x',pady=(12,0))
         self.live_panel=tk.Frame(root,bg=BG)
-        self.label(self.live_panel,'Watch live matches.',27,True).pack(anchor='w')
+        self.label(self.live_panel,'Server Browser',27,True).pack(anchor='w')
         self.live_summary=self.label(self.live_panel,'Left click for next player, right click for previous. F7 for first person, F8 for chase, or middle click to switch views.',
                    11,color=MUTED)
         self.live_summary.configure(wraplength=500,justify='left')
         self.live_summary.pack(anchor='w',pady=(4,18))
+        create_card = tk.Frame(self.live_panel, bg=PANEL, padx=14, pady=12)
+        create_card.pack(fill='x', pady=(0, 12))
+        self.create_map_name = tk.StringVar()
+        self.browser_name = tk.Entry(create_card, textvariable=self.name, width=16, bg='#20374a',
+                                     fg=TEXT, insertbackground=TEXT, relief='flat')
+        self.browser_name.pack(side='left', ipady=6, padx=(0, 8))
+        self.create_map = ttk.Combobox(create_card, textvariable=self.create_map_name, state='disabled')
+        self.create_map.pack(side='left', fill='x', expand=True, padx=(0, 8))
+        self.create_button = self.button(create_card, 'Create lobby', self.create)
+        self.create_button.pack(side='right')
         live_card=tk.Frame(self.live_panel,bg=PANEL,padx=18,pady=18)
         live_card.pack(fill='both',expand=True)
         self.live_list=ttk.Treeview(live_card,columns=('match','map','players','spectators'),show='headings',height=10,selectmode='browse',style='Live.Treeview')
@@ -278,6 +291,8 @@ class Desktop:
         self.live_refresh_button.pack(side='left')
         tk.Label(self.live_panel,textvariable=self.live_status,bg=BG,fg=MUTED,font=('Segoe UI',10),
                  anchor='w',justify='left',wraplength=650).pack(fill='x',pady=(12,0))
+        if self.map_sync is not None:
+            self.build_maps_panel()
         self.render_live_controls()
         self.render(None)
         if steam_name_loader:
@@ -342,6 +357,13 @@ class Desktop:
         if self.closing: return
         if self.map_sync is not None:
             self.map_status.set(self.map_sync.status)
+            progress = self.map_sync.progress
+            if progress is None:
+                self.map_progress.pack_forget()
+            else:
+                self.map_progress.configure(value=progress[0], maximum=progress[1])
+                if not self.map_progress.winfo_manager():
+                    self.map_progress.pack(side='bottom', fill='x', padx=26, pady=(0, 5))
         try:
             while True:
                 self.access_messages.get_nowait()()
@@ -404,20 +426,28 @@ class Desktop:
             except Exception as exc: self.status.set(str(exc))
         self.maybe_auto_join()
         self.render_live_controls()
+        if self.current_panel == 'maps':
+            self.render_map_controls()
         if not self.closing: self.poll_handle=self.root.after(150,self.poll)
 
     def set_capabilities(self, caps):
         self.caps = caps
         self.capabilities_loaded = True
         if self.map_sync is not None:
-            self.map_sync.start(caps.get('mapFileSync'))
+            self.map_sync.start(caps.get('mapFileSync'), session_version=caps.get('mapSessionSync'))
         self.status.set('Community service connected.')
         self.render(self.room)
         self.render_live_controls()
         if self.room is None and caps.get('lobbyResumeEnabled') is True:
-            self.run_async(self.lobby.resume, self.render)
+            def resumed(room):
+                self.render(room)
+                if self.current_panel == 'maps':
+                    self.refresh_maps()
+            self.run_async(self.lobby.resume, resumed)
         elif self.current_panel=='live':
             self.refresh_live_matches()
+        elif self.current_panel == 'maps':
+            self.refresh_maps()
 
     def choose_map(self):
         selected=self.map_name.get()
@@ -469,6 +499,14 @@ class Desktop:
         if (self.room or {}).get('code') != (room or {}).get('code'):
             self.reset_copy_feedback()
         self.room = room
+        if self.map_sync is not None and self.caps.get('mapSessionSync') == SESSION_VERSION:
+            target = None
+            if (room and room.get('phase') in ('setup', 'starting', 'ready')
+                    and valid_sha(room.get('contentHash')) and valid_sha(room.get('manifestHash'))):
+                target = (room['map'], room['contentHash'], room['manifestHash'])
+            if target != self.lobby_map_target:
+                self.lobby_map_target = target
+                self.map_sync.prefetch(target)
         in_room = room is not None
         self.copy_code_button.configure(state='normal' if in_room else 'disabled')
         phase = room['phase'] if in_room else None
@@ -484,6 +522,9 @@ class Desktop:
         for widget in (self.name_entry,self.code_entry,self.create_button,self.join_button): widget.configure(state='disabled' if in_room or self.controls_busy else 'normal')
         if self.steam_name_loader and not in_room and not self.controls_busy:
             self.name_entry.configure(state='readonly', readonlybackground='#20374a')
+        self.browser_name.configure(state=('disabled' if in_room or self.controls_busy else
+                                           'readonly' if self.steam_name_loader else 'normal'),
+                                    readonlybackground='#20374a')
         self.room_heading.set('Lobby  '+room['code'] if in_room else 'Not in a lobby')
         self.phase.set(match_phase_text(room))
         available=room.get('availableMaps') if in_room else self.caps.get('maps')
@@ -505,6 +546,11 @@ class Desktop:
             self.status.set('Unsupported server map catalog. Update the community client.')
             return
         self.map_options=available
+        self.create_map.configure(values=tuple(sorted(labels.values(), key=str.casefold)), height=min(18, len(labels)),
+                                  state='readonly' if not in_room and not self.controls_busy
+                                  and self.caps.get('mapSessionSync') == SESSION_VERSION else 'disabled')
+        if self.create_map_name.get() not in labels.values():
+            self.create_map_name.set(next(iter(labels.values()), ''))
         self.map_combo.configure(values=tuple(item['label'] for item in available),height=min(18,len(available)),state='readonly' if setup and leader else 'disabled')
         if in_room:
             if self.pending_map and self.pending_map[1] not in labels:
@@ -523,7 +569,7 @@ class Desktop:
         self.leave_button.configure(state='normal' if in_room and not self.controls_busy else 'disabled')
         # Preparation has no match endpoint or player profile. Start it as soon
         # as the service confirms support, while the player is choosing a lobby.
-        if self.capabilities_loaded and self.caps.get('gameClientReady'):
+        if self.capabilities_loaded and self.caps.get('gameClientReady') and self.map_sync is None:
             try:
                 if not self.game:self.game=self.game_factory(self.lobby)
                 prepare=getattr(self.game,'prepare',None)
@@ -532,11 +578,18 @@ class Desktop:
                 self.preparation.set('Game preparation: '+str(exc))
 
     def create(self):
+        def created(room):
+            self.render(room)
+            self.show_panel('lobbies')
+        selected = next((item['id'] for item in self.map_options if item['label'] == self.create_map_name.get()), None)
+        options = {'map_id': selected} if selected and self.caps.get('mapSessionSync') == SESSION_VERSION else {}
+        def create(name):
+            return self.lobby.create(name, **options)
         if self.steam_name_loader:
-            self.enter_with_steam(lambda name:self.lobby.create(name))
+            self.enter_with_steam(create, created)
         else:
             name = self.name.get()
-            self.run_async(lambda:self.lobby.create(name),self.render)
+            self.run_async(lambda: create(name), created)
 
     def join(self):
         code, name = self.code.get().strip().upper(), self.name.get()
@@ -545,14 +598,14 @@ class Desktop:
         else:
             self.run_async(lambda:self.lobby.join(code,name),self.render)
 
-    def enter_with_steam(self, operation):
+    def enter_with_steam(self, operation, success=None):
         def work():
             name=self.steam_name_loader()
             return name,operation(name)
         def entered(value):
             name,room=value
             self.name.set(name)
-            self.render(room)
+            (success or self.render)(room)
             if not self.capabilities_loaded:
                 self.run_async(self.lobby.capabilities, self.set_capabilities)
         self.run_async(work,entered)
@@ -688,10 +741,106 @@ class Desktop:
         if self.closing:return
         self.current_panel=name
         self.lobby_panel.pack_forget();self.live_panel.pack_forget()
-        panel=self.live_panel if name=='live'else self.lobby_panel
+        if self.maps_panel is not None:
+            self.maps_panel.pack_forget()
+        panel = self.maps_panel if name == 'maps' else self.live_panel if name == 'live' else self.lobby_panel
         panel.pack(side='left',fill='both',expand=True,padx=32,pady=28)
         self.render_live_controls()
         if name=='live':self.refresh_live_matches()
+        if name=='maps':self.refresh_maps()
+
+    def build_maps_panel(self):
+        self.maps_panel = panel = tk.Frame(self.root, bg=BG)
+        self.label(panel, 'Maps', 27, True).pack(anchor='w')
+        table = tk.Frame(panel, bg=PANEL, padx=12, pady=12)
+        table.pack(fill='both', expand=True, pady=(14, 12))
+        columns = (('name', 'Map', 165), ('game', 'Game', 62), ('size', 'Size', 72),
+                   ('version', 'Version', 78), ('status', 'Local status', 112))
+        self.maps_table = ttk.Treeview(table, columns=tuple(key for key, _, _ in columns),
+                                       show='headings', style='Live.Treeview', selectmode='browse')
+        for key, title, width in columns:
+            self.maps_table.heading(key, text=title)
+            self.maps_table.column(key, width=width, minwidth=width-12)
+        scrollbar = ttk.Scrollbar(table, orient='vertical', command=self.maps_table.yview)
+        self.maps_table.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right', fill='y')
+        self.maps_table.pack(side='left', fill='both', expand=True)
+        self.maps_table.bind('<<TreeviewSelect>>', lambda _event: self.render_map_controls())
+        self.map_rows = {}
+        buttons = tk.Frame(panel, bg=BG)
+        buttons.pack(fill='x')
+        self.map_download = self.button(buttons, 'Download', lambda: self.manage_map(False))
+        self.map_download.pack(side='left', padx=(0, 8))
+        self.map_remove = self.button(buttons, 'Remove download', lambda: self.manage_map(True), False)
+        self.map_remove.pack(side='left', padx=(0, 8))
+        self.map_refresh = self.button(buttons, 'Refresh', self.refresh_maps, False)
+        self.map_refresh.pack(side='left')
+        self.maps_notice = tk.StringVar()
+        tk.Label(panel, textvariable=self.maps_notice, bg=BG, fg=MUTED, wraplength=530,
+                 anchor='w', justify='left').pack(fill='x', pady=(10, 0))
+
+    def selected_download(self):
+        selection = self.maps_table.selection()
+        return self.map_rows.get(selection[0]) if selection else None
+
+    def render_map_controls(self):
+        row = self.selected_download()
+        enabled = self.map_sync.session_enabled and not self.controls_busy
+        active = self.game_status not in ('idle', 'stopped', 'finished', 'failed')
+        self.map_refresh.configure(state='normal' if enabled else 'disabled')
+        self.map_download.configure(text='Update' if row and row['state'] == 'Update available' else 'Download',
+                                    state='normal' if enabled and row and row['state'] != 'Downloaded' else 'disabled')
+        self.map_remove.configure(state='normal' if enabled and row and row['removable'] and not active else 'disabled')
+
+    def load_map_rows(self, operation=None):
+        if not self.map_sync.session_enabled:
+            self.maps_notice.set('Per-map downloads are unavailable on this server.')
+            self.render_map_controls()
+            return
+        self.maps_notice.set('Checking map downloads…')
+
+        def work():
+            try:
+                if operation is not None:
+                    operation()
+                return self.map_sync.local_maps(self.map_sync.map_index()), None
+            except (CommunityError, ValueError, OSError) as exc:
+                return None, str(exc)
+
+        def loaded(result):
+            rows, error = result
+            if error is not None:
+                self.maps_notice.set(error)
+                self.render_map_controls()
+                return
+            selected = self.maps_table.selection()
+            self.map_rows = {row['id']: row for row in rows}
+            self.maps_table.delete(*self.maps_table.get_children())
+            for row in rows:
+                self.maps_table.insert('', 'end', iid=row['id'],
+                                       values=(row['label'], row['gameTag'], f"{row['bytes']/1024**2:,.1f} MiB",
+                                               row['manifestHash'][:8], row['state']))
+            if selected and selected[0] in self.map_rows:
+                self.maps_table.selection_set(selected[0])
+            self.maps_notice.set('')
+            self.render_map_controls()
+
+        self.run_async(work, loaded)
+        self.render_map_controls()
+
+    def refresh_maps(self):
+        self.load_map_rows()
+
+    def manage_map(self, remove):
+        row = self.selected_download()
+        if row is None or self.controls_busy:
+            return
+        if remove:
+            if not row['removable'] or self.game_status not in ('idle', 'stopped', 'finished', 'failed'):
+                return
+            self.load_map_rows(lambda: self.map_sync.remove_map(row['id']))
+        elif row['state'] != 'Downloaded':
+            self.load_map_rows(lambda: self.map_sync.sync_map(row['id'], row['contentHash'], row['manifestHash']))
 
     def show_settings(self):
         if self.settings_window is not None and self.settings_window.winfo_exists():
