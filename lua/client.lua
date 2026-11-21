@@ -59,13 +59,30 @@ local configure_weather=assert(loadfile(@@SNOWBLIND_WEATHER@@))()({valid=valid,r
 local configure_base_lighting=(function()
  local current
  local tags
+ local function blink_interval(actor)
+  local interval=actor:ActorHasTag(FName('CwBlink')) and .5 or nil
+  local configured
+  local names=actor.Tags
+  if names then
+   for i=1,names:GetArrayNum() do
+    local tag=names[i]
+    local name=type(tag)=='string' and tag or tag:ToString()
+    local ms=tonumber(name:lower():match('^cwblink_(%d+)$'))
+    if ms and ms>0 and ms<=60000 then
+     if configured then return interval end
+     configured=ms/1000
+    end
+   end
+  end
+  return configured or interval
+ end
  local function same_world(actor,world)
   if not valid(actor) then return false end
   local own=actor:GetWorld()
   return valid(own) and own:GetAddress()==world:GetAddress()
  end
  local function scan(gs,world)
-  local teams={{normal={},alarm={}},{normal={},alarm={}}}
+  local teams={{normal={},alarm={},blinking={}},{normal={},alarm={},blinking={}}}
   local prefix=gs:GetFullName():match(' (/Game/.+:)PersistentLevel%.')
   if not prefix then return teams,false end
   for _,row in pairs(mapDefinitions) do
@@ -83,9 +100,15 @@ local configure_base_lighting=(function()
       group=match
      end
     end
-    if group and valid(actor.LightComponent) then
-     local set=teams[group[2]][group[3]]
-     set[#set+1]=actor
+    if group then
+     local team=teams[group[2]]
+     local half=group[3]=='alarm' and blink_interval(actor)
+     if half then
+      team.blinking[#team.blinking+1]={actor=actor,half=half}
+     else
+      local set=team[group[3]]
+      set[#set+1]=actor
+     end
      any=true
     end
    end
@@ -115,13 +138,14 @@ local configure_base_lighting=(function()
   end
   return {totals[1]==0 or online[1],totals[2]==0 or online[2]}
  end
+ local function set_visible(actor,world,visible)
+  if not same_world(actor,world) then return end
+  actor:SetActorHiddenInGame(not visible)
+  local light=actor.LightComponent
+  if valid(light) then light:SetVisibility(visible,true) end
+ end
  local function show(set,world,visible)
-  for _,actor in ipairs(set) do
-   if same_world(actor,world) and valid(actor.LightComponent) then
-    actor:SetActorHiddenInGame(not visible)
-    actor.LightComponent:SetVisibility(visible,true)
-   end
-  end
+  for _,actor in ipairs(set) do set_visible(actor,world,visible) end
  end
  return function(gs)
   local world=gs:GetWorld()
@@ -136,11 +160,28 @@ local configure_base_lighting=(function()
   if not states then return end
   for team,lights in ipairs(current.teams) do
    local powered=states[team]
-   if lights.powered~=powered and (#lights.normal>0 or #lights.alarm>0) then
+   if lights.powered~=powered and (#lights.normal>0 or #lights.alarm>0 or #lights.blinking>0) then
     show(lights.normal,world,powered)
     show(lights.alarm,world,not powered)
     lights.powered=powered
+    if #lights.blinking>0 then
+     lights.blink_started=not powered and gs:GetServerWorldTimeSeconds() or nil
+     for _,alarm in ipairs(lights.blinking) do
+      alarm.visible=not powered
+      set_visible(alarm.actor,world,alarm.visible)
+     end
+    end
     report('BASE_LIGHTING|team='..team..'|powered='..tostring(powered))
+   end
+   if not powered and lights.blink_started then
+    local elapsed=math.max(0,gs:GetServerWorldTimeSeconds()-lights.blink_started)
+    for _,alarm in ipairs(lights.blinking) do
+     local visible=math.floor(elapsed/alarm.half)%2==0
+     if alarm.visible~=visible then
+      set_visible(alarm.actor,world,visible)
+      alarm.visible=visible
+     end
+    end
    end
   end
  end
