@@ -1,4 +1,4 @@
-Tribes Rivals: Clan Wars (community mod)
+Tribes 3 Mod Community Edition: Phoenix Rising
 
 Extract the entire ZIP into a permanent folder before launching.
 Both launchers use the bundled maps in "Client Files". Keep the folder beside them.

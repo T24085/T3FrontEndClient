@@ -1,14 +1,17 @@
-"""Apply Clan Wars branding around the signed Direct Starter."""
+"""Apply the Phoenix Rising title to older bundled Direct clients."""
 from pathlib import Path
 import tkinter as tk
 
 
-TITLE = 'Tribes Rivals: Clan Wars (community mod)'
+TITLE = 'Tribes 3 Mod Community Edition: Phoenix Rising'
 
 
 def launch(root, *, on_ready):
     import desktop_launcher
     from direct_client import main
+
+    if getattr(desktop_launcher, 'APP_TITLE', None) == TITLE:
+        return main(root, on_ready=on_ready)
 
     base_desktop = desktop_launcher.Desktop
 
@@ -22,12 +25,11 @@ def launch(root, *, on_ready):
             for label in self.sidebar.winfo_children():
                 if not isinstance(label, tk.Label):
                     continue
-                if label.cget('text') == 'TRIBES 3':
-                    self.clan_wars_logo = icon.subsample(8)
-                    label.configure(text='Clan Wars', image=self.clan_wars_logo, compound='left',
+                if label.cget('text') in ('TRIBES 3', 'Clan Wars'):
+                    label.configure(text='Phoenix Rising', image='',
                                     font=('Segoe UI', 18, 'bold'))
-                elif label.cget('text') == 'COMMUNITY STARTER':
-                    label.configure(text='TRIBES RIVALS  \u00b7  COMMUNITY MOD', wraplength=165, justify='left')
+                elif label.cget('text') in ('COMMUNITY STARTER', 'TRIBES RIVALS  \u00b7  COMMUNITY MOD'):
+                    label.configure(text='Tribes 3 Mod Community Edition', wraplength=165, justify='left')
 
     desktop_launcher.Desktop = ClanWarsDesktop
     try:

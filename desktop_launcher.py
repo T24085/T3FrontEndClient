@@ -1,4 +1,8 @@
 """Development-only Community Starter lobby and owned game launcher."""
+from array import array
+from operator import itemgetter
+import base64
+import tempfile
 import argparse
 import json
 import logging
@@ -20,7 +24,148 @@ from steam_identity import SteamIdentityError, read_local_name, save_local_name
 
 ROOT = Path(__file__).resolve().parent
 CLIENT_PACKAGE = ROOT if (ROOT / 'connection-policy.json').is_file() else ROOT / 'dynamic-client-development'
+APP_TITLE = 'Tribes 3 Mod Community Edition: Phoenix Rising'
+TEAM_NAMES = {'blue': 'Children of The Phoenix', 'red': 'Diamond Sword'}
 BG, PANEL, TEXT, MUTED, ACCENT = '#0a111b', '#132335', '#eff7ff', '#9fb3c6', '#4be4c1'
+
+
+# The signed updater distributes inventoried modules. Its build embeds the artwork here.
+PHOENIX_ART = {}
+
+
+def art_bytes(name):
+    if name in PHOENIX_ART:
+        return base64.b85decode(PHOENIX_ART[name])
+    return (ROOT / 'branding' / name).read_bytes()
+
+
+def art_photo(root, name):
+    return tk.PhotoImage(master=root, data=art_bytes(name), format='png')
+
+
+def set_phoenix_icon(root, icon):
+    root.iconphoto(True, icon)
+    if sys.platform == 'win32':
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'phoenix.ico'
+            path.write_bytes(art_bytes('phoenix.ico'))
+            root.iconbitmap(str(path))
+
+
+class PhoenixBackdrop:
+    """Paint matching portions of one cover-scaled image into Tk's opaque frames."""
+    def __init__(self, root):
+        self.root = root
+        image = art_photo(root, 'phoenix-world.png')
+        rgb = root.tk.call(str(image), 'data', '-format', 'ppm').split(b'\n', 3)[3]
+        packed = bytearray(image.width() * image.height() * 4)
+        for channel in range(3):
+            packed[channel::4] = rgb[channel::3]
+        pixels = array('I')
+        pixels.frombytes(packed)
+        self.source = [pixels[i:i+image.width()] for i in range(0, len(pixels), image.width())]
+        self.layers = {}
+        self.regions = {}
+        self.rows = []
+        self.size = None
+        self.pending = None
+        self.closed = False
+        self.attach(root)
+        root.bind('<Configure>', self.changed, add='+')
+        root.bind('<Map>', self.changed, add='+')
+        root.bind('<Destroy>', self.destroyed, add='+')
+
+    def attach(self, frame, tint=0):
+        image = tk.Label(frame, bd=0, highlightthickness=0, anchor='nw', takefocus=False, bg=BG)
+        image.place(x=0, y=0, relwidth=1, relheight=1, bordermode='outside')
+        image.lower()
+        self.layers[frame] = (image, tint, None)
+
+    def logo(self, label, emblem):
+        self.layers[label] = (label, .80, emblem)
+
+    def canvas(self, widget, item):
+        self.layers[widget] = (widget, 0, item)
+
+    def changed(self, event):
+        if self.closed:
+            return
+        widget = event.widget
+        # Public CTF and Armor are supplied by the Direct client after Desktop starts.
+        if isinstance(widget, tk.Frame) and widget.master is self.root and widget not in self.layers:
+            self.attach(widget, .60)
+        if widget in self.layers and self.pending is None:
+            self.pending = self.root.after_idle(self.paint)
+
+    def scale(self, width, height):
+        sw, sh = len(self.source[0]), len(self.source)
+        scale = max(width / sw, height / sh)
+        top = (sh - height / scale) / 2
+        columns = [min(sw-1, int((x+.5)/scale)) for x in range(width)]
+        select = itemgetter(*columns)
+        self.rows = []
+        last_y = -1
+        for y in range(height):
+            source_y = min(sh-1, int(top + (y+.5)/scale))
+            if source_y != last_y:
+                rgba = array('I', select(self.source[source_y])).tobytes()
+                row = bytearray(width * 3)
+                for channel in range(3):
+                    row[channel::3] = rgba[channel::4]
+                last_y = source_y
+            # Fade the foot of the image to keep the lobby status legible.
+            shade = max(0, (y / height - .57) / .43) * .58
+            self.rows.append(row.translate(self.table(shade)) if shade else row)
+
+    @staticmethod
+    def table(shade):
+        return bytes(round(v * (1 - shade) + 16 * shade) for v in range(256))
+
+    def paint(self):
+        self.pending = None
+        width, height = self.root.winfo_width(), self.root.winfo_height()
+        if width < 2 or height < 2 or not self.root.winfo_viewable():
+            return
+        if self.size != (width, height):
+            self.scale(width, height)
+            self.size = (width, height)
+            self.regions.clear()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        for widget, (target, tint, overlay) in self.layers.items():
+            if not widget.winfo_viewable():
+                continue
+            x, y = widget.winfo_rootx() - rx, widget.winfo_rooty() - ry
+            w, h = widget.winfo_width(), widget.winfo_height()
+            if self.regions.get(widget) == (x,y,w,h):
+                continue
+            if x < 0 or y < 0 or x+w > width or y+h > height:
+                continue
+            raw = b''.join(row[3*x:3*(x+w)] for row in self.rows[y:y+h])
+            if tint:
+                raw = raw.translate(self.table(tint))
+            photo = tk.PhotoImage(master=self.root, data=f'P6\n{w} {h}\n255\n'.encode() + raw, format='ppm')
+            if isinstance(target, tk.Canvas):
+                target.itemconfigure(overlay, image=photo)
+            else:
+                if overlay is not None:
+                    self.root.tk.call(str(photo), 'copy', str(overlay), '-to', (w-overlay.width())//2,
+                                      (h-overlay.height())//2, '-compositingrule', 'overlay')
+                target.configure(image=photo)
+            target._phoenix_photo = photo
+            self.regions[widget] = (x,y,w,h)
+
+    def destroyed(self, event):
+        if event.widget is self.root:
+            self.close()
+        else:
+            self.layers.pop(event.widget, None)
+            self.regions.pop(event.widget, None)
+
+    def close(self):
+        self.closed = True
+        if self.pending is not None:
+            self.root.after_cancel(self.pending)
+            self.pending = None
 
 
 def starter_version(package=ROOT):
@@ -29,13 +174,13 @@ def starter_version(package=ROOT):
         if isinstance(manifest, dict):
             revision = manifest.get('starter_update_revision')
             if type(revision) is int and revision > 0:
-                return f'Starter r{revision}'
+                return f'Build r{revision}'
             release = manifest.get('release_id')
             if isinstance(release, str) and release.strip():
-                return f'Starter {release}'
+                return f'Build {release}'
     except (OSError, ValueError):
         pass
-    return 'Starter r0 · base build'
+    return 'Base build'
 
 
 def match_phase_text(room):
@@ -101,7 +246,9 @@ class Desktop:
         self.players = []
         self.closing = False
         self.copy_reset_handle = None
-        root.title('TRIBES 3 • Community Starter')
+        root.title(APP_TITLE)
+        # Previously distributed BAT wrappers set a legacy title after Desktop returns.
+        root.after_idle(root.title, APP_TITLE)
         root.geometry('1030x800')
         root.minsize(850, 740)
         root.configure(bg=BG)
@@ -109,6 +256,19 @@ class Desktop:
         style = ttk.Style(root)
         style.theme_use('clam')
         style.configure('TCombobox', fieldbackground='#20374a', background='#20374a', foreground=TEXT, arrowcolor=ACCENT, padding=8)
+        style.map(
+            'TCombobox',
+            fieldbackground=[('disabled', '#192c3d'), ('readonly', '#20374a')],
+            foreground=[('disabled', '#a9c1d4'), ('readonly', TEXT)],
+            selectbackground=[('readonly', '#31566c')],
+            selectforeground=[('readonly', TEXT)],
+        )
+        root.option_add('*TCombobox*Listbox.background', '#182c3d', 'widgetDefault')
+        root.option_add('*TCombobox*Listbox.foreground', TEXT, 'widgetDefault')
+        root.option_add('*TCombobox*Listbox.selectBackground', '#31566c', 'widgetDefault')
+        root.option_add('*TCombobox*Listbox.selectForeground', TEXT, 'widgetDefault')
+        root.option_add('*TCombobox.font', '{Segoe UI} 11', 'widgetDefault')
+        root.option_add('*TCombobox*Listbox.font', '{Segoe UI} 11', 'widgetDefault')
         style.configure('Live.Treeview',background='#0b1a29',fieldbackground='#0b1a29',foreground=TEXT,
                         rowheight=28,font=('Segoe UI',10))
         style.configure('Live.Treeview.Heading',background='#20374a',foreground=TEXT,font=('Segoe UI',9,'bold'))
@@ -131,21 +291,15 @@ class Desktop:
         self.sidebar = side
         side.pack(side='left', fill='y')
         side.pack_propagate(False)
-        icon_path = ROOT / 'branding/clan-wars.png'
-        if icon_path.is_file():
-            root.title('Tribes Rivals: Clan Wars (community mod)')
-            self.clan_wars_icon = tk.PhotoImage(master=root, file=str(icon_path))
-            root.iconphoto(True, self.clan_wars_icon)
-            self.clan_wars_logo = self.clan_wars_icon.subsample(8)
-            title = self.label(side, 'Clan Wars', 18, True, bg='#0d1927')
-            title.configure(image=self.clan_wars_logo, compound='left')
-            title.pack(anchor='w', padx=24, pady=(36, 0))
-            caption = self.label(side, 'TRIBES RIVALS  \u00b7  COMMUNITY MOD', 9, color=ACCENT, bg='#0d1927')
-            caption.configure(wraplength=165, justify='left')
-            caption.pack(anchor='w', padx=26, pady=(4, 32))
-        else:
-            self.label(side, 'TRIBES 3', 25, True, bg='#0d1927').pack(anchor='w', padx=24, pady=(36, 0))
-            self.label(side, 'COMMUNITY STARTER', 9, color=ACCENT, bg='#0d1927').pack(anchor='w', padx=26, pady=(4, 32))
+        self.backdrop = PhoenixBackdrop(root)
+        self.backdrop.attach(side, .80)
+        self.app_icon = art_photo(root, 'phoenix-icon.png')
+        root.after_idle(set_phoenix_icon, root, self.app_icon)
+        self.emblem = art_photo(root, 'phoenix-emblem.png')
+        logo = tk.Label(side, image=self.emblem, width=self.emblem.width(), height=self.emblem.height(),
+                        borderwidth=0, highlightthickness=0, bg='#0d1927')
+        logo.pack(pady=(12, 14))
+        self.backdrop.logo(logo, self.emblem)
         self.lobbies_nav=self.button(side,'Lobbies',lambda:self.show_panel('lobbies'),False)
         self.lobbies_nav.pack(fill='x',padx=18,pady=(0,6))
         self.live_nav=self.button(side,'Server Browser',lambda:self.show_panel('live'),False)
@@ -170,7 +324,15 @@ class Desktop:
         main = tk.Frame(root, bg=BG)
         self.lobby_panel=main
         main.pack(side='left', fill='both', expand=True, padx=32, pady=20)
-        self.label(main, 'Get your team together.', 27, True).pack(anchor='w', pady=(0, 12))
+        self.backdrop.attach(main)
+        self.hero = tk.Canvas(main, bg=BG, height=64, highlightthickness=0, borderwidth=0)
+        self.hero.pack(fill='both', expand=True, pady=(0, 10))
+        self.hero_scene = self.hero.create_image(0, 0, anchor='nw')
+        self.hero_title = self.hero.create_text(2, 12, anchor='sw', fill='#fff8ed',
+                                                font=('Segoe UI', 31, 'bold'), text='Lobbies')
+        self.backdrop.canvas(self.hero, self.hero_scene)
+        self.hero.bind('<Configure>', lambda e: self.hero.coords(self.hero_title, 2, e.height - 7))
+        self.lobby_layout = None
         entry = tk.Frame(main, bg=PANEL, padx=18, pady=14)
         entry.pack(fill='x')
         self.label(entry, 'PLAYER NAME' if steam_name_loader else 'YOUR PLAYER NAME', 9, color=ACCENT, bg=PANEL).grid(row=0,column=0,sticky='w')
@@ -180,9 +342,16 @@ class Desktop:
         self.code_entry = tk.Entry(entry,textvariable=self.code,font=('Segoe UI',12),bg='#20374a',fg=TEXT,insertbackground=TEXT,relief='flat')
         self.code_entry.grid(row=1,column=1,sticky='ew',ipady=7,padx=(12,0),pady=(4,8))
         entry.columnconfigure(0,weight=1);entry.columnconfigure(1,weight=1)
+        self.lobby_create_button = self.button(entry, 'Create lobby', self.create)
+        self.lobby_create_button.grid(row=2, column=0, sticky='w')
         self.join_button = self.button(entry,'Join lobby',self.join,False)
         self.join_button.grid(row=2,column=1,sticky='w',padx=(12,0))
-        card = tk.Frame(main,bg=PANEL,padx=18,pady=14)
+        self.backdrop.attach(entry, .83)
+        self.entry_panel = entry
+        self.entry_map_label = self.label(entry, 'STARTING MAP', 9, color=ACCENT, bg=PANEL)
+        self.entry_map = ttk.Combobox(entry, width=18, state='disabled')
+        entry.columnconfigure(2, weight=1)
+        card = self.room_card = tk.Frame(main,bg=PANEL,padx=18,pady=14)
         card.pack(fill='both',expand=True,pady=(14,0))
         heading = tk.Frame(card,bg=PANEL)
         heading.pack(fill='x')
@@ -192,7 +361,7 @@ class Desktop:
         tk.Label(card,textvariable=self.phase,bg=PANEL,fg=MUTED,font=('Segoe UI',10),anchor='w').pack(fill='x',pady=(2,8))
         maprow = tk.Frame(card,bg=PANEL);maprow.pack(fill='x')
         self.label(maprow,'MAP',9,color=ACCENT,bg=PANEL).pack(side='left',padx=(0,12))
-        self.map_options=options(LEGACY_MAPS)
+        self.map_options=sorted(options(LEGACY_MAPS), key=lambda item: item['label'].casefold())
         self.map_combo = ttk.Combobox(maprow,textvariable=self.map_name,values=tuple(item['label'] for item in self.map_options),state='disabled')
         self.map_combo.pack(side='left',fill='x',expand=True)
         self.map_combo.bind('<<ComboboxSelected>>',lambda e:self.choose_map())
@@ -200,13 +369,13 @@ class Desktop:
             command=self.toggle_spectators,bg=PANEL,fg=TEXT,selectcolor='#20374a',activebackground=PANEL,
             activeforeground=TEXT,font=('Segoe UI',9))
         self.side_row = tk.Frame(card, bg=PANEL)
-        self.label(self.side_row, 'BLUE STARTING SIDE', 9, color=ACCENT, bg=PANEL).pack(side='left', padx=(0, 8))
+        self.label(self.side_row, 'PHOENIX STARTING SIDE', 9, color=ACCENT, bg=PANEL).pack(side='left', padx=(0, 8))
         self.blue_side = tk.StringVar(value='Side A')
         self.side_combo = ttk.Combobox(self.side_row, textvariable=self.blue_side,
                                        values=('Side A', 'Side B'), width=8, state='disabled')
         self.side_combo.pack(side='left')
         self.side_combo.bind('<<ComboboxSelected>>', self.choose_side)
-        self.red_side = tk.StringVar(value='Red starts on Side B')
+        self.red_side = tk.StringVar(value='Diamond Sword starts on Side B')
         tk.Label(self.side_row, textvariable=self.red_side, bg=PANEL, fg=MUTED).pack(side='left', padx=10)
         roster_frame = self.roster_frame = tk.Frame(card,bg=PANEL)
         roster_frame.pack(fill='both',expand=True,pady=(8,4))
@@ -231,8 +400,8 @@ class Desktop:
         self.roster_players = {}
         roster_frame.columnconfigure((0, 1), weight=1, uniform='teams')
         roster_frame.rowconfigure(0, weight=1)
-        for team, label, color, col in (('blue', 'Team Blue', '#78b8ff', 0),
-                                         ('red', 'Team Red', '#ff9393', 1),
+        for team, label, color, col in (('blue', TEAM_NAMES['blue'], '#78b8ff', 0),
+                                         ('red', TEAM_NAMES['red'], '#ff9393', 1),
                                          (None, 'Unassigned', MUTED, 0)):
             frame = tk.Frame(roster_frame, bg=PANEL)
             frame.grid(row=1 if team is None else 0, column=col, columnspan=2 if team is None else 1,
@@ -249,17 +418,18 @@ class Desktop:
             self.rosters[team] = roster
             self.roster_players[team] = []
         teams = tk.Frame(card,bg=PANEL);teams.pack(side='bottom',before=roster_frame,fill='x')
-        self.blue_button = self.button(teams,'Join blue',lambda:self.call_action('team',team='blue'),False);self.blue_button.pack(side='left',padx=(0,8))
-        self.red_button = self.button(teams,'Join red',lambda:self.call_action('team',team='red'),False);self.red_button.pack(side='left',padx=(0,8))
-        self.move_blue = self.button(teams,'Move selected blue',lambda:self.move('blue'),False);self.move_blue.pack(side='left',padx=(0,8))
-        self.move_red = self.button(teams,'Move selected red',lambda:self.move('red'),False);self.move_red.pack(side='left')
+        self.blue_button = self.button(teams,'Join Phoenix',lambda:self.call_action('team',team='blue'),False);self.blue_button.pack(side='left',padx=(0,8))
+        self.red_button = self.button(teams,'Join Diamond Sword',lambda:self.call_action('team',team='red'),False);self.red_button.pack(side='left',padx=(0,8))
+        self.move_blue = self.button(teams,'Move to Phoenix',lambda:self.move('blue'),False);self.move_blue.pack(side='left',padx=(0,8))
+        self.move_red = self.button(teams,'Move to Diamond Sword',lambda:self.move('red'),False);self.move_red.pack(side='left')
         actions = tk.Frame(main,bg=BG);actions.pack(side='bottom',before=card,fill='x',pady=(14,0))
+        self.room_actions = actions
         self.start_button = self.button(actions,'Start match',lambda:self.call_action('start'));self.start_button.pack(side='left',padx=(0,8))
         self.game_button = self.button(actions,'Join game',self.join_game);self.game_button.pack(side='left',padx=(0,8))
         self.stop_button = self.button(actions,'Stop match',lambda:self.call_action('stop'),False);self.stop_button.pack(side='left',padx=(0,8))
         self.reset_button = self.button(actions,'New setup',lambda:self.call_action('reset'),False);self.reset_button.pack(side='left',padx=(0,8))
         self.leave_button = self.button(actions,'Leave',lambda:self.call_action('leave'),False);self.leave_button.pack(side='left')
-        tk.Label(main,textvariable=self.status,bg=BG,fg=MUTED,font=('Segoe UI',10),anchor='w',wraplength=700).pack(side='bottom',before=actions,fill='x',pady=(12,0))
+        tk.Label(main,textvariable=self.status,bg=BG,fg=MUTED,font=('Segoe UI',10),anchor='w',wraplength=700).pack(side='bottom',before=actions,anchor='w',pady=(12,0))
         self.live_panel=tk.Frame(root,bg=BG)
         self.label(self.live_panel,'Server Browser',27,True).pack(anchor='w')
         self.live_summary=self.label(self.live_panel,'Left click for next player, right click for previous. F7 for first person, F8 for chase, or middle click to switch views.',
@@ -269,6 +439,7 @@ class Desktop:
         create_card = tk.Frame(self.live_panel, bg=PANEL, padx=14, pady=12)
         create_card.pack(fill='x', pady=(0, 12))
         self.create_map_name = tk.StringVar()
+        self.entry_map.configure(textvariable=self.create_map_name)
         self.browser_name = tk.Entry(create_card, textvariable=self.name, width=16, bg='#20374a',
                                      fg=TEXT, insertbackground=TEXT, relief='flat')
         self.browser_name.pack(side='left', ipady=6, padx=(0, 8))
@@ -308,7 +479,7 @@ class Desktop:
         self.live_roster_table = ttk.Treeview(roster_panel,columns=('blue','red'),show='headings',
                                              height=2,style='Live.Treeview')
         for team in ('blue','red'):
-            self.live_roster_table.heading(team,text='Team '+team.title())
+            self.live_roster_table.heading(team,text=TEAM_NAMES[team])
             self.live_roster_table.column(team,width=160,minwidth=80)
         roster_scroll=ttk.Scrollbar(roster_panel,orient='vertical',command=self.live_roster_table.yview)
         self.live_roster_table.configure(yscrollcommand=roster_scroll.set)
@@ -324,12 +495,31 @@ class Desktop:
         self.refresh_handle=root.after(2000,self.refresh)
         self.live_refresh_handle=root.after(3000,self.live_tick)
 
+    def show_lobby_controls(self, in_room):
+        if self.lobby_layout == in_room:
+            return
+        self.lobby_layout = in_room
+        self.hero.configure(height=56 if in_room else 180)
+        self.hero.pack_configure(expand=not in_room)
+        if in_room:
+            self.entry_map.grid_remove()
+            self.entry_map_label.grid_remove()
+            self.room_actions.pack(side='bottom', fill='x', pady=(14, 0))
+            self.room_card.pack(fill='both', expand=True, pady=(14, 0))
+        else:
+            self.room_card.pack_forget()
+            self.room_actions.pack_forget()
+            self.entry_map_label.grid(row=0, column=2, sticky='w', padx=(12, 0))
+            self.entry_map.grid(row=1, column=2, sticky='ew', padx=(12, 0), pady=(4, 8))
+
     def label(self,parent,text,size=11,bold=False,color=TEXT,bg=BG):
         return tk.Label(parent,text=text,bg=bg,fg=color,font=('Segoe UI',size,'bold' if bold else 'normal'),anchor='w')
 
     def button(self,parent,text,command,primary=True):
+        sidebar = parent is getattr(self, 'sidebar', None)
         return tk.Button(parent,text=text,command=command,bg=ACCENT if primary else '#263e52',fg=BG if primary else TEXT,
-                         activebackground='#6ff0d4',relief='flat',padx=10,pady=7,font=('Segoe UI',10,'bold'))
+                         activebackground='#6ff0d4',relief='flat',padx=14 if sidebar else 10,
+                         anchor='w' if sidebar else 'center',pady=7,font=('Segoe UI',10,'bold'))
 
     @property
     def controls_busy(self):
@@ -485,6 +675,8 @@ class Desktop:
             self.refresh_maps()
 
     def choose_map(self):
+        if self.room is None:
+            return
         selected=self.map_name.get()
         matches=[item['id'] for item in self.map_options if item['label']==selected]
         if len(matches)!=1:
@@ -628,6 +820,7 @@ class Desktop:
                 self.lobby_map_target = target
                 self.map_sync.prefetch(target)
         in_room = room is not None
+        self.show_lobby_controls(in_room)
         self.copy_code_button.configure(state='normal' if in_room else 'disabled')
         phase = room['phase'] if in_room else None
         leader = in_room and any(p['id']==room['playerId'] and p['leader'] for p in room['players'])
@@ -639,7 +832,7 @@ class Desktop:
             self.spectator_toggle.pack(side='right',padx=(12,0))
             self.spectator_toggle.configure(state='normal' if setup and leader else 'disabled')
         else:self.spectator_toggle.pack_forget()
-        for widget in (self.name_entry,self.code_entry,self.create_button,self.join_button): widget.configure(state='disabled' if in_room or self.controls_busy else 'normal')
+        for widget in (self.name_entry,self.code_entry,self.create_button,self.lobby_create_button,self.join_button): widget.configure(state='disabled' if in_room or self.controls_busy else 'normal')
         if self.steam_name_loader and not in_room and not self.controls_busy:
             self.name_entry.configure(state='readonly', readonlybackground='#20374a')
         self.browser_name.configure(state=('disabled' if in_room or self.controls_busy else
@@ -665,13 +858,17 @@ class Desktop:
             self.leave_button.configure(state='normal' if in_room and not self.controls_busy else 'disabled')
             self.status.set('Unsupported server map catalog. Update the community client.')
             return
-        self.map_options=available
+        self.map_options=sorted(available, key=lambda item: item['label'].casefold())
         self.create_map.configure(values=tuple(sorted(labels.values(), key=str.casefold)), height=min(18, len(labels)),
                                   state='readonly' if not in_room and not self.controls_busy
                                   and self.caps.get('mapSessionSync') == SESSION_VERSION else 'disabled')
+        self.entry_map.configure(values=self.create_map.cget('values'), state=self.create_map.cget('state'))
         if self.create_map_name.get() not in labels.values():
             self.create_map_name.set(next(iter(labels.values()), ''))
-        self.map_combo.configure(values=tuple(item['label'] for item in available),height=min(18,len(available)),state='readonly' if setup and leader else 'disabled')
+        self.map_combo.configure(values=tuple(item['label'] for item in self.map_options),height=min(18,len(available)),state='readonly' if setup and leader else 'disabled')
+        self.map_combo.configure(textvariable=self.map_name if in_room else self.create_map_name)
+        if not in_room:
+            self.map_combo.configure(state=self.create_map.cget('state'))
         if in_room:
             if self.pending_map and self.pending_map[1] not in labels:
                 self.pending_map = None
@@ -783,8 +980,8 @@ class Desktop:
         if not self.side_row.winfo_manager():
             self.side_row.pack(fill='x', before=self.roster_frame, pady=(6, 0))
         self.blue_side.set('Side ' + side)
-        self.red_side.set('Red starts on Side A · In-game colors swap' if side == 'B'
-                          else 'Red starts on Side B')
+        self.red_side.set('Diamond Sword starts on Side A · In-game colors swap' if side == 'B'
+                          else 'Diamond Sword starts on Side B')
         self.side_combo.configure(state='readonly' if editable else 'disabled')
 
     def choose_side(self, _event=None):
@@ -1149,6 +1346,7 @@ class Desktop:
     def close(self):
         if self.closing: return
         self.closing = True
+        self.backdrop.close()
         if self.map_sync is not None:
             self.map_sync.cancelled.set()
         for name in ('poll_handle','refresh_handle','copy_reset_handle','live_refresh_handle','steam_retry_handle'):

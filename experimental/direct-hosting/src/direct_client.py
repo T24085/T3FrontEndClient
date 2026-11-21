@@ -1210,7 +1210,7 @@ class PublicCTFPanel:
 def main(root=ROOT, *, on_ready=None, weapon_directory=None):
     import tkinter as tk
     from tkinter import filedialog,messagebox
-    from desktop_launcher import Desktop
+    from desktop_launcher import APP_TITLE, Desktop
     from startup_paths import installation_options
     from client_support import discover_game
     from map_sync import MapSync
@@ -1285,7 +1285,7 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
             finally:lobby.close()
 
     try:
-        window=tk.Tk();window.title('TRIBES 3 — Direct Host Starter')
+        window=tk.Tk();window.title(APP_TITLE)
         map_sync=MapSync(lobby,root,workspace)
         factory=lambda current:DirectGame(current,root,source,workspace,workspace/'direct-desktop-control',map_sync=map_sync)
         gui=DirectDesktop(window,lobby,factory,

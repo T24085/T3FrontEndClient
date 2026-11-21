@@ -17,7 +17,7 @@ from tools.verify_player_release import safe_name
 
 ROOT = Path(__file__).resolve().parent
 CLIENT = 'Client Files/'
-TITLE = 'Tribes Rivals: Clan Wars (community mod)'
+TITLE = 'Tribes 3 Mod Community Edition: Phoenix Rising'
 
 
 def build(source, proof_path, output, *, feed=None, catalog=None, assets=None,
@@ -37,6 +37,8 @@ def build(source, proof_path, output, *, feed=None, catalog=None, assets=None,
         'branding/clan-wars.png': (branding/'clan-wars.png').read_bytes(),
         'branding/clan-wars.ico': (branding/'clan-wars.ico').read_bytes(),
     }
+    for name in ('phoenix.ico', 'phoenix-icon.png', 'phoenix-emblem.png', 'phoenix-world.png'):
+        additions['branding/' + name] = (branding / name).read_bytes()
     if any(item is not None for item in (feed, catalog, assets)) and not all(
             item is not None for item in (feed, catalog, assets)):
         raise ValueError('Provide the signed feed, live catalog, and map assets together.')

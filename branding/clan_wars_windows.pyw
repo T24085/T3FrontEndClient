@@ -26,4 +26,4 @@ try:
             raise
 except Exception as exc:
     ctypes.windll.user32.MessageBoxW(None, str(exc)+'\n\nLog: '+str(log),
-                                   'Tribes Rivals: Clan Wars (community mod)', 0x10)
+                                   'Tribes 3 Mod Community Edition: Phoenix Rising', 0x10)

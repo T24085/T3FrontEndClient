@@ -47,6 +47,31 @@ class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
 
+    def test_artwork_stays_behind_lobby_and_spectator_controls(self):
+        root = tk.Tk()
+        lobby = FakeLobby()
+        app = Desktop(root, lobby, lambda _: FakeGame())
+
+        def check_hits(*widgets):
+            root.update()
+            for widget in widgets:
+                x = widget.winfo_rootx() + widget.winfo_width() // 2
+                y = widget.winfo_rooty() + widget.winfo_height() // 2
+                self.assertIs(root.winfo_containing(x, y), widget, str(widget))
+
+        try:
+            for size in ('850x740', '1140x800'):
+                root.geometry(size + '+0+0')
+                app.show_panel('lobbies')
+                app.render(None)
+                check_hits(app.lobby_create_button, app.join_button, app.entry_map, app.code_entry)
+                app.render(lobby.room)
+                check_hits(app.map_combo, app.start_button, app.game_button)
+                app.live_nav.invoke()
+                check_hits(app.spectate_button, app.create_button)
+        finally:
+            app.close()
+
     def test_maps_browser_manages_downloads_and_lobby_changes_prefetch_only_the_selection(self):
         sync = Mock(session_enabled=True, cancelled=Event(), status='', progress=None)
         metadata = {'id':'Stonehenge', 'label':'Stonehenge', 'gameTag':'Community', 'bytes':1048576,
@@ -558,6 +583,42 @@ class DesktopTest(unittest.TestCase):
             self.assertAlmostEqual(red.yview()[0],before,delta=0.05)
             self.assertTrue(red.cget('yscrollcommand'))
             self.assertLess(app.rosters['blue'].winfo_rootx(), red.winfo_rootx())
+        finally:
+            app.close()
+
+    def test_phoenix_lobby_create_uses_visible_map_and_disables_both_buttons(self):
+        root = tk.Tk()
+        root.attributes('-alpha', 0)
+        lobby = FakeLobby()
+        lobby.create = Mock(return_value=lobby.room)
+        lobby.capabilities = lambda: {'mapSessionSync': 3, 'matchStartEnabled': True}
+        app = Desktop(root, lobby, lambda _: FakeGame())
+        try:
+            root.title('Tribes Rivals: Clan Wars (community mod)')
+            root.update()
+            self.assertEqual(root.title(), 'Tribes 3 Mod Community Edition: Phoenix Rising')
+            deadline = time.monotonic() + 4
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            self.assertTrue(app.lobby_create_button.winfo_ismapped())
+            self.assertEqual(app.map_combo.get(), app.create_map.get())
+            selected = next(row for row in app.map_options if row['id'] == 'Rollercoaster')
+            app.map_combo.set(selected['label'])
+            app.name.set('Pilot')
+            app.lobby_create_button.invoke()
+            deadline = time.monotonic() + 4
+            while app.room is None and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            lobby.create.assert_called_once_with('Pilot', map_id='Rollercoaster')
+            self.assertIsNotNone(app.room)
+            for button in (app.lobby_create_button, app.create_button):
+                self.assertEqual(str(button.cget('state')), 'disabled')
+            for team, faction in [('blue', 'Children of The Phoenix'), ('red', 'Diamond Sword')]:
+                self.assertEqual(app.live_roster_table.heading(team, 'text'), faction)
+                self.assertIn(faction, [w.cget('text') for w in app.rosters[team].master.winfo_children()
+                                        if isinstance(w, tk.Label)])
         finally:
             app.close()
 

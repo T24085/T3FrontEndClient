@@ -7,6 +7,6 @@ start "" /d "%runtime%" "%runtime%\python\pythonw.exe" -B "%runtime%\clan_wars_w
 exit /b %errorlevel%
 
 :missing
-echo Extract the entire Clan Wars ZIP before launching.
+echo Extract the entire Phoenix Rising ZIP before launching.
 pause
 exit /b 1
