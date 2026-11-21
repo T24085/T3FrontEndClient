@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -27,7 +28,13 @@ class SteamIdentityTest(unittest.TestCase):
                 self.assertEqual(_read_native(root,manifest),'Cached pilot')
                 self.assertEqual(api.SteamAPI_ISteamUser_BLoggedOn.calls,0)
                 api.SteamAPI_ISteamUser_GetSteamID.value=0
-                with self.assertRaises(SteamIdentityError):_read_native(root,manifest)
+                with self.assertRaises(SteamIdentityError) as unsigned:
+                    _read_native(root,manifest)
+                self.assertEqual(unsigned.exception.reason, 'no_signed_in_user')
+                api.SteamAPI_Init.value = False
+                with self.assertRaises(SteamIdentityError) as init:
+                    _read_native(root,manifest)
+                self.assertEqual(init.exception.reason, 'init_failed')
             self.assertEqual(api.SteamAPI_Shutdown.calls,2)
 
     def test_changed_installed_api_is_rejected_before_loading_native_code(self):
@@ -45,15 +52,33 @@ class SteamIdentityTest(unittest.TestCase):
             self.assertEqual(read_steam_name('game','manifest'),'Píløt 🚀')
             self.assertEqual(run.call_args.kwargs['env']['SteamAppId'],'2687970')
             self.assertNotIn('SteamAPI_RestartAppIfNecessary',run.call_args.args[0])
-        response=SimpleNamespace(returncode=1,stdout=PREFIX+json.dumps({'error':'Start Steam'})+'\n',stderr='')
+        response=SimpleNamespace(returncode=1,stdout=PREFIX+json.dumps({'error':'Start Steam', 'reason':'init_failed'})+'\n',stderr='')
         with patch('steam_identity.subprocess.run',return_value=response):
-            with self.assertRaisesRegex(SteamIdentityError,'Start Steam'): read_steam_name('game','manifest')
+            with self.assertRaisesRegex(SteamIdentityError,'Start Steam') as init:
+                read_steam_name('game','manifest')
+            self.assertEqual(init.exception.reason, 'init_failed')
 
     def test_timeout_is_bounded_and_no_name_is_invented(self):
         with patch('steam_identity.subprocess.run',side_effect=subprocess.TimeoutExpired('helper',12)):
             with self.assertRaisesRegex(SteamIdentityError,'timed out'): read_steam_name('game','manifest')
         with patch('steam_identity.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout='',stderr='')):
             with self.assertRaises(SteamIdentityError): read_steam_name('game','manifest')
+
+    def test_timed_out_probe_process_is_reaped(self):
+        children = []
+        popen = subprocess.Popen
+
+        def start_slow_probe(_argv, **kwargs):
+            child = popen([sys.executable, '-c', 'import time; time.sleep(30)'], **kwargs)
+            children.append(child)
+            return child
+
+        with patch('steam_identity.subprocess.Popen', side_effect=start_slow_probe):
+            with self.assertRaises(SteamIdentityError) as error:
+                read_steam_name('game', 'manifest', timeout=.35)
+        self.assertEqual(error.exception.reason, 'timeout')
+        self.assertEqual(len(children), 1)
+        self.assertIsNotNone(children[0].poll())
 
 
 if __name__=='__main__': unittest.main()

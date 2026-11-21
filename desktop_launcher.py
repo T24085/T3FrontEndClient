@@ -1,6 +1,7 @@
 """Development-only Community Starter lobby and owned game launcher."""
 import argparse
 import json
+import logging
 from pathlib import Path
 import queue
 import sys
@@ -10,10 +11,12 @@ import tkinter as tk
 from tkinter import ttk
 
 from community_game import CommunityGame
-from startup_paths import installation_options
+from startup_paths import installation_options, local_directory
 from community_transport import CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES, MAX_LOBBY_BOTS
 from community_maps import BY_ID, options, read_options, LEGACY_MAPS
 from map_sync_contract import CATALOG_VERSION, SESSION_VERSION, valid_sha
+from player_names import display_name
+from steam_identity import SteamIdentityError, read_local_name, save_local_name
 
 ROOT = Path(__file__).resolve().parent
 CLIENT_PACKAGE = ROOT if (ROOT / 'connection-policy.json').is_file() else ROOT / 'dynamic-client-development'
@@ -32,7 +35,7 @@ def starter_version(package=ROOT):
                 return f'Starter {release}'
     except (OSError, ValueError):
         pass
-    return 'Starter r0 · base build'
+    return 'Starter r0 Â· base build'
 
 
 def match_phase_text(room):
@@ -42,22 +45,33 @@ def match_phase_text(room):
     if room['phase']=='setup':
         preparation=room.get('preparation')
         if isinstance(preparation,dict):
-            label={'waiting':'Waiting for a server slot…','preparing':'Preparing the selected map…',
-                   'ready':'Server ready. Choose teams, then start.','stopping':'Changing the prepared map…',
+            label={'waiting':'Waiting for a server slotâ€¦','preparing':'Preparing the selected mapâ€¦',
+                   'ready':'Server ready. Choose teams, then start.','stopping':'Changing the prepared mapâ€¦',
                    'failed':'Server preparation failed; Start match can retry.'}.get(preparation.get('status'))
-            if label:text+=' — '+(preparation.get('progress') or label)
+            if label:text+=' â€” '+(preparation.get('progress') or label)
     if room['phase'] in ('starting', 'ready'):
         match = room.get('match')
         progress = match.get('progress') if isinstance(match, dict) else None
         if isinstance(progress, str) and progress.strip():
-            text += ' — ' + progress.strip()
+            text += ' â€” ' + progress.strip()
     return text
 
 
 class Desktop:
-    def __init__(self, root, lobby, game_factory, *, steam_name_loader=None, server_access=None, map_sync=None):
+    def __init__(self, root, lobby, game_factory, *, steam_name_loader=None, server_access=None, map_sync=None,
+                 name_settings_dir=None):
         self.root, self.lobby, self.game_factory = root, lobby, game_factory
         self.steam_name_loader = steam_name_loader
+        name_settings = Path(name_settings_dir) if name_settings_dir is not None else local_directory()
+        self.warrior_name_path = name_settings / 'warrior-name.json'
+        self.steam_name_path = name_settings / 'steam-persona.json'
+        self.warrior_name = read_local_name(self.warrior_name_path) if steam_name_loader else ''
+        self.steam_name = read_local_name(self.steam_name_path) if steam_name_loader else ''
+        self.steam_messages = queue.Queue()
+        self.steam_lookup_running = False
+        self.steam_lookup_error = None
+        self.steam_lookup_at = 0
+        self.steam_retry_handle = None
         self.map_sync = map_sync
         self.maps_panel = None
         self.lobby_map_target = None
@@ -84,7 +98,7 @@ class Desktop:
         self.players = []
         self.closing = False
         self.copy_reset_handle = None
-        root.title('TRIBES 3 • Community Starter')
+        root.title('TRIBES 3 â€¢ Community Starter')
         root.geometry('1030x800')
         root.minsize(850, 740)
         root.configure(bg=BG)
@@ -96,10 +110,10 @@ class Desktop:
                         rowheight=28,font=('Segoe UI',10))
         style.configure('Live.Treeview.Heading',background='#20374a',foreground=TEXT,font=('Segoe UI',9,'bold'))
         style.map('Live.Treeview',background=[('selected','#31566c')])
-        self.name = tk.StringVar()
+        self.name = tk.StringVar(value=self.warrior_name or self.steam_name)
         self.code = tk.StringVar()
         self.map_name = tk.StringVar(value='Stonehenge')
-        self.status = tk.StringVar(value='Checking community service…')
+        self.status = tk.StringVar(value='Checking community serviceâ€¦')
         self.room_heading = tk.StringVar(value='Not in a lobby')
         self.phase = tk.StringVar(value='Create a lobby or enter a code.')
         self.preparation = tk.StringVar(value='')
@@ -109,7 +123,7 @@ class Desktop:
         self.allow_bots = tk.BooleanVar(value=False)
         self.bot_count = tk.StringVar(value='2')
         self.retail_capture_point = tk.BooleanVar(value=True)
-        self.live_status = tk.StringVar(value='Checking spectator support…')
+        self.live_status = tk.StringVar(value='Checking spectator supportâ€¦')
         side = tk.Frame(root, bg='#0d1927', width=225)
         self.sidebar = side
         side.pack(side='left', fill='y')
@@ -156,7 +170,7 @@ class Desktop:
         self.label(main, 'Get your team together.', 27, True).pack(anchor='w', pady=(0, 12))
         entry = tk.Frame(main, bg=PANEL, padx=18, pady=14)
         entry.pack(fill='x')
-        self.label(entry, 'STEAM PLAYER NAME' if steam_name_loader else 'YOUR PLAYER NAME', 9, color=ACCENT, bg=PANEL).grid(row=0,column=0,sticky='w')
+        self.label(entry, 'PLAYER NAME' if steam_name_loader else 'YOUR PLAYER NAME', 9, color=ACCENT, bg=PANEL).grid(row=0,column=0,sticky='w')
         self.label(entry, 'LOBBY CODE', 9, color=ACCENT, bg=PANEL).grid(row=0,column=1,sticky='w',padx=(12,0))
         self.name_entry = tk.Entry(entry,textvariable=self.name,font=('Segoe UI',12),bg='#20374a',fg=TEXT,insertbackground=TEXT,relief='flat')
         self.name_entry.grid(row=1,column=0,sticky='ew',ipady=7,pady=(4,8))
@@ -295,10 +309,8 @@ class Desktop:
             self.build_maps_panel()
         self.render_live_controls()
         self.render(None)
-        if steam_name_loader:
-            self.run_async(steam_name_loader, self.set_steam_name)
-        else:
-            self.run_async(self.lobby.capabilities, self.set_capabilities)
+        self.run_async(self.lobby.capabilities, self.set_capabilities)
+        self.refresh_steam_name()
         self.poll_handle=root.after(150,self.poll)
         self.refresh_handle=root.after(2000,self.refresh)
         self.live_refresh_handle=root.after(3000,self.live_tick)
@@ -355,6 +367,12 @@ class Desktop:
     def poll(self):
         self.poll_handle=None
         if self.closing: return
+        try:
+            name, error, retry = self.steam_messages.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            self.finish_steam_lookup(name, error, retry=retry)
         if self.map_sync is not None:
             self.map_status.set(self.map_sync.status)
             progress = self.map_sync.progress
@@ -384,7 +402,7 @@ class Desktop:
                                 self.map_retry_count += 1
                                 self.map_retry_at = (time.monotonic() + self.map_retry_count
                                                      if self.map_retry_count < 3 else float('inf'))
-                                message = ('Connection interrupted. Checking your map selection again…'
+                                message = ('Connection interrupted. Checking your map selection againâ€¦'
                                            if self.map_retry_count < 3 else
                                            'Map selection is unconfirmed. Choose the map again to retry.')
                             else:
@@ -413,9 +431,9 @@ class Desktop:
                 previous_status=self.game_status
                 self.game_status=state['status']
                 if state['status'] in ('starting','playing','stopping'):
-                    self.status.set(state.get('progress') or {'starting':'Opening game…','playing':'Game connected.','stopping':'Closing game…'}[state['status']])
+                    self.status.set(state.get('progress') or {'starting':'Opening gameâ€¦','playing':'Game connected.','stopping':'Closing gameâ€¦'}[state['status']])
                     if self.watch_id is not None:
-                        self.live_status.set(state.get('progress') or {'starting':'Opening spectator view…','playing':'Watching match.','stopping':'Closing spectator view…'}[state['status']])
+                        self.live_status.set(state.get('progress') or {'starting':'Opening spectator viewâ€¦','playing':'Watching match.','stopping':'Closing spectator viewâ€¦'}[state['status']])
                 elif state['error']:
                     self.status.set(state['error'])
                 elif previous_status != self.game_status and state.get('progress'):
@@ -459,7 +477,7 @@ class Desktop:
         self.pending_map = (self.room['code'], matches[0])
         self.map_retry_count = 0
         self.map_retry_at = 0
-        self.status.set('Applying map selection…')
+        self.status.set('Applying map selectionâ€¦')
         self.render(self.room)
         self.flush_map_selection()
 
@@ -491,9 +509,83 @@ class Desktop:
             self.render(room)
         self.run_async(apply, applied)
 
-    def set_steam_name(self, name):
-        self.name.set(name)
-        self.run_async(self.lobby.capabilities, self.set_capabilities)
+    def refresh_steam_name(self, *, retry=False):
+        loader = self.steam_name_loader
+        if not loader or self.closing or self.warrior_name or self.steam_lookup_running:
+            return
+        if not retry and time.monotonic() < self.steam_lookup_at:
+            return
+        self.steam_lookup_running = True
+        self.steam_lookup_at = time.monotonic() + 60
+        results = self.steam_messages
+
+        def worker():
+            try:
+                name = display_name(loader())
+            except Exception as exc:
+                reason = getattr(exc, 'reason', type(exc).__name__)
+                logging.getLogger(__name__).warning('Steam name lookup failed (%s): %s', reason, exc)
+                results.put((None, str(exc), retry))
+            else:
+                results.put((name, None, retry))
+
+        # Keep the short-lived worker alive through close so subprocess.run can reap the probe.
+        threading.Thread(target=worker, name='steam-persona', daemon=False).start()
+
+    def finish_steam_lookup(self, name, error, *, retry):
+        previous_notice = self.steam_name_notice()
+        self.steam_lookup_running = False
+        self.steam_lookup_error = error
+        if error is None:
+            if name != self.steam_name:
+                self.steam_name = name
+                try:
+                    save_local_name(self.steam_name_path, name)
+                except OSError as exc:
+                    logging.getLogger(__name__).warning('Could not save the Steam name cache: %s', exc)
+            if not self.warrior_name:
+                self.name.set(name)
+                if self.status.get() == previous_notice:
+                    self.status.set('Steam name ready.')
+            return
+        if self.warrior_name:
+            return
+        if not self.steam_name:
+            self.status.set(self.steam_name_notice())
+        if not retry:
+            self.steam_retry_handle = self.root.after(2500, self.retry_steam_lookup)
+
+    def retry_steam_lookup(self):
+        self.steam_retry_handle = None
+        self.refresh_steam_name(retry=True)
+
+    def steam_name_notice(self):
+        message = self.steam_lookup_error or 'Looking up your Steam name.'
+        return message + ' You can set a Warrior Name in Settings.'
+
+    def player_name_for_action(self):
+        if not self.steam_name_loader:
+            return display_name(self.name.get().strip())
+        if self.warrior_name:
+            return self.warrior_name
+        self.refresh_steam_name()
+        if self.steam_name:
+            return self.steam_name
+        raise SteamIdentityError(self.steam_name_notice())
+
+    def save_warrior_name(self, value):
+        name = display_name(value).strip() if value.strip() else ''
+        save_local_name(self.warrior_name_path, name)
+        self.warrior_name = name
+        self.name.set(name or self.steam_name)
+        if name and self.status.get() == self.steam_name_notice():
+            self.status.set('Warrior Name saved.')
+        if self.steam_retry_handle is not None:
+            self.root.after_cancel(self.steam_retry_handle)
+            self.steam_retry_handle = None
+        if not name:
+            self.steam_lookup_at = 0
+            self.refresh_steam_name()
 
     def render(self, room):
         if (self.room or {}).get('code') != (room or {}).get('code'):
@@ -583,32 +675,19 @@ class Desktop:
             self.show_panel('lobbies')
         selected = next((item['id'] for item in self.map_options if item['label'] == self.create_map_name.get()), None)
         options = {'map_id': selected} if selected and self.caps.get('mapSessionSync') == SESSION_VERSION else {}
-        def create(name):
-            return self.lobby.create(name, **options)
-        if self.steam_name_loader:
-            self.enter_with_steam(create, created)
-        else:
-            name = self.name.get()
-            self.run_async(lambda: create(name), created)
+        self.enter_lobby(lambda name: self.lobby.create(name, **options), success=created)
 
     def join(self):
-        code, name = self.code.get().strip().upper(), self.name.get()
-        if self.steam_name_loader:
-            self.enter_with_steam(lambda name:self.lobby.join(code,name))
-        else:
-            self.run_async(lambda:self.lobby.join(code,name),self.render)
+        code = self.code.get().strip().upper()
+        self.enter_lobby(lambda name: self.lobby.join(code,name))
 
-    def enter_with_steam(self, operation, success=None):
-        def work():
-            name=self.steam_name_loader()
-            return name,operation(name)
-        def entered(value):
-            name,room=value
-            self.name.set(name)
-            (success or self.render)(room)
-            if not self.capabilities_loaded:
-                self.run_async(self.lobby.capabilities, self.set_capabilities)
-        self.run_async(work,entered)
+    def enter_lobby(self, operation, success=None):
+        try:
+            name = self.player_name_for_action()
+        except (ValueError, SteamIdentityError) as exc:
+            self.status.set(str(exc))
+            return
+        self.run_async(lambda: operation(name), success or self.render)
     def call_action(self,operation,**data):
         if operation == 'start' and self.pending_map is not None:
             self.status.set('Wait for the selected map to be confirmed.')
@@ -646,8 +725,8 @@ class Desktop:
             self.roster_players[team] = players
             box.delete(0, tk.END)
             for index, player in enumerate(players):
-                box.insert(tk.END, player['name'] + ('  • leader' if player['leader'] else '')
-                           + ('  • you' if player['id'] == room['playerId'] else ''))
+                box.insert(tk.END, player['name'] + ('  â€¢ leader' if player['leader'] else '')
+                           + ('  â€¢ you' if player['id'] == room['playerId'] else ''))
                 if player['id'] == selected:
                     box.selection_set(index)
                     box.activate(index)
@@ -662,7 +741,7 @@ class Desktop:
         if not self.side_row.winfo_manager():
             self.side_row.pack(fill='x', before=self.roster_frame, pady=(6, 0))
         self.blue_side.set('Side ' + side)
-        self.red_side.set('Red starts on Side A · In-game colors swap' if side == 'B'
+        self.red_side.set('Red starts on Side A Â· In-game colors swap' if side == 'B'
                           else 'Red starts on Side B')
         self.side_combo.configure(state='readonly' if editable else 'disabled')
 
@@ -692,7 +771,7 @@ class Desktop:
             self.status.set('Wait for the selected map to be confirmed.');return
         if self.watch_id is not None:
             self.status.set('Stop watching the current match first.');return
-        self.status.set('Checking the selected match…')
+        self.status.set('Checking the selected matchâ€¦')
         selected_map = self.room['map']
         match = self.room.get('match')
         match_id = match.get('id') if isinstance(match, dict) else None
@@ -701,7 +780,7 @@ class Desktop:
             if match_id:
                 return self.game.start(expected_map=selected_map, expected_match_id=match_id)
             return self.game.start(expected_map=selected_map)
-        if self.run_async(begin,lambda _:self.status.set('Opening game…')):
+        if self.run_async(begin,lambda _:self.status.set('Opening gameâ€¦')):
             self.join_attempted_match = match_id
 
     def toggle_spectators(self):
@@ -797,7 +876,7 @@ class Desktop:
             self.maps_notice.set('Per-map downloads are unavailable on this server.')
             self.render_map_controls()
             return
-        self.maps_notice.set('Checking map downloads…')
+        self.maps_notice.set('Checking map downloadsâ€¦')
 
         def work():
             try:
@@ -853,7 +932,30 @@ class Desktop:
         window.title('Settings')
         window.transient(self.root)
         window.resizable(False, False)
-        self.label(window, 'Game settings', 21, True).pack(anchor='w')
+        if self.steam_name_loader:
+            self.label(window, 'Warrior Name', 16, True).pack(anchor='w')
+            self.label(window, 'Leave blank to use your Steam name.', color=MUTED).pack(anchor='w', pady=(4, 8))
+            value = tk.StringVar(window, value=self.warrior_name)
+            entry = tk.Entry(window, textvariable=value, font=('Segoe UI', 11), bg='#20374a',
+                             fg=TEXT, insertbackground=TEXT, relief='flat')
+            entry.pack(fill='x', ipady=6)
+            notice = tk.StringVar(window)
+
+            def save_name():
+                try:
+                    self.save_warrior_name(value.get())
+                except (OSError, ValueError) as exc:
+                    notice.set(str(exc))
+                    return
+                value.set(self.warrior_name)
+                notice.set('Name saved for your next join.' if self.warrior_name else 'Using your Steam name.')
+
+            entry.bind('<Return>', lambda _event: save_name())
+            self.button(window, 'Save name', save_name, False).pack(anchor='w', pady=(8, 0))
+            tk.Label(window, textvariable=notice, bg=BG, fg=MUTED, font=('Segoe UI', 10),
+                     justify='left', wraplength=420, anchor='w').pack(fill='x', pady=(3, 10))
+            tk.Frame(window, bg=PANEL, height=1).pack(fill='x', pady=(0, 14))
+        self.label(window, 'Game settings', 16, True).pack(anchor='w')
         description = self.label(
             window, 'Copy your retail key bindings, sensitivity, and game options. '
             'Starter backs up any community settings files it replaces.', 11, color=MUTED)
@@ -969,19 +1071,19 @@ class Desktop:
         item=self.live_targets.get(selected[0])if selected else None
         if item is None or item.get('canSpectate')is not True:return
         if self.game_status not in ('idle','stopped','finished','failed'):return
-        selected_name=self.name.get()
-        def admit():
-            name=self.steam_name_loader()if self.steam_name_loader else selected_name
-            return name,self.lobby.spectate(item['id'],name)
-        def admitted(value):
-            name,target=value
-            self.name.set(name);self.watch_id=target['watchId']
-            self.live_status.set('Preparing spectator view…')
+        try:
+            name = self.player_name_for_action()
+        except (ValueError, SteamIdentityError) as exc:
+            self.live_status.set(str(exc))
+            return
+        def admitted(target):
+            self.watch_id=target['watchId']
+            self.live_status.set('Preparing spectator viewâ€¦')
             def begin():
                 if not self.game:self.game=self.game_factory(self.lobby)
                 return self.game.start_spectating(target['watchId'])
-            self.run_async(begin,lambda _:self.live_status.set('Opening spectator view…'))
-        self.run_async(admit,admitted)
+            self.run_async(begin,lambda _:self.live_status.set('Opening spectator viewâ€¦'))
+        self.run_async(lambda: self.lobby.spectate(item['id'],name), admitted)
 
     def stop_watching(self):
         if self.controls_busy or self.closing or self.watch_id is None:return
@@ -1006,7 +1108,7 @@ class Desktop:
         self.closing = True
         if self.map_sync is not None:
             self.map_sync.cancelled.set()
-        for name in ('poll_handle','refresh_handle','copy_reset_handle','live_refresh_handle'):
+        for name in ('poll_handle','refresh_handle','copy_reset_handle','live_refresh_handle','steam_retry_handle'):
             handle=getattr(self,name,None)
             if handle is not None:
                 self.root.after_cancel(handle)

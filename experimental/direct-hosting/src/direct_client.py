@@ -953,10 +953,16 @@ class PublicCTFPanel:
         threading.Thread(target=run, daemon=True).start()
 
     def start(self):
+        from steam_identity import SteamIdentityError
+
         ui = self.desktop
+        try:
+            name = ui.player_name_for_action()
+        except (SteamIdentityError, ValueError) as exc:
+            self.status.set(str(exc))
+            return
         if not ui.game:
             ui.game = ui.game_factory(self.lobby)
-        name = ui.name.get().strip()
         self.status.set('Reserving a seat…')
         self.submit('start', lambda: ui.game.start_public(name))
 

@@ -8,7 +8,28 @@ from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))
-from direct_client import DirectGame
+from direct_client import DirectGame, PublicCTFPanel
+from steam_identity import SteamIdentityError
+
+
+class PublicNameTest(unittest.TestCase):
+    def test_public_join_uses_the_selected_name_or_reports_why_it_is_unavailable(self):
+        panel = PublicCTFPanel.__new__(PublicCTFPanel)
+        calls, status = [], []
+        panel.status = SimpleNamespace(set=status.append)
+        panel.desktop = SimpleNamespace(
+            game=SimpleNamespace(start_public=calls.append), player_name_for_action=lambda: 'Warrior Name')
+        panel.submit = lambda _action, work: work()
+        panel.start()
+        self.assertEqual(calls, ['Warrior Name'])
+
+        def unavailable():
+            raise SteamIdentityError('Set a Warrior Name in Settings.')
+
+        panel.desktop.player_name_for_action = unavailable
+        panel.start()
+        self.assertEqual(calls, ['Warrior Name'])
+        self.assertEqual(status[-1], 'Set a Warrior Name in Settings.')
 
 
 class PublicRoundReconnectTest(unittest.TestCase):
