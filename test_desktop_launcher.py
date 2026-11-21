@@ -128,6 +128,35 @@ class DesktopTest(unittest.TestCase):
             app.close()
             app.close_worker.join(2)
 
+    def test_spectate_actions_fit_on_first_open(self):
+        for size, scaling in (('1030x800', 1.333), ('850x740', 1.75)):
+            with self.subTest(size=size, scaling=scaling):
+                root = tk.Tk()
+                root.attributes('-alpha', 0)
+                root.tk.call('tk', 'scaling', scaling)
+                app = Desktop(root, FakeLobby(), lambda _: FakeGame())
+                try:
+                    root.geometry(size)
+                    root.update_idletasks()
+                    with patch.object(app, 'refresh_live_matches'):
+                        app.live_nav.invoke()
+                    root.update_idletasks()
+
+                    actions = (app.spectate_button, app.stop_watch_button, app.live_refresh_button)
+                    for button in (*actions, app.live_list, app.live_roster_table):
+                        self.assertTrue(button.winfo_ismapped(), str(button))
+                        self.assertGreaterEqual(button.winfo_width(), 1)
+                        self.assertGreater(button.winfo_height(), 1)
+                    for button in actions:
+                        self.assertGreaterEqual(button.winfo_height(), button.winfo_reqheight())
+                        self.assertGreaterEqual(button.winfo_width(), button.winfo_reqwidth())
+                        self.assertLessEqual(button.winfo_rooty() + button.winfo_height(),
+                                             app.live_list.winfo_rooty())
+                    self.assertEqual(app.spectate_button.cget('state'), 'disabled')
+                finally:
+                    app.close()
+                    app.close_worker.join(2)
+
     def test_selected_live_match_displays_and_refreshes_team_names(self):
         root = tk.Tk()
         root.withdraw()
