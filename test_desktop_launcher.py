@@ -9,7 +9,7 @@ import tkinter as tk
 import unittest
 from unittest.mock import Mock, patch
 
-from desktop_launcher import Desktop
+from desktop_launcher import Desktop, match_phase_text
 from community_transport import CommunityError
 from community_maps import options
 from steam_identity import SteamIdentityError, read_local_name, save_local_name
@@ -453,6 +453,25 @@ class DesktopTest(unittest.TestCase):
         finally:
             app.close()
             app.close_worker.join(2)
+
+    def test_match_status_and_roster_use_utf8_punctuation(self):
+        source = Path(__file__).with_name('desktop_launcher.py').read_text(encoding='utf-8')
+        self.assertNotIn('\u00e2\u20ac', source)
+        self.assertNotIn('\u00c2\u00b7', source)
+        self.assertEqual(match_phase_text({'phase':'starting','match':{'progress':'Preparing the server runtime'}}),
+                         'Match: starting \u2014 Preparing the server runtime')
+        self.assertEqual(match_phase_text({'phase':'setup','preparation':{'status':'waiting'}}),
+                         'Match: setup \u2014 Waiting for a server slot\u2026')
+        root = tk.Tk()
+        root.attributes('-alpha', 0)
+        lobby, game = FakeLobby(), FakeGame()
+        lobby.room['players'][0].update(name='Andr\u00e9',team='blue')
+        app = Desktop(root, lobby, lambda _: game)
+        try:
+            app.render(lobby.room)
+            self.assertEqual(app.rosters['blue'].get(0), 'Andr\u00e9  \u2022 leader  \u2022 you')
+        finally:
+            app.close()
 
     def test_roster_refresh_preserves_selected_player_and_scroll(self):
         root=tk.Tk();root.attributes('-alpha',0);root.geometry('850x650')

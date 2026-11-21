@@ -35,7 +35,7 @@ def starter_version(package=ROOT):
                 return f'Starter {release}'
     except (OSError, ValueError):
         pass
-    return 'Starter r0 Â· base build'
+    return 'Starter r0 · base build'
 
 
 def match_phase_text(room):
@@ -45,15 +45,15 @@ def match_phase_text(room):
     if room['phase']=='setup':
         preparation=room.get('preparation')
         if isinstance(preparation,dict):
-            label={'waiting':'Waiting for a server slotâ€¦','preparing':'Preparing the selected mapâ€¦',
-                   'ready':'Server ready. Choose teams, then start.','stopping':'Changing the prepared mapâ€¦',
+            label={'waiting':'Waiting for a server slot…','preparing':'Preparing the selected map…',
+                   'ready':'Server ready. Choose teams, then start.','stopping':'Changing the prepared map…',
                    'failed':'Server preparation failed; Start match can retry.'}.get(preparation.get('status'))
-            if label:text+=' â€” '+(preparation.get('progress') or label)
+            if label:text+=' — '+(preparation.get('progress') or label)
     if room['phase'] in ('starting', 'ready'):
         match = room.get('match')
         progress = match.get('progress') if isinstance(match, dict) else None
         if isinstance(progress, str) and progress.strip():
-            text += ' â€” ' + progress.strip()
+            text += ' — ' + progress.strip()
     return text
 
 
@@ -98,7 +98,7 @@ class Desktop:
         self.players = []
         self.closing = False
         self.copy_reset_handle = None
-        root.title('TRIBES 3 â€¢ Community Starter')
+        root.title('TRIBES 3 • Community Starter')
         root.geometry('1030x800')
         root.minsize(850, 740)
         root.configure(bg=BG)
@@ -113,7 +113,7 @@ class Desktop:
         self.name = tk.StringVar(value=self.warrior_name or self.steam_name)
         self.code = tk.StringVar()
         self.map_name = tk.StringVar(value='Stonehenge')
-        self.status = tk.StringVar(value='Checking community serviceâ€¦')
+        self.status = tk.StringVar(value='Checking community service…')
         self.room_heading = tk.StringVar(value='Not in a lobby')
         self.phase = tk.StringVar(value='Create a lobby or enter a code.')
         self.preparation = tk.StringVar(value='')
@@ -123,7 +123,7 @@ class Desktop:
         self.allow_bots = tk.BooleanVar(value=False)
         self.bot_count = tk.StringVar(value='2')
         self.retail_capture_point = tk.BooleanVar(value=True)
-        self.live_status = tk.StringVar(value='Checking spectator supportâ€¦')
+        self.live_status = tk.StringVar(value='Checking spectator support…')
         side = tk.Frame(root, bg='#0d1927', width=225)
         self.sidebar = side
         side.pack(side='left', fill='y')
@@ -402,7 +402,7 @@ class Desktop:
                                 self.map_retry_count += 1
                                 self.map_retry_at = (time.monotonic() + self.map_retry_count
                                                      if self.map_retry_count < 3 else float('inf'))
-                                message = ('Connection interrupted. Checking your map selection againâ€¦'
+                                message = ('Connection interrupted. Checking your map selection again…'
                                            if self.map_retry_count < 3 else
                                            'Map selection is unconfirmed. Choose the map again to retry.')
                             else:
@@ -431,9 +431,9 @@ class Desktop:
                 previous_status=self.game_status
                 self.game_status=state['status']
                 if state['status'] in ('starting','playing','stopping'):
-                    self.status.set(state.get('progress') or {'starting':'Opening gameâ€¦','playing':'Game connected.','stopping':'Closing gameâ€¦'}[state['status']])
+                    self.status.set(state.get('progress') or {'starting':'Opening game…','playing':'Game connected.','stopping':'Closing game…'}[state['status']])
                     if self.watch_id is not None:
-                        self.live_status.set(state.get('progress') or {'starting':'Opening spectator viewâ€¦','playing':'Watching match.','stopping':'Closing spectator viewâ€¦'}[state['status']])
+                        self.live_status.set(state.get('progress') or {'starting':'Opening spectator view…','playing':'Watching match.','stopping':'Closing spectator view…'}[state['status']])
                 elif state['error']:
                     self.status.set(state['error'])
                 elif previous_status != self.game_status and state.get('progress'):
@@ -477,7 +477,7 @@ class Desktop:
         self.pending_map = (self.room['code'], matches[0])
         self.map_retry_count = 0
         self.map_retry_at = 0
-        self.status.set('Applying map selectionâ€¦')
+        self.status.set('Applying map selection…')
         self.render(self.room)
         self.flush_map_selection()
 
@@ -725,8 +725,8 @@ class Desktop:
             self.roster_players[team] = players
             box.delete(0, tk.END)
             for index, player in enumerate(players):
-                box.insert(tk.END, player['name'] + ('  â€¢ leader' if player['leader'] else '')
-                           + ('  â€¢ you' if player['id'] == room['playerId'] else ''))
+                box.insert(tk.END, player['name'] + ('  • leader' if player['leader'] else '')
+                           + ('  • you' if player['id'] == room['playerId'] else ''))
                 if player['id'] == selected:
                     box.selection_set(index)
                     box.activate(index)
@@ -741,7 +741,7 @@ class Desktop:
         if not self.side_row.winfo_manager():
             self.side_row.pack(fill='x', before=self.roster_frame, pady=(6, 0))
         self.blue_side.set('Side ' + side)
-        self.red_side.set('Red starts on Side A Â· In-game colors swap' if side == 'B'
+        self.red_side.set('Red starts on Side A · In-game colors swap' if side == 'B'
                           else 'Red starts on Side B')
         self.side_combo.configure(state='readonly' if editable else 'disabled')
 
@@ -771,7 +771,7 @@ class Desktop:
             self.status.set('Wait for the selected map to be confirmed.');return
         if self.watch_id is not None:
             self.status.set('Stop watching the current match first.');return
-        self.status.set('Checking the selected matchâ€¦')
+        self.status.set('Checking the selected match…')
         selected_map = self.room['map']
         match = self.room.get('match')
         match_id = match.get('id') if isinstance(match, dict) else None
@@ -780,7 +780,7 @@ class Desktop:
             if match_id:
                 return self.game.start(expected_map=selected_map, expected_match_id=match_id)
             return self.game.start(expected_map=selected_map)
-        if self.run_async(begin,lambda _:self.status.set('Opening gameâ€¦')):
+        if self.run_async(begin,lambda _:self.status.set('Opening game…')):
             self.join_attempted_match = match_id
 
     def toggle_spectators(self):
@@ -876,7 +876,7 @@ class Desktop:
             self.maps_notice.set('Per-map downloads are unavailable on this server.')
             self.render_map_controls()
             return
-        self.maps_notice.set('Checking map downloadsâ€¦')
+        self.maps_notice.set('Checking map downloads…')
 
         def work():
             try:
@@ -1078,11 +1078,11 @@ class Desktop:
             return
         def admitted(target):
             self.watch_id=target['watchId']
-            self.live_status.set('Preparing spectator viewâ€¦')
+            self.live_status.set('Preparing spectator view…')
             def begin():
                 if not self.game:self.game=self.game_factory(self.lobby)
                 return self.game.start_spectating(target['watchId'])
-            self.run_async(begin,lambda _:self.live_status.set('Opening spectator viewâ€¦'))
+            self.run_async(begin,lambda _:self.live_status.set('Opening spectator view…'))
         self.run_async(lambda: self.lobby.spectate(item['id'],name), admitted)
 
     def stop_watching(self):
