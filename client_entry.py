@@ -5,6 +5,7 @@ SHA256 3baeb559c717aaad2316cdd2298e9c8e521cf373f87c358a398064dbaf8ce190.
 Source manifest SHA256 740081ed79694c486fcff871b4e5ff3329100e5f7407eaf01985d3ed4c44a009.
 """
 import argparse
+from contextlib import ExitStack
 import json
 import os
 import re
@@ -29,6 +30,9 @@ STOCK_CLOUD_MAPS = frozenset({
 # The signed Direct release can refresh weather independently of the archive.
 # A full archive can also supply the runtime and map descriptors on its own.
 _SIGNED_WEATHER_MODULE = None
+
+_SIGNED_SOUNDTRACK_PLAYER = None
+
 
 def weather_runtime_path(root, run, package):
     if _SIGNED_WEATHER_MODULE is not None:
@@ -99,11 +103,32 @@ def write_map_definitions(root, run, definitions, selected, package, *, public=F
 
 
 _MAP_WEATHER_LUA = """
+local function music_route(music)
+ if music==nil then return end
+ assert(type(music)=='table','map_music_contract')
+ for key in pairs(music) do
+  assert(key=='track' or key=='playlist' or key=='first','map_music_contract')
+ end
+ if music.track~=nil then
+  assert(type(music.track)=='string' and music.playlist==nil and music.first==nil,'map_music_contract')
+  local tracks={['t2-badlands']=true,['t2-desert']=true,['t2-ice']=true,['t2-lush']=true,['t2-volcano']=true,
+                ['rollercoaster']=true}
+  local number=tonumber(music.track:match('^t1%-(%d%d)$'))
+  assert(tracks[music.track] or (number and number>=1 and number<=10),'map_music_contract')
+  return (music.track:gsub('-','_'))
+ end
+ local first=music.first
+ assert(music.playlist=='t1' and type(first)=='number' and first%1==0 and first>=1 and first<=10,
+        'map_music_contract')
+ return 'playlist_t1_'..string.format('%d',first)
+end
+
 local function apply_weather(id,path)
  local row=assert(maps[id],'weather_catalog_map_missing')
  local env={assert=assert,type=type,ipairs=ipairs,pairs=pairs,setmetatable=setmetatable,
             string={format=string.format}}
- local adapter=assert(loadfile(path,'t',env))()
+ local adapter, metadata=assert(loadfile(path,'t',env))()
+ if type(adapter)=='function' and type(metadata)=='table' then adapter=metadata end
  if type(adapter)~='table' then return end
  local authored,layout=adapter.descriptor
  if type(authored)=='function' then
@@ -111,7 +136,7 @@ local function apply_weather(id,path)
   assert(type(authored)=='table' and authored.name==id and authored.package==row.package
          and authored.world==row.world,'weather_catalog_map_identity')
   layout=authored.base_layout
- elseif adapter.format==1 and (adapter.weather~=nil or adapter.liquids~=nil or adapter.emergency_lighting~=nil or adapter.hide_minimap~=nil
+ elseif adapter.format==1 and (adapter.music~=nil or adapter.weather~=nil or adapter.liquids~=nil or adapter.emergency_lighting~=nil or adapter.hide_minimap~=nil
      or (type(adapter.layout)=='table' and adapter.layout.radars_per_team~=nil)) then
   assert(adapter.map_id==id and adapter.package==row.package and adapter.world==row.world,
          'weather_catalog_map_identity')
@@ -142,6 +167,7 @@ local function apply_weather(id,path)
   assert(type(authored.emergency_lighting)=='boolean','emergency_lighting_setting_required')
   row.emergency_lighting=authored.emergency_lighting
  end
+ row.music_route=music_route(authored.music)
 end
 local function load_weather(id,path)
  local ok,err=pcall(apply_weather,id,path)
@@ -282,7 +308,7 @@ def main():
     diagnostic_profile = bool(args.headless or args.test_source or args.seconds is not None)
     with ProfileSession(mode=MODE, workspaces=(workspace, source.parent / 'TRIBES3 Client Sessions'),
                         diagnostic=diagnostic_profile, source_game=source, package_root=ROOT,
-                        bootstrap_map=selected_bootstrap) as player_profile:
+                        bootstrap_map=selected_bootstrap) as player_profile, ExitStack() as audio:
         print('Joining TRIBES 3 Community Server at ' + destination, flush=True)
         print('Session: ' + str(run), flush=True)
         print('CLIENT_PREPARATION_CONSUMED|fileCopyBytes=0|bulkHashBytes=0', flush=True)
@@ -311,6 +337,19 @@ def main():
         template = template.replace('@@STOCK_CLOUD_MAP@@', json.dumps(cloud_map))
         settings_path = profile / 'Saved/Config/Windows/GameUserSettings.ini'
         template = template.replace('@@MUSIC_SETTINGS@@', json.dumps(settings_path.as_posix(), ensure_ascii=False))
+        if '@@MAP_SOUNDTRACK@@' in template:
+            soundtrack = 'nil'
+            soundtrack_player = _SIGNED_SOUNDTRACK_PLAYER
+            if soundtrack_player is None and any(row['path'] == 'map_soundtracks.py' for row in package['files']):
+                from map_soundtracks import soundtrack_player
+            if soundtrack_player is not None:
+                routes = audio.enter_context(soundtrack_player(
+                    ROOT, run, package, enabled=not args.headless and not args.spectate, workspace=workspace))
+                if routes:
+                    keys = ','.join(f'[{json.dumps(name)}]=true' for name in routes)
+                    session = json.dumps(run.as_posix(), ensure_ascii=False)
+                    soundtrack = f'{{directory={session},routes={{{keys}}}}}'
+            template = template.replace('@@MAP_SOUNDTRACK@@', soundtrack)
         weather_module = weather_runtime_path(ROOT, run, package)
         for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=map_definitions.as_posix(), SNOWBLIND_WEATHER=weather_module.as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
             template = template.replace('@@' + key + '@@', json.dumps(value, ensure_ascii=False))

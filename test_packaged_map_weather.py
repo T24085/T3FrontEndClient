@@ -36,6 +36,25 @@ class PackagedMapWeatherTest(unittest.TestCase):
         self.lua = LuaRuntime()
         self.definitions = {item.id: item for item in (KATA, BLIZZARD)}
 
+    def test_music_is_optional_and_validated_in_downloaded_map_descriptors(self):
+        for field, expected in (('', None), (',music={track="t2-ice"}', 't2_ice'),
+                                (',music={playlist="t1",first=8}', 'playlist_t1_8'),
+                                (',music={playlist="t1",first=11}', None),
+                                (',music={track="../../music"}', None)):
+            with self.subTest(field=field):
+                with tempfile.TemporaryDirectory(dir=self.root) as target:
+                    self.run = Path(target).resolve()
+                    adapter = ('return {format=1,map_id="%s",package="%s",world="%s"%s}' %
+                               (KATA.id, KATA.package, f"{KATA.package}.{KATA.level}:", field))
+                    objective = self.add_adapter(adapter)
+                    source = self.run / 'downloaded-objectives' / objective['path']
+                    source.parent.mkdir(parents=True)
+                    source.write_text(adapter, encoding='utf-8')
+                    path = write_map_definitions(self.root, self.run, self.definitions, KATA,
+                                                 {'files': []}, objectives=[objective])
+                    data = self.lua.eval('function(path) return assert(loadfile(path))() end')(path.as_posix())
+                    self.assertEqual(data[KATA.id].music_route, expected)
+
     def add_adapter(self, source, definition=KATA):
         name = f'lua/{definition.id}/objectives.lua'
         path = self.root / name

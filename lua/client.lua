@@ -1366,46 +1366,89 @@ end
 
 local update_match_music=(function()
     local busPath='/Game/Audio/Submixes/MUS_Game_Submix.MUS_Game_Submix'
-    local world, appliedWorld, appliedPhase, bus, muted, failed
+    local soundtrack=@@MAP_SOUNDTRACK@@
+    local world, bus, muted, failures
+    local request, requestTime
 
-    local function saved_music_is_muted()
+    local function set_request(value, now)
+        if not soundtrack or (value==request and (not value or now==requestTime)) then return end
+        local file=io.open(soundtrack.directory..'/map-soundtrack-request','wb')
+        if not file then return end
+        file:write(value or '')
+        file:close()
+        request,requestTime=value,now
+    end
+
+    local function track_ready(map, now)
+        local file=io.open(soundtrack.directory..'/map-soundtrack-ready','rb')
+        if not file then return false end
+        local raw=file:read(96) or ''
+        file:close()
+        local name, stamp=raw:match('^(%w[%w_]*) (%d+)$')
+        stamp=tonumber(stamp)
+        return name==map and stamp and stamp<=now and now-stamp<2
+    end
+
+    local function saved_sound_levels()
         local config=io.open(@@MUSIC_SETTINGS@@,'rb')
         if not config then return end
         local raw=config:read(1048577)
         config:close()
         if not raw or #raw>1048576 then return end
-        if raw:sub(1,2)=='\255\254' or raw:sub(1,2)=='\254\255' then raw=raw:gsub('%z','') end
-        local row=raw:match('[\r\n]SavedSettingsConfig=([^\r\n]*)') or ''
-        local value=tonumber(row:match('"MusicSoundVolume"%s*,%s*"([^"]+)"'))
-        return value==0
+        if raw:sub(1,2)=='\255\254' or raw:sub(1,2)=='\254\255' then raw=raw:sub(3):gsub('%z','') end
+        raw=raw:gsub('^\239\187\191','')
+        local row
+        for entry in ('\n'..raw):gmatch('[\r\n]SavedSettingsConfig%s*=%s*([^\r\n]*)') do row=entry end
+        if not row then return end
+        local music=tonumber(row:match('"MusicSoundVolume"%s*,%s*"([^"]+)"'))
+        local master=tonumber(row:match('"MasterSoundVolume"%s*,%s*"([^"]+)"'))
+        return music,master
     end
 
-    return function(pc,gs,settingsApplied)
+    return function(pc,gs)
+        if not pc or not gs then set_request(nil,os.time()); return end
         local current=pc:GetWorld()
         if not valid(current) then return end
-        if not same_object(current,world) then world=current;failed=nil end
-        if failed then return end
+        local worldChanged=not same_object(current,world)
+        if worldChanged then world=current;failures=0 end
+        if failures>=3 then return end
         local ok,why=pcall(function()
-            local wantMute=saved_music_is_muted()
-            if wantMute==nil or (not wantMute and not muted) then return end
-            local phase=gs.r_GameplayPhaseInfo.Phase.TagName:ToString()
-            if wantMute and muted and not settingsApplied and same_object(current,appliedWorld)
-                and phase==appliedPhase then return end
-            if not valid(bus) then
-                signature('/Script/Engine.SoundSubmix:SetSubmixOutputVolume',
-                          {{'WorldContextObject','ObjectProperty',0},{'InOutputVolume','FloatProperty',8}})
-                bus=LoadAsset(busPath)
-                assert(valid(bus) and bus:GetFullName()=='SoundSubmix '..busPath,'match_music_submix_required')
+            local music,master=saved_sound_levels()
+            local now=os.time()
+            local route
+            if soundtrack then
+                local fullname=gs:GetFullName()
+                for _, row in pairs(mapDefinitions) do
+                    if row.music_route and soundtrack.routes[row.music_route] and fullname:find(row.world,1,true) then
+                        route=row.music_route
+                        break
+                    end
+                end
             end
-            -- The original match soundtrack submix has unity output. The
-            -- native sound settings still own nonzero Music slider levels.
-            bus:SetSubmixOutputVolume(pc,wantMute and 0.0 or 1.0)
-            muted=wantMute
-            appliedWorld=current
-            appliedPhase=phase
-            report('MATCH_MUSIC_MUTE|'..tostring(muted))
+            local playing=route and gs.r_GameplayPhaseInfo.Phase.TagName:ToString()=='GamePhase.GameplayStartPhase'
+            local ready=playing and track_ready(route,now)
+            local wantMute=music==0 or ready==true
+            if wantMute or (muted and (music~=nil or soundtrack)) then
+                if not valid(bus) then
+                    signature('/Script/Engine.SoundSubmix:SetSubmixOutputVolume',
+                              {{'WorldContextObject','ObjectProperty',0},{'InOutputVolume','FloatProperty',8}})
+                    bus=LoadAsset(busPath)
+                    assert(valid(bus) and bus:GetFullName()=='SoundSubmix '..busPath,'match_music_submix_required')
+                end
+                -- Native sound settings can refresh the mixer during a phase.
+                bus:SetSubmixOutputVolume(pc,wantMute and 0.0 or 1.0)
+                if worldChanged or muted~=wantMute then report('MATCH_MUSIC_MUTE|'..tostring(wantMute)) end
+                muted=wantMute
+            end
+            local gain=math.max(0,math.min(1,music or 1))*math.max(0,math.min(1,master or 1))
+            set_request(route and string.format('%s %d %d',route,math.floor(gain*1000+0.5),ready and 1 or 0),now)
         end)
-        if not ok then failed=true;report('MATCH_MUSIC_MUTE_UNAVAILABLE|'..tostring(why):sub(1,300)) end
+        if ok then failures=0
+        else
+            set_request(nil,os.time())
+            failures=failures+1
+            if failures==3 then report('MATCH_MUSIC_MUTE_UNAVAILABLE|'..tostring(why):sub(1,300)) end
+        end
     end
 end)()
 

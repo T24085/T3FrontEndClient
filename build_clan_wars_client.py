@@ -21,7 +21,7 @@ TITLE = 'Tribes Rivals: Clan Wars (community mod)'
 
 
 def build(source, proof_path, output, *, feed=None, catalog=None, assets=None,
-          map_objectives=None):
+          map_objectives=None, soundtracks=None):
     proof = json.loads(proof_path.read_bytes())
     if source.stat().st_size != proof['bytes'] or file_sha(source) != proof['sha256']:
         raise ValueError('The original Direct Starter archive failed verification.')
@@ -106,6 +106,13 @@ def build(source, proof_path, output, *, feed=None, catalog=None, assets=None,
         if not any('lua/snowblind_weather.lua' in names for names in manifest['map_runtime'].values()):
             replace['lua/snowblind_weather.lua'] = (ROOT / 'lua/snowblind_weather.lua').read_bytes()
         replace['client.py'] = (ROOT / 'client_entry.py').read_bytes()
+    if soundtracks is not None:
+        from map_soundtracks import source_tracks
+
+        additions['map_soundtracks.py'] = (ROOT / 'map_soundtracks.py').read_bytes()
+        additions.update({'music/' + name: path.read_bytes() for name, path in source_tracks(soundtracks).items()})
+        replace['client.py'] = (ROOT / 'client_entry.py').read_bytes()
+        replace['lua/client.lua'] = (ROOT / 'lua/client.lua').read_bytes()
     with tarfile.open(source, 'r|gz') as original, ZipFile(partial, 'x', ZIP_DEFLATED, compresslevel=1) as package:
         for name, data in top.items():
             write_bytes(package, name, data)
@@ -167,12 +174,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('source','source-proof','output','proof'):
         parser.add_argument('--'+name, required=True, type=Path)
-    for name in ('feed','catalog','assets','map-objectives'):
+    for name in ('feed','catalog','assets','map-objectives','soundtracks'):
         parser.add_argument('--'+name, type=Path)
     args = parser.parse_args()
     result = build(args.source,args.source_proof,args.output,
                    feed=args.feed,catalog=args.catalog,assets=args.assets,
-                   map_objectives=args.map_objectives.resolve(strict=True) if args.map_objectives else None)
+                   map_objectives=args.map_objectives.resolve(strict=True) if args.map_objectives else None,
+                   soundtracks=args.soundtracks)
     with args.proof.open('xb') as stream:
         stream.write(encoded(result))
     print(json.dumps(result),flush=True)
