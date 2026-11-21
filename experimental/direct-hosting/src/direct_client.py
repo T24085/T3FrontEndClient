@@ -638,10 +638,118 @@ def download_armor_model(lobby, key):
         raise CommunityError(str(exc)) from exc
 
 
+def load_weapon_library(directory):
+    """Read the private library index without contacting the host."""
+    with (directory / 'catalog.json').open('rb') as stream:
+        raw = stream.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise ValueError('The weapon library index is too large.')
+    document = json.loads(raw)
+    if not isinstance(document, dict) or document.get('format') != 1:
+        raise ValueError('Unsupported weapon library index.')
+    families = document.get('weapons')
+    if not isinstance(families, dict) or not families:
+        raise ValueError('The weapon library is empty.')
+    for name, views in families.items():
+        if not name or not isinstance(views, dict) or not views:
+            raise ValueError('Invalid weapon library entry.')
+        for view, entries in views.items():
+            if view not in ('First person', 'Third person', 'Shared') or not isinstance(entries, dict) or not entries:
+                raise ValueError('Invalid weapon view.')
+            for asset, filename in entries.items():
+                if not asset or (filename is not None and
+                                 (not isinstance(filename, str) or not re.fullmatch(r'[a-f0-9]{16}\.t3m', filename))):
+                    raise ValueError('Invalid weapon model entry.')
+    return families
+
+
+class WeaponLibraryPanel:
+    def __init__(self, tk, desktop, parent, directory):
+        from tkinter import ttk
+        from desktop_launcher import BG, MUTED, PANEL
+
+        self.directory = directory
+        self.tk_error = tk.TclError
+        self.panel = tk.Frame(parent, bg=BG)
+        self.catalog = {}
+        self.viewport = None
+        self.fields = []
+        self.caption = tk.StringVar(master=parent)
+        row = tk.Frame(self.panel, bg=BG)
+        row.pack(fill='x')
+        for column, (label, callback) in enumerate((
+                ('Weapon', self.choose_weapon), ('View', self.choose_view), ('Model / variant', self.show_model))):
+            desktop.label(row, label, size=10, color=MUTED).grid(row=0, column=column, sticky='w')
+            field = ttk.Combobox(row, state='disabled', width=15)
+            field.grid(row=1, column=column, sticky='ew', padx=(0, 8) if column < 2 else 0)
+            field.bind('<<ComboboxSelected>>', callback)
+            row.columnconfigure(column, weight=1)
+            self.fields.append(field)
+        preview = tk.Frame(self.panel, bg=PANEL, width=460, height=335)
+        preview.pack(fill='x', pady=(12, 4))
+        preview.pack_propagate(False)
+        self.preview = tk.Frame(preview, bg=PANEL, takefocus=True, cursor='fleur')
+        self.notice = tk.Label(preview, bg=PANEL, fg=MUTED, wraplength=420)
+        tk.Label(self.panel, textvariable=self.caption, bg=BG, fg=MUTED,
+                 justify='left', wraplength=510).pack(anchor='w')
+
+    def open(self):
+        if self.catalog:
+            return
+        try:
+            self.catalog = load_weapon_library(self.directory)
+        except (OSError, ValueError):
+            self.show_notice('The private weapon library could not be opened.')
+            return
+        self.set_options(0, sorted(self.catalog, key=str.casefold))
+        self.choose_weapon()
+
+    def set_options(self, index, values):
+        field = self.fields[index]
+        field.configure(values=values, state='readonly')
+        field.current(0)
+
+    def choose_weapon(self, _event=None):
+        views = self.catalog[self.fields[0].get()]
+        self.set_options(1, [view for view in ('First person', 'Third person', 'Shared') if view in views])
+        self.choose_view()
+
+    def choose_view(self, _event=None):
+        entries = self.catalog[self.fields[0].get()][self.fields[1].get()]
+        self.set_options(2, sorted(entries, key=lambda name: (entries[name] is None, name.casefold())))
+        self.show_model()
+
+    def show_notice(self, message):
+        self.preview.pack_forget()
+        self.notice.configure(text=message)
+        self.notice.pack(fill='both', expand=True)
+        self.caption.set('')
+
+    def show_model(self, _event=None):
+        weapon, view, asset = (field.get() for field in self.fields)
+        filename = self.catalog[weapon][view][asset]
+        if filename is None:
+            self.show_notice('Asset inventoried. A 3D preview is unavailable for this model.')
+            return
+        try:
+            from armor_viewport import ArmorViewport, read_model
+            model = read_model(self.directory / 'models' / filename)
+            self.notice.pack_forget()
+            self.preview.pack(fill='both', expand=True)
+            if self.viewport is None:
+                self.viewport = ArmorViewport(self.preview)
+            self.viewport.show(model)
+        except (ImportError, OSError, ValueError, self.tk_error):
+            self.show_notice('The local 3D preview could not be opened.')
+            return
+        finish = 'Texture preview' if model.texture is not None else 'Geometry preview · Retail materials unavailable'
+        self.caption.set(f'{finish}\nDrag to rotate · Scroll to zoom · Home to reset')
+
+
 class ArmorPanel:
     classes = ('Light', 'Medium', 'Heavy')
 
-    def __init__(self, tk, desktop, lobby, *, model_directory=None):
+    def __init__(self, tk, desktop, lobby, *, model_directory=None, weapon_directory=None):
         from tkinter import ttk
         from desktop_launcher import BG, MUTED, PANEL
 
@@ -660,8 +768,17 @@ class ArmorPanel:
         self.caption = tk.StringVar()
         self.panel = tk.Frame(desktop.root, bg=BG)
         desktop.label(self.panel, 'Armor', 27, True).pack(anchor='w')
-        desktop.label(self.panel, 'Choose a suit for each armor class.', color=MUTED).pack(anchor='w', pady=(4, 18))
-        row = tk.Frame(self.panel, bg=BG)
+        self.suits_panel = tk.Frame(self.panel, bg=BG)
+        self.weapons_panel = None
+        if os.name == 'nt' and weapon_directory is not None and (weapon_directory / 'catalog.json').is_file():
+            self.weapons_panel = WeaponLibraryPanel(tk, desktop, self.panel, weapon_directory)
+            nav = tk.Frame(self.panel, bg=BG)
+            nav.pack(fill='x', pady=(8, 12))
+            desktop.button(nav, 'Suits', lambda: self.show_section(False), False).pack(side='left', padx=(0, 8))
+            desktop.button(nav, 'Weapons', lambda: self.show_section(True), False).pack(side='left')
+        self.suits_panel.pack(fill='both', expand=True)
+        desktop.label(self.suits_panel, 'Choose a suit for each armor class.', color=MUTED).pack(anchor='w', pady=(4, 18))
+        row = tk.Frame(self.suits_panel, bg=BG)
         row.pack(anchor='w')
         self.weight_box = ttk.Combobox(row, textvariable=self.weight, values=self.classes, state='readonly', width=12)
         self.weight_box.pack(side='left')
@@ -669,21 +786,31 @@ class ArmorPanel:
         self.suit_box = ttk.Combobox(row, textvariable=self.suit, state='disabled', width=25)
         self.suit_box.pack(side='left', padx=(8, 0))
         self.suit_box.bind('<<ComboboxSelected>>', self.select_suit)
-        preview = tk.Frame(self.panel, bg=PANEL, width=460, height=335)
+        preview = tk.Frame(self.suits_panel, bg=PANEL, width=460, height=335)
         preview.pack(anchor='w', pady=(12, 4), fill='x')
         preview.pack_propagate(False)
         self.model_status = tk.Label(preview, text='Loading available suits…', bg=PANEL, fg=MUTED)
         self.model_status.pack(fill='both', expand=True)
         self.model_frame = tk.Frame(preview, bg=PANEL, takefocus=True, cursor='fleur')
-        self.orbit_help = desktop.label(self.panel, 'Drag to rotate · Scroll to zoom · Home to reset', color=MUTED)
-        tk.Label(self.panel, textvariable=self.caption, bg=BG, fg=MUTED).pack(anchor='w')
-        self.save = desktop.button(self.panel, 'Save armor choices', self.save_choices)
+        self.orbit_help = desktop.label(self.suits_panel, 'Drag to rotate · Scroll to zoom · Home to reset', color=MUTED)
+        tk.Label(self.suits_panel, textvariable=self.caption, bg=BG, fg=MUTED).pack(anchor='w')
+        self.save = desktop.button(self.suits_panel, 'Save armor choices', self.save_choices)
         self.save.pack(anchor='w', pady=(10, 0))
         self.save.configure(state='disabled')
-        tk.Label(self.panel, textvariable=self.status, bg=BG, fg=MUTED, wraplength=530,
+        tk.Label(self.suits_panel, textvariable=self.status, bg=BG, fg=MUTED, wraplength=530,
                  justify='left').pack(anchor='w', pady=(6, 0))
         desktop.button(desktop.sidebar, 'Armor', lambda: desktop.show_panel('armor'), False).pack(
             fill='x', padx=18, pady=(6, 0))
+
+    def show_section(self, weapons):
+        self.suits_panel.pack_forget()
+        self.weapons_panel.panel.pack_forget()
+        if weapons:
+            self.weapons_panel.panel.pack(fill='both', expand=True)
+            self.weapons_panel.open()
+        else:
+            self.suits_panel.pack(fill='both', expand=True)
+            self.open()
 
     def submit(self, key, **data):
         if key in self.requests:
@@ -1080,7 +1207,7 @@ class PublicCTFPanel:
             self.submit('poll', lambda: self.lobby.public_state(renew=public))
         self.root.after(150, self.tick)
 
-def main(root=ROOT, *, on_ready=None):
+def main(root=ROOT, *, on_ready=None, weapon_directory=None):
     import tkinter as tk
     from tkinter import filedialog,messagebox
     from desktop_launcher import Desktop
@@ -1168,7 +1295,8 @@ def main(root=ROOT, *, on_ready=None):
             gui.public_panel = PublicCTFPanel(tk, gui, lobby)
             gui.show_panel('public' if lobby.public_only else 'lobbies')
         if lobby.armor_supported:
-            gui.armor_panel = ArmorPanel(tk, gui, lobby, model_directory=root/'armor-models')
+            gui.armor_panel = ArmorPanel(tk, gui, lobby, model_directory=root/'armor-models',
+                                         weapon_directory=weapon_directory or local/'weapon-library')
         if lobby.proximity_supported:
             enabled = tk.BooleanVar(value=lobby.proximity_enabled.is_set())
             tk.Checkbutton(gui.sidebar, text='Proximity voice', variable=enabled,
