@@ -1280,6 +1280,46 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
                     return
             super().show_panel(name)
 
+        def show_settings(self):
+            previous = self.settings_window
+            super().show_settings()
+            window = self.settings_window
+            if window is previous or not lobby.proximity_supported:
+                return
+            from desktop_launcher import BG, MUTED, TEXT
+            self.label(window, 'Proximity voice', 16, True).pack(anchor='w', pady=(14, 4))
+            row = tk.Frame(window, bg=BG)
+            row.pack(anchor='w')
+            enabled = tk.BooleanVar(window, value=lobby.proximity_enabled.is_set())
+            key = tk.StringVar(window, value=f'Change key ({PTT_KEY_NAMES[lobby.proximity_key]})')
+
+            def toggle():
+                lobby.set_proximity_voice(enabled.get())
+                self.voice_notice.set('Proximity voice: On' if lobby.proximity_enabled.is_set() else 'Proximity voice: Off')
+
+            def save_key(value):
+                lobby.bind_proximity_key(value)
+                key.set(f'Change key ({PTT_KEY_NAMES[lobby.proximity_key]})')
+
+            tk.Checkbutton(row, text='Enable proximity voice', variable=enabled, command=toggle,
+                           bg=BG, fg=TEXT, activebackground=BG, activeforeground=TEXT,
+                           selectcolor='#20374a').pack(side='left')
+            button = self.button(row, 'Change key', lambda: choose_proximity_key(window, save_key), False)
+            button.configure(textvariable=key)
+            button.pack(side='left', padx=(12, 0))
+            detail = tk.Label(window, bg=BG, fg=MUTED, anchor='w')
+            detail.pack(anchor='w', pady=(6, 0))
+
+            pending = None
+
+            def refresh_detail():
+                nonlocal pending
+                detail.configure(text=lobby.proximity_status)
+                pending = detail.after(250, refresh_detail)
+
+            detail.bind('<Destroy>', lambda _event: detail.after_cancel(pending) if pending else None)
+            refresh_detail()
+
         def close(self):
             try:super().close()
             finally:lobby.close()
@@ -1297,28 +1337,15 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
         if lobby.armor_supported:
             gui.armor_panel = ArmorPanel(tk, gui, lobby, model_directory=root/'armor-models',
                                          weapon_directory=weapon_directory or local/'weapon-library')
-        if lobby.proximity_supported:
-            enabled = tk.BooleanVar(value=lobby.proximity_enabled.is_set())
-            tk.Checkbutton(gui.sidebar, text='Proximity voice', variable=enabled,
-                           command=lambda: lobby.set_proximity_voice(enabled.get()),
-                           bg='#0d1927', fg='#eff7ff', activebackground='#0d1927',
-                           activeforeground='#eff7ff', selectcolor='#20374a').pack(anchor='w', padx=20, pady=(18, 0))
-            key_label = tk.StringVar(value=f'Change key ({PTT_KEY_NAMES[lobby.proximity_key]})')
-            change_key = gui.button(gui.sidebar, 'Change proximity key',
-                                    lambda: choose_proximity_key(window, lobby.bind_proximity_key), False)
-            change_key.configure(textvariable=key_label)
-            change_key.pack(anchor='w', padx=24, pady=(2, 4))
-            indicator = tk.StringVar(value=lobby.proximity_status)
-            tk.Label(gui.sidebar, textvariable=indicator, bg='#0d1927', fg='#9fb3c6',
-                     wraplength=170, justify='left').pack(anchor='w', padx=24)
-
-            def refresh_voice():
-                key_label.set(f'Change key ({PTT_KEY_NAMES[lobby.proximity_key]})')
-                indicator.set(lobby.proximity_status)
-                if not gui.closing:
-                    window.after(150, refresh_voice)
-
-            window.after(150, refresh_voice)
+        if lobby.proximity_supported or os.name == 'nt':
+            state = ('On' if lobby.proximity_enabled.is_set() else 'Off') if lobby.proximity_supported else 'Unavailable'
+            gui.voice_notice = tk.StringVar(window, value='Proximity voice: ' + state)
+            tk.Label(gui.sidebar, textvariable=gui.voice_notice, bg='#0d1927', fg='#eff7ff',
+                     anchor='w').pack(anchor='w', padx=20, pady=(16, 0))
+            tk.Button(gui.sidebar, text='Keybindings Import in Settings', command=gui.show_settings,
+                      bg='#0d1927', fg='#9fb3c6', activebackground='#0d1927', activeforeground='#eff7ff',
+                      relief='flat', bd=0, padx=0, pady=2, anchor='w', cursor='hand2',
+                      font=('Segoe UI', 9)).pack(anchor='w', padx=20)
         window.protocol('WM_DELETE_WINDOW',gui.close)
         if on_ready is not None:
             window.update_idletasks()
