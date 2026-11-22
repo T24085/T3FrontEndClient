@@ -10,11 +10,13 @@ import webbrowser
 import logging
 from pathlib import Path
 import queue
+import re
 import sys
 import threading
 import time
 import tkinter as tk
 from tkinter import ttk
+from urllib.parse import parse_qs, urlsplit
 
 from community_game import CommunityGame
 from startup_paths import installation_options, local_directory
@@ -24,9 +26,34 @@ from map_sync_contract import CATALOG_VERSION, SESSION_VERSION, valid_sha
 from player_names import display_name
 from steam_identity import SteamIdentityError, read_local_name, save_local_name
 
+def normalize_lobby_code(value):
+    value = re.sub(r'^lobby\s+code\s*:\s*', '', value.strip(), flags=re.IGNORECASE)
+    if '://' in value:
+        try:
+            invite = urlsplit(value)
+            codes = parse_qs(invite.query, max_num_fields=20).get('code')
+        except ValueError:
+            return None
+        segments = invite.path.strip('/').split('/')
+        if invite.scheme.lower() == 't3' and invite.netloc.lower() == 'join' and len(segments) == 1:
+            value = segments[0]
+        elif invite.scheme.lower() in ('http', 'https') and invite.hostname:
+            if codes and len(codes) == 1:
+                value = codes[0]
+            elif len(segments) >= 2 and segments[-2].lower() == 'join':
+                value = segments[-1]
+            else:
+                return None
+        else:
+            return None
+    value = value.upper()
+    return value if re.fullmatch(r'[A-Z2-9]{6}', value) else None
+
+
 ROOT = Path(__file__).resolve().parent
 CLIENT_PACKAGE = ROOT if (ROOT / 'connection-policy.json').is_file() else ROOT / 'dynamic-client-development'
 APP_TITLE = 'Tribes 3 Mod Community Edition: Phoenix Rising'
+NOTICE_MS = 10000
 TEAM_NAMES = {'blue': 'Children of The Phoenix', 'red': 'Diamond Sword'}
 BG, PANEL, TEXT, MUTED, ACCENT = '#0a111b', '#132335', '#eff7ff', '#9fb3c6', '#4be4c1'
 
@@ -248,6 +275,9 @@ class Desktop:
         self.players = []
         self.closing = False
         self.copy_reset_handle = None
+        self.notice_timers = {}
+        self.ignore_departed_game_notices = False
+        self.last_map_notice = None
         root.title(APP_TITLE)
         # Previously distributed BAT wrappers set a legacy title after Desktop returns.
         root.after_idle(root.title, APP_TITLE)
@@ -282,6 +312,8 @@ class Desktop:
         self.room_heading = tk.StringVar(value='Not in a lobby')
         self.phase = tk.StringVar(value='Create a lobby or enter a code.')
         self.preparation = tk.StringVar(value='')
+        self.watch_notice(self.status)
+        self.watch_notice(self.preparation)
         self.allow_spectators = tk.BooleanVar(value=True)
         self.flag_indicators = tk.BooleanVar(value=False)
         self.fall_damage = tk.BooleanVar(value=False)
@@ -317,6 +349,7 @@ class Desktop:
                  anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
         if self.map_sync is not None:
             self.map_status = tk.StringVar(value='')
+            self.watch_notice(self.map_status)
             tk.Label(side,textvariable=self.map_status,bg='#0d1927',fg=MUTED,font=('Segoe UI',10),
                      anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
             self.map_progress = ttk.Progressbar(side, mode='determinate')
@@ -339,8 +372,21 @@ class Desktop:
         self.label(entry, 'LOBBY CODE', 9, color=ACCENT, bg=PANEL).grid(row=0,column=1,sticky='w',padx=(12,0))
         self.name_entry = tk.Entry(entry,textvariable=self.name,font=('Segoe UI',12),bg='#20374a',fg=TEXT,insertbackground=TEXT,relief='flat')
         self.name_entry.grid(row=1,column=0,sticky='ew',ipady=7,pady=(4,8))
-        self.code_entry = tk.Entry(entry,textvariable=self.code,font=('Segoe UI',12),bg='#20374a',fg=TEXT,insertbackground=TEXT,relief='flat')
-        self.code_entry.grid(row=1,column=1,sticky='ew',ipady=7,padx=(12,0),pady=(4,8))
+        code_field = tk.Frame(entry, bg=PANEL)
+        code_field.grid(row=1, column=1, sticky='ew', padx=(12,0), pady=(4,8))
+        self.code_entry = tk.Entry(code_field, textvariable=self.code, font=('Segoe UI',12), bg='#20374a',
+                                   fg=TEXT, insertbackground=TEXT, relief='flat', width=8)
+        self.code_entry.pack(side='left', fill='both', expand=True, ipady=7)
+        self.paste_code_button = self.button(code_field, 'Paste', self.paste_lobby_code, False)
+        self.paste_code_button.pack(side='right', padx=(6,0))
+        self.code_entry.bind('<<Paste>>', self.paste_lobby_code)
+        self.code_entry.bind('<Button-3>', self.open_lobby_code_menu)
+        self.code_menu = tk.Menu(self.code_entry, tearoff=False)
+        self.code_menu.add_command(label='Paste', command=self.paste_lobby_code)
+        self.code_menu.add_command(label='Cut', command=lambda: self.code_entry.event_generate('<<Cut>>'))
+        self.code_menu.add_command(label='Copy', command=lambda: self.code_entry.event_generate('<<Copy>>'))
+        self.code_menu.add_command(label='Select All', command=lambda: self.code_entry.selection_range(0, tk.END))
+        self.code_menu.add_command(label='Clear', command=lambda: self.code.set(''))
         entry.columnconfigure(0,weight=1);entry.columnconfigure(1,weight=1)
         self.lobby_create_button = self.button(entry, 'Create lobby', self.create)
         self.lobby_create_button.grid(row=2, column=0, sticky='w')
@@ -563,6 +609,29 @@ class Desktop:
         self.copy_code_button.configure(text='Copied!')
         self.copy_reset_handle = self.root.after(2500,self.reset_copy_feedback)
 
+    def watch_notice(self, value):
+        key = str(value)
+
+        def changed(*_args):
+            handle = self.notice_timers.pop(key, None)
+            if handle is not None:
+                self.root.after_cancel(handle)
+            if value.get() and not self.closing:
+                self.notice_timers[key] = self.root.after(NOTICE_MS, expire)
+
+        def expire():
+            self.notice_timers.pop(key, None)
+            busy = self.controls_busy and value is self.status
+            if (value is getattr(self, 'map_status', None)
+                    and getattr(self.map_sync, 'notice_active', False) is True):
+                busy = True
+            if busy:
+                self.notice_timers[key] = self.root.after(1000, expire)
+            else:
+                value.set('')
+
+        value.trace_add('write', changed)
+
     def poll(self):
         self.poll_handle=None
         if self.closing: return
@@ -573,8 +642,13 @@ class Desktop:
         else:
             self.finish_steam_lookup(name, error, retry=retry)
         if self.map_sync is not None:
-            self.map_status.set(self.map_sync.status)
-            progress = self.map_sync.progress
+            target = getattr(self.map_sync, 'notice_target', None)
+            current = not isinstance(target, tuple) or target == self.lobby_map_target
+            notice = self.map_sync.status if current else ''
+            progress = self.map_sync.progress if current else None
+            if (target, notice) != self.last_map_notice or progress is not None:
+                self.last_map_notice = (target, notice)
+                self.map_status.set(notice)
             if progress is None:
                 self.map_progress.pack_forget()
             else:
@@ -629,21 +703,22 @@ class Desktop:
                 state = self.game.snapshot()
                 previous_status=self.game_status
                 self.game_status=state['status']
-                if state['status'] in ('starting','playing','stopping'):
+                show_notice = not self.ignore_departed_game_notices or state.get('role') in ('spectator', 'public')
+                if show_notice and state['status'] in ('starting','playing','stopping'):
                     self.status.set(state.get('progress') or {'starting':'Opening game…','playing':'Game connected.','stopping':'Closing game…'}[state['status']])
                     if self.watch_id is not None:
                         self.live_status.set(state.get('progress') or {'starting':'Opening spectator view…','playing':'Watching match.','stopping':'Closing spectator view…'}[state['status']])
-                elif state['error'] and state['error'] != self.last_game_error:
+                elif show_notice and state['error'] and state['error'] != self.last_game_error:
                     message = state['error']
                     if self.room and self.room.get('phase') == 'ready' and state.get('role', 'player') == 'player':
                         message += ' Select Join game to retry.'
                     self.shown_game_error = message
                     self.status.set(message)
-                elif previous_status != self.game_status and state.get('progress'):
+                elif show_notice and previous_status != self.game_status and state.get('progress'):
                     self.status.set(state['progress'])
                 self.last_game_error = state['error']
                 preparation=state.get('preparation')
-                if isinstance(preparation,dict):
+                if show_notice and isinstance(preparation,dict):
                     error = preparation.get('error')
                     if not error or error != self.last_preparation_error:
                         self.preparation.set(error or preparation.get('progress') or '')
@@ -812,6 +887,14 @@ class Desktop:
                 != (current.get('code'), current.get('map'), current.get('phase'))):
             self.clear_match_messages()
         if previous.get('code') != current.get('code'):
+            self.status.set('')
+            self.preparation.set('')
+            if self.map_sync is not None:
+                self.last_map_notice = (getattr(self.map_sync, 'notice_target', None), self.map_sync.status)
+                self.map_status.set('')
+                self.map_progress.pack_forget()
+            if previous.get('code'):
+                self.ignore_departed_game_notices = True
             self.reset_copy_feedback()
         self.room = room
         if self.map_sync is not None and self.caps.get('mapSessionSync') == SESSION_VERSION:
@@ -835,7 +918,9 @@ class Desktop:
             self.spectator_toggle.pack(side='right',padx=(12,0))
             self.spectator_toggle.configure(state='normal' if setup and leader else 'disabled')
         else:self.spectator_toggle.pack_forget()
-        for widget in (self.name_entry,self.code_entry,self.create_button,self.lobby_create_button,self.join_button): widget.configure(state='disabled' if in_room or self.controls_busy else 'normal')
+        for widget in (self.name_entry, self.code_entry, self.paste_code_button, self.create_button,
+                       self.lobby_create_button, self.join_button):
+            widget.configure(state='disabled' if in_room or self.controls_busy else 'normal')
         if self.steam_name_loader and not in_room and not self.controls_busy:
             self.name_entry.configure(state='readonly', readonlybackground='#20374a')
         self.browser_name.configure(state=('disabled' if in_room or self.controls_busy else
@@ -905,8 +990,35 @@ class Desktop:
         options = {'map_id': selected} if selected and self.caps.get('mapSessionSync') == SESSION_VERSION else {}
         self.enter_lobby(lambda name: self.lobby.create(name, **options), success=created)
 
+    def paste_lobby_code(self, _event=None):
+        if self.code_entry.cget('state') == 'disabled':
+            return 'break'
+        try:
+            value = self.root.clipboard_get()
+        except tk.TclError:
+            value = ''
+        code = normalize_lobby_code(value)
+        if code is None:
+            self.status.set('Clipboard does not contain a valid lobby code.')
+        else:
+            self.code.set(code)
+            self.code_entry.icursor(tk.END)
+        return 'break'
+
+    def open_lobby_code_menu(self, event):
+        if self.code_entry.cget('state') != 'disabled':
+            try:
+                self.code_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self.code_menu.grab_release()
+        return 'break'
+
     def join(self):
-        code = self.code.get().strip().upper()
+        code = normalize_lobby_code(self.code.get())
+        if code is None:
+            self.status.set('Enter a valid six-character lobby code.')
+            return
+        self.code.set(code)
         self.enter_lobby(lambda name: self.lobby.join(code,name))
 
     def enter_lobby(self, operation, success=None):
@@ -1024,6 +1136,7 @@ class Desktop:
                 return self.game.start(expected_map=selected_map, expected_match_id=match_id)
             return self.game.start(expected_map=selected_map)
         if self.run_async(begin,lambda _:self.status.set('Opening game…')):
+            self.ignore_departed_game_notices = False
             self.join_attempted_match = match_id
 
     def toggle_spectators(self):
@@ -1481,6 +1594,9 @@ class Desktop:
     def close(self):
         if self.closing: return
         self.closing = True
+        for handle in self.notice_timers.values():
+            self.root.after_cancel(handle)
+        self.notice_timers.clear()
         self.backdrop.close()
         if self.map_sync is not None:
             self.map_sync.cancelled.set()

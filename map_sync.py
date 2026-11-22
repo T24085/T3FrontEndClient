@@ -146,6 +146,8 @@ class MapSync:
         self.lock = threading.Lock()
         self.cancelled = threading.Event()
         self.status = ''
+        self.notice_target = None
+        self.notice_active = False
         self.progress = None
         self.current = (None, {})
         self.bundled = None
@@ -365,11 +367,13 @@ class MapSync:
                 'shared_content': {prefix:[map_id] for prefix in prefixes}, 'files': files,
                 'objectives': doc['objectives'], 'runtime':doc['runtime']}
 
-    def sync_map(self, map_id, fingerprint, manifest_hash=None, *, obsolete=None):
+    def sync_map(self, map_id, fingerprint, manifest_hash=None, *, obsolete=None, notice_target=None):
         if not valid_id(map_id) or not valid_sha(fingerprint):
             raise CommunityError('The server did not provide a valid map version.')
         with self.lock:
             try:
+                self.notice_target = notice_target
+                self.notice_active = True
                 self.status = 'Checking selected map…'
                 self._check_cancelled()
                 if manifest_hash is None:
@@ -409,6 +413,7 @@ class MapSync:
                 self.status = 'Map check paused. ' + str(exc)
                 raise
             finally:
+                self.notice_active = False
                 self.progress = None
 
     def prefetch(self, target):
@@ -427,7 +432,7 @@ class MapSync:
                     self.prefetch_thread = None
                     return
             try:
-                self.sync_map(*target, obsolete=lambda: self.prefetch_target != target)
+                self.sync_map(*target, obsolete=lambda: self.prefetch_target != target, notice_target=target)
             except CommunityError:
                 pass  # Joining rechecks this exact map and surfaces an actionable failure.
             with self.prefetch_lock:
@@ -508,6 +513,8 @@ class MapSync:
             if required and not recheck and self.current[1].get(required[0]) == required[1]:
                 return self.current
             self._check_cancelled()
+            self.notice_target = None
+            self.notice_active = True
             self.status = 'Checking for map updates...'
             try:
                 return self._refresh(required)
@@ -518,6 +525,7 @@ class MapSync:
                 self.status = 'Map check paused. ' + str(exc)
                 raise
             finally:
+                self.notice_active = False
                 self.progress = None
 
     def _refresh(self, required):

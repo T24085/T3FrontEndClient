@@ -9,7 +9,7 @@ import tkinter as tk
 import unittest
 from unittest.mock import Mock, patch
 
-from desktop_launcher import Desktop, match_phase_text
+from desktop_launcher import Desktop, match_phase_text, normalize_lobby_code
 from community_transport import CommunityError
 from community_maps import options
 from steam_identity import SteamIdentityError, read_local_name, save_local_name
@@ -46,6 +46,77 @@ class FakeGame:
 class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
+
+    def test_lobby_code_paste_cleans_invite_text_and_only_joins_when_clicked(self):
+        for value in ('  abc234  ', 'Lobby code: abc234\n', 't3://join/abc234',
+                      'https://friend.test/lobby/join/abc234', 'https://friend.test/lobby?code=abc234'):
+            self.assertEqual(normalize_lobby_code(value), 'ABC234')
+        for value in ('no lobby code here', 'ABC123', 't3://unknown/abc234', 'ABC234 XYZ'):
+            self.assertIsNone(normalize_lobby_code(value))
+
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        app = Desktop(root, lobby, lambda _: FakeGame())
+        try:
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            root.clipboard_clear()
+            root.clipboard_append('Lobby code: abc234\n')
+            app.paste_code_button.invoke()
+            self.assertEqual(app.code.get(), 'ABC234')
+            self.assertEqual(lobby.calls, [])
+            self.assertEqual(app.code_menu.entrycget(0, 'label'), 'Paste')
+            app.name.set('Pilot')
+            app.join_button.invoke()
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            self.assertEqual(lobby.calls, [('join', 'ABC234', 'Pilot')])
+            self.assertEqual(app.paste_code_button.cget('state'), 'disabled')
+        finally:
+            app.close()
+
+    def test_lobby_notices_clear_on_room_change_and_transient_messages_expire(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        sync = Mock(session_enabled=False, notice_target=None, notice_active=False,
+                    status='', progress=None, cancelled=Event())
+        app = Desktop(root, lobby, lambda _: FakeGame(), map_sync=sync)
+        try:
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            app.render(lobby.room)
+            app.status.set('Game files changed.')
+            app.preparation.set('Preparing old match.')
+            app.map_status.set('Old map ready.')
+            app.render(None)
+            self.assertEqual((app.status.get(), app.preparation.get(), app.map_status.get()), ('', '', ''))
+
+            app.status.set('Left lobby.')
+            app.render(dict(lobby.room, code='XYZ789'))
+            self.assertEqual(app.status.get(), '')
+
+            sync.status = 'Old lobby download completed.'
+            sync.notice_target = ('Stonehenge', 'a' * 64, 'b' * 64)
+            app.status.set('Earlier transient message')
+            with patch('desktop_launcher.NOTICE_MS', 30):
+                app.status.set('Latest transient message')
+                deadline = time.monotonic() + 2
+                while app.status.get() and time.monotonic() < deadline:
+                    root.update()
+                    time.sleep(.01)
+                self.assertEqual(app.status.get(), '')
+                root.update()
+                self.assertEqual(app.map_status.get(), '')
+        finally:
+            app.close()
 
     def test_artwork_stays_behind_lobby_and_spectator_controls(self):
         root = tk.Tk()
