@@ -15,7 +15,7 @@ class GeneratorHudTest(unittest.TestCase):
         end = source.index('local function refresh_ctf_score_bar', start)
         lua = LuaRuntime()
         lua.execute('''
-function valid(o) return o~=nil end
+function valid(o) return o~=nil and not o.invalid end
 function report() end
 local function object(id) return {GetAddress=function()return id end} end
 world=object(1)
@@ -26,6 +26,10 @@ local function generator(id,team)
  return actor
 end
 g1,g2,g3,g4=generator(10,1),generator(11,1),generator(12,2),generator(13,2)
+local old=generator(20,2)
+old.GetWorld=function()return object(30)end
+local invalid=generator(21,1)
+invalid.invalid=true
 function icon(actor)
  return {CachedActor=actor,GetClass=function()
   return {GetFullName=function()
@@ -38,34 +42,42 @@ function panel(items)
          GetChildAt=function(self,i)return self.items[i+1] end,
          RemoveChildAt=function(self,i)table.remove(self.items,i+1) end}
 end
-function StaticFindObject(path) return {GetFullName=function()return 'Function '..path end} end
+function StaticFindObject(path)
+ assert(path:match(':OnGeneratorsReady$'))
+ return {GetFullName=function()return 'Function '..path end}
+end
 local function weak(get) return {Get=get} end
 now,late,binds=0,nil,0
 gs={r_Generators={weak(function()return g1 end),weak(function()return late end),
                   weak(function()return g3 end),weak(function()return g4 end),
                   GetArrayNum=function()return 4 end},
     GetServerWorldTimeSeconds=function()return now end}
-widget={FriendlyGenerators=panel({icon(g1),icon(g1)}),EnemyGenerators=panel({icon(g3),icon(g4)}),
+local other={GetClass=function()return {GetFullName=function()return 'Unrelated widget'end}end}
+originalFriendly,originalEnemy=icon(g1),icon(g3)
+widget={FriendlyGenerators=panel({originalFriendly,icon(g1),icon(nil),icon(invalid),other}),
+        EnemyGenerators=panel({originalEnemy,icon(g4),icon(old)}),
         GetAddress=function()return 6 end,bGeneratorsInitialized=true}
-function widget:BindGenerators()
+function widget:OnGeneratorsReady()
  assert(not self.bGeneratorsInitialized)
  binds=binds+1
- self.FriendlyGenerators.items[#self.FriendlyGenerators.items+1]=icon(g2)
+ for _,actor in ipairs({g1,g2})do table.insert(self.FriendlyGenerators.items,icon(actor))end
+ for _,actor in ipairs({g3,g4})do table.insert(self.EnemyGenerators.items,icon(actor))end
  self.bGeneratorsInitialized=true
 end
 ''')
         lua.globals().refresh = lua.execute(source[start:end] + chr(10) + 'return refresh_generator_icons')
         self.assertTrue(lua.execute('''
 refresh(widget,gs,world,1)
-assert(widget.FriendlyGenerators:GetChildrenCount()==2 and binds==0)
+assert(widget.FriendlyGenerators:GetChildrenCount()==5 and binds==0)
 late=g2; now=5; refresh(widget,gs,world,1)
-assert(widget.FriendlyGenerators:GetChildrenCount()==1 and binds==0)
+assert(widget.FriendlyGenerators:GetChildrenCount()==4 and binds==0)
 now=5.75; refresh(widget,gs,world,1)
 assert(binds==1)
-now=6; refresh(widget,gs,world,1)
-assert(widget.FriendlyGenerators:GetChildrenCount()==2 and widget.EnemyGenerators:GetChildrenCount()==2)
-assert(widget.FriendlyGenerators:GetChildAt(0).CachedActor==g1)
-assert(widget.FriendlyGenerators:GetChildAt(1).CachedActor==g2)
+assert(widget.FriendlyGenerators:GetChildrenCount()==3 and widget.EnemyGenerators:GetChildrenCount()==2)
+assert(widget.FriendlyGenerators:GetChildAt(0)==originalFriendly)
+assert(widget.FriendlyGenerators:GetChildAt(1).GetClass():GetFullName()=='Unrelated widget')
+assert(widget.FriendlyGenerators:GetChildAt(2).CachedActor==g2)
+assert(widget.EnemyGenerators:GetChildAt(0)==originalEnemy)
 now=7; refresh(widget,gs,world,1)
 assert(binds==1)
 return true

@@ -96,6 +96,11 @@ widgets and retries the native carrier name when the remote PlayerState
 arrives. The dropped label and home reset use the retail widget. Detachment
 clears stale holder data in the HUD while the actor's replication catches up.
 
+The score bar waits for all generator actors and teams before repairing the
+panels. It uses the native generator-ready callback to restore missing icons.
+The same repair pass removes duplicates and icons whose actors were retired
+or belonged to another world, while preserving other HUD widgets.
+
 The minimap binds the retail flag icons and refreshes their home or dropped
 positions with the native projection. Carried flags continue through the
 native player marker. This path is independent of the floating world flag
