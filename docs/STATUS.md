@@ -1,3 +1,11 @@
+# Native Ubuntu auto-join and startup diagnostics
+
+Linux uses the same once-per-match auto-join as the Windows Starter for
+assigned players. The name lookup recognizes Steam Snap's common and
+current config paths and retries while the name field is empty. Proton
+startup exceptions now reach the launcher status, and early exits show
+the exit code and the most specific available log.
+
 # Native Ubuntu Proton path translation
 
 The Steam wrapper resolves each launch path using the selected Proton

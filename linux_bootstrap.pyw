@@ -116,7 +116,13 @@ def main():
             return 0
         except Exception as exc:
             traceback.print_exc()
-            if not args.probe_only and args.ubuntu_join is None:
+            if args.ubuntu_join is not None:
+                try:
+                    from ubuntu_join_worker import status
+                    status(args.ubuntu_join, 'failed', error=f'Proton startup: {exc}')
+                except Exception:
+                    traceback.print_exc()
+            elif not args.probe_only:
                 ctypes.windll.user32.MessageBoxW(None, str(exc)+'\n\nDetails: '+str(args.launch_dir/'bridge.log'),
                                                 'TRIBES 3 Community Starter', 0x10)
             return 1

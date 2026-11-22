@@ -199,6 +199,24 @@ class UbuntuHandoffTest(unittest.TestCase):
             vdf(snap, 'Previous', recent='0')
             self.assertIsNone(steam_persona('/snap/bin/steam', home))
 
+    def test_snap_persona_falls_back_to_the_single_account_in_an_alternate_config(self):
+        home = Path(self.home.name)
+        config = home/'snap/steam/current/.steam/root/config'
+        config.mkdir(parents=True)
+        (config/'loginusers.vdf').write_text(
+            r'''
+            // account data written by Steam
+            "Users"
+            {
+                "76561198000000001" // account comment
+                {
+                    "PersonaName" "Pilot \"One\" {CTF}"
+                    "Extra" { "Nested" "value" }
+                }
+            }
+            ''', encoding='utf-8-sig')
+        self.assertEqual(steam_persona('/snap/bin/steam', home), 'Pilot "One" {CTF}')
+
 
 if __name__ == '__main__':
     unittest.main()

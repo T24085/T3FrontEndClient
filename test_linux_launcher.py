@@ -17,6 +17,24 @@ if sys.platform == 'linux':
 
 
 class LinuxDirectBootstrapTest(unittest.TestCase):
+    def test_ubuntu_bridge_records_startup_failure_in_the_join_status(self):
+        module = runpy.run_path(str(Path(__file__).with_name('linux_bootstrap.pyw')))
+        main = module['main']
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            launch, join = root/'launch', root/'join'
+            join.mkdir()
+            args = ['linux_bootstrap.pyw', '--game-dir', 'fixture', '--workspace', 'fixture',
+                    '--launch-dir', str(launch), '--ca-sha256', 'fixture', '--ubuntu-join', str(join)]
+            def fail_check():
+                raise RuntimeError('Fixture ownership check failed.')
+            with patch.object(sys, 'argv', args), patch.dict(main.__globals__, check_proton=fail_check):
+                self.assertEqual(main(), 1)
+            result = json.loads((join/'status.json').read_bytes())
+            self.assertEqual(result['status'], 'failed')
+            self.assertEqual(result['error'], 'Proton startup: Fixture ownership check failed.')
+            self.assertIn('RuntimeError: Fixture ownership check failed.', (launch/'bridge.log').read_text())
+
     def test_direct_channel_passes_linux_ca_and_steam_paths(self):
         launch = runpy.run_path(str(Path(__file__).with_name('linux_bootstrap.pyw')))['launch_starter']
         with tempfile.TemporaryDirectory() as tmp:

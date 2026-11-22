@@ -24,9 +24,7 @@ ACTIVE = ('starting', 'playing', 'stopping', 'quarantined')
 HANDOFF_WAIT = 600
 SNAP_LOCK = 'host-steam-session.lock'
 SOURCE_STARTER_REVISION = None
-VDF_STRING = r'"((?:\\.|[^"\\\r\n])*)"'
-VDF_ACCOUNT = re.compile(r'"[0-9]{17}"\s*\{((?:\s*' + VDF_STRING + r'\s*' + VDF_STRING + r')*)\s*\}')
-VDF_FIELD = re.compile(VDF_STRING + r'\s*' + VDF_STRING)
+VDF_TOKEN = re.compile(r'//[^\r\n]*|"(?:\\.|[^"\\\r\n])*"|[{}]|[^\s{}"]+')
 
 
 def write_private(path, value):
@@ -84,28 +82,63 @@ def join_state(state, steam, home):
     return target
 
 
-def steam_persona(steam, home):
-    """Read the last-used Steam persona without starting Steam."""
-    from player_names import display_name
+def steam_config_roots(steam, home):
     common = steam_snap_common(steam, home)
-    if common is not None:
-        roots = (common/'.local/share/Steam',)
-    else:
-        data = Path(os.environ.get('XDG_DATA_HOME') or home/'.local/share')
-        roots = (data/'Steam', home/'.steam/steam', home/'.steam/root', home/'.local/share/Steam')
-    for root in roots:
+    homes = (common, common.parent/'current') if common is not None else (home,)
+    if common is None:
+        yield Path(os.environ.get('XDG_DATA_HOME') or home/'.local/share')/'Steam'
+    for steam_home in homes:
+        for relative in ('.local/share/Steam', '.steam/root', '.steam/steam', '.steam/debian-installation', 'Steam'):
+            yield steam_home/relative
+
+
+def read_login_users(path):
+    with path.open('rb') as stream:
+        raw = stream.read(256 * 1024 + 1)
+    if len(raw) > 256 * 1024:
+        raise ValueError('Steam login cache is too large.')
+    tokens = (match[0] for match in VDF_TOKEN.finditer(raw.decode('utf-8-sig')) if not match[0].startswith('//'))
+
+    def string(token):
+        return re.sub(r'\\(["\\])', r'\1', token[1:-1]) if token.startswith('"') else token
+
+    def block(depth):
+        if depth > 16:
+            raise ValueError('Steam login cache has too many nested blocks.')
+        entries = {}
+        for key in tokens:
+            if key == '}' and depth:
+                return entries
+            value = next(tokens, None)
+            if key in ('{', '}') or value in (None, '}'):
+                raise ValueError('Steam login cache is incomplete.')
+            entries[string(key).casefold()] = block(depth + 1) if value == '{' else string(value)
+        if depth:
+            raise ValueError('Steam login cache is incomplete.')
+        return entries
+
+    users = block(0).get('users')
+    if not isinstance(users, dict):
+        return []
+    return [account for steam_id, account in users.items()
+            if re.fullmatch('[0-9]{17}', steam_id) and isinstance(account, dict)]
+
+
+def steam_persona(steam, home):
+    """Read an unambiguous display name from the selected Steam installation."""
+    from player_names import display_name
+    seen = set()
+    for root in steam_config_roots(steam, home):
         try:
-            with (root/'config/loginusers.vdf').open('rb') as stream:
-                raw = stream.read(256 * 1024 + 1)
-            if len(raw) > 256 * 1024:
+            path = (root/'config/loginusers.vdf').resolve()
+            if path in seen:
                 continue
-            accounts = [dict(VDF_FIELD.findall(match.group(1)))
-                        for match in VDF_ACCOUNT.finditer(raw.decode('utf-8-sig'))]
-            recent = [account['PersonaName'] for account in accounts
-                      if account.get('MostRecent') == '1' and 'PersonaName' in account]
-            if len(recent) == 1:
-                return display_name(re.sub(r'\\(["\\])', r'\1', recent[0]))
-        except (OSError, ValueError):
+            seen.add(path)
+            accounts = read_login_users(path)
+            candidates = [account for account in accounts if account.get('mostrecent') == '1'] or accounts
+            if len(candidates) == 1:
+                return display_name(candidates[0].get('personaname'))
+        except (OSError, RuntimeError, ValueError):
             continue
     return None
 
@@ -218,14 +251,17 @@ def dispatch(command):
             compat = state/'compatdata'
             compat.mkdir(exist_ok=True)
             isolated_env = dict(os.environ, STEAM_COMPAT_DATA_PATH=str(compat))
-            argv, env, _ = prepare_launch(ROOT, [part for part in command if part not in markers],
-                                         isolated_env, workspace=state/'game-files', state_directory=state,
-                                         join_directory=request)
+            argv, env, session = prepare_launch(ROOT, [part for part in command if part not in markers],
+                                               isolated_env, workspace=state/'game-files', state_directory=state,
+                                               join_directory=request)
             with log_path.open('wb') as log:
                 code = run_in_terminal(argv, env, ROOT, log)
             outcome = json.loads((request/'status.json').read_bytes())
             if outcome['status'] in ACTIVE:
-                status(request, 'failed', error=f'Proton closed before the game reported a result. Log: {log_path}')
+                bridge_log = session/'bridge.log'
+                diagnostic = bridge_log if bridge_log.is_file() else log_path
+                status(request, 'failed', error=f'Proton exited with code {code} before reporting game status. '
+                                                f'Log: {diagnostic}')
             return code
         except Exception as exc:
             status(request, 'failed', error=f'{exc} — Startup files: {request}')
@@ -260,10 +296,6 @@ def show_starter(lobby, state, on_ready=None):
         def set_capabilities(self, caps):
             super().set_capabilities(dict(caps, spectateEnabled=False))
 
-        def maybe_auto_join(self):
-            # Only a deliberate click on Join Game or Join Public CTF starts Proton.
-            return
-
         def show_panel(self, name):
             if self.closing:
                 return
@@ -281,7 +313,8 @@ def show_starter(lobby, state, on_ready=None):
         setup = tk.Toplevel(window)
         setup.title('Steam Setup')
         instructions = ('Open Steam and sign in before your first join. Force a Proton version in '
-                        'TRIBES 3 → Properties → Compatibility. Paste this line into General → Launch Options.')
+                        'TRIBES 3 → Properties → Compatibility. Paste this line into General → Launch Options. '
+                        'Once you are on a team, Clan Wars opens the game when the match is ready.')
         ttk.Label(setup, text=instructions, wraplength=520).pack(padx=18, pady=12)
         field = ttk.Entry(setup, width=82)
         field.insert(0, steam_option())
@@ -303,9 +336,17 @@ def show_starter(lobby, state, on_ready=None):
     workspace = (snap_state(common) if common else state)/'game-files'
     map_sync = MapSync(lobby, ROOT, workspace)
     app = UbuntuDesktop(window, lobby, lambda current:GameHandoff(current,state), map_sync=map_sync)
-    persona = steam_persona(steam, home)
-    if persona:
-        app.name.set(persona)
+
+    def fill_steam_name():
+        if app.closing or app.name.get().strip():
+            return
+        persona = steam_persona(shutil.which('steam'), home)
+        if persona:
+            app.name.set(persona)
+        else:
+            window.after(2500, fill_steam_name)
+
+    fill_steam_name()
     window.title('Clan Wars • Ubuntu Starter Preview')
     app.button(app.sidebar, 'Steam Setup', show_setup, False).pack(fill='x', padx=18, pady=(6,0))
     if lobby.public_supported:

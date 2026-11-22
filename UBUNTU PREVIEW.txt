@@ -13,8 +13,9 @@ files, lobby identity, game staging and Proton prefix.
    Save any earlier launch option so you can switch back to it.
 3. Open Steam and sign in before your first join. Check the player name in
    the Starter, which fills in the last-used Steam persona when available.
-   Create or join a lobby, choose a team, and click Join Game once the match is ready. Use
-   Join Public CTF from its own panel for public play.
+   Create or join a lobby and choose a team. Clan Wars opens the game when
+   the match is ready. Use Join Game to retry an unsuccessful launch, or Join
+   Public CTF from its own panel for public play.
 
 Opening the Starter, browsing matches, and working in a lobby use
 native Linux Python. Clicking Join Game asks Steam to start the game, and
