@@ -15,6 +15,15 @@ def proton_profile_overlay(released, source):
     if old != updated and sha256(old).hexdigest() != '8761965494c97c2576dc212b9661341512a7a14807b2c8c94353a0187f80bc34':
         raise ValueError('Review the changed player profile folder lookup before overlaying it.')
     result = released.replace(old, updated, 1)
+    import_signature = b'def import_retail_settings(*, root=None, workspaces=()):'
+    if import_signature in result:
+        source_selection = b'    local_app_data = root.parents[1]\n'
+        if result.count(import_signature) != 1 or result.count(source_selection) != 1:
+            raise ValueError('Review the changed retail profile import before overlaying it.')
+        result = result.replace(import_signature,
+                                b'def import_retail_settings(*, root=None, workspaces=(), retail_local_app_data=None):')
+        result = result.replace(source_selection,
+                                b'    local_app_data = Path(retail_local_app_data) if retail_local_app_data is not None else root.parents[1]\n')
     compile(result, 'player_profile.py', 'exec')
     return result
 

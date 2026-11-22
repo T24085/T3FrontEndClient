@@ -1,5 +1,6 @@
 """Native Ubuntu lobby UI. Steam is contacted only for a requested game."""
 import argparse
+from base64 import b64encode
 from contextlib import nullcontext
 import json
 import os
@@ -92,11 +93,11 @@ def steam_config_roots(steam, home):
             yield steam_home/relative
 
 
-def read_login_users(path):
+def read_steam_vdf(path):
     with path.open('rb') as stream:
         raw = stream.read(256 * 1024 + 1)
     if len(raw) > 256 * 1024:
-        raise ValueError('Steam login cache is too large.')
+        raise ValueError('Steam config is too large.')
     tokens = (match[0] for match in VDF_TOKEN.finditer(raw.decode('utf-8-sig')) if not match[0].startswith('//'))
 
     def string(token):
@@ -104,20 +105,24 @@ def read_login_users(path):
 
     def block(depth):
         if depth > 16:
-            raise ValueError('Steam login cache has too many nested blocks.')
+            raise ValueError('Steam config has too many nested blocks.')
         entries = {}
         for key in tokens:
             if key == '}' and depth:
                 return entries
             value = next(tokens, None)
             if key in ('{', '}') or value in (None, '}'):
-                raise ValueError('Steam login cache is incomplete.')
+                raise ValueError('Steam config is incomplete.')
             entries[string(key).casefold()] = block(depth + 1) if value == '{' else string(value)
         if depth:
-            raise ValueError('Steam login cache is incomplete.')
+            raise ValueError('Steam config is incomplete.')
         return entries
 
-    users = block(0).get('users')
+    return block(0)
+
+
+def read_login_users(path):
+    users = read_steam_vdf(path).get('users')
     if not isinstance(users, dict):
         return []
     return [account for steam_id, account in users.items()
@@ -141,6 +146,38 @@ def steam_persona(steam, home):
         except (OSError, RuntimeError, ValueError):
             continue
     return None
+
+
+def retail_profiles(steam, home):
+    from ubuntu_join_worker import IMPORT_INIS
+    libraries = set(steam_config_roots(steam, home))
+    for root in sorted(libraries):
+        try:
+            data = read_steam_vdf(root/'steamapps/libraryfolders.vdf').get('libraryfolders', {})
+            for key, entry in data.items():
+                path = entry.get('path') if isinstance(entry, dict) else entry
+                if key.isdecimal() and isinstance(path, str) and Path(path).is_absolute():
+                    libraries.add(Path(path))
+        except (OSError, ValueError, AttributeError):
+            continue
+    candidates = set()
+    for library in libraries:
+        users = library/f'steamapps/compatdata/{APP_ID}/pfx/drive_c/users'
+        for config in users.glob('*/AppData/Local/Topaz/Saved/Config/Windows'):
+            if any((config/name).is_file() for name in IMPORT_INIS):
+                candidates.add(config.resolve())
+    return sorted(candidates)
+
+
+def queue_retail_settings(config, storage):
+    from direct_network import write_json
+    from player_profile import INI_LIMIT, _read
+    from ubuntu_join_worker import IMPORT_FILE, IMPORT_INIS
+    files = {name: b64encode(_read(config/name, INI_LIMIT)).decode('ascii') for name in IMPORT_INIS
+             if (config/name).is_file()}
+    if not files:
+        raise ValueError('Choose the retail settings folder containing Input.ini or GameUserSettings.ini.')
+    write_json(storage/IMPORT_FILE, files)
 
 
 class GameHandoff:
@@ -272,10 +309,13 @@ def dispatch(command):
 
 def show_starter(lobby, state, on_ready=None):
     import tkinter as tk
-    from tkinter import messagebox, ttk
-    from desktop_launcher import Desktop, starter_version
-    from direct_client import PublicCTFPanel
+    from tkinter import filedialog, messagebox, ttk
+    from desktop_launcher import BG, MUTED, TEXT, Desktop, starter_version
+    import direct_client
+    from direct_network import VOICE_PROTOCOL, read_json, write_json
     from map_sync import MapSync
+    from player_names import display_name
+    from ubuntu_join_worker import IMPORT_FILE, IMPORT_RESULT, VOICE_FILE, voice_preferences
 
     manifest = json.loads((ROOT/'package-manifest.json').read_bytes())
     revision = manifest.get('linux_starter_update_revision', 0)
@@ -284,6 +324,7 @@ def show_starter(lobby, state, on_ready=None):
 
     class UbuntuDesktop(Desktop):
         public_panel = None
+        tool_tips = None
 
         def label(self, parent, text, *args, **kwargs):
             if revision and parent is getattr(self, 'sidebar', None) and text == base_label:
@@ -294,7 +335,26 @@ def show_starter(lobby, state, on_ready=None):
             return super().label(parent, text, *args, **kwargs)
 
         def set_capabilities(self, caps):
+            lobby.proximity_supported = caps.get('proximityVoice') == VOICE_PROTOCOL
             super().set_capabilities(dict(caps, spectateEnabled=False))
+            self.refresh_voice_notice()
+
+        def refresh_voice_notice(self):
+            notice = getattr(self, 'voice_notice', None)
+            if notice is None:
+                return
+            if lobby.proximity_supported:
+                enabled = voice_preferences(storage/VOICE_FILE).get('enabled') is not False
+                notice.configure(text='Proximity voice On' if enabled else 'Proximity voice Off')
+                if not notice.winfo_manager():
+                    notice.pack(anchor='w', pady=(4, 0))
+            else:
+                notice.pack_forget()
+
+        def close(self):
+            if self.tool_tips is not None:
+                self.tool_tips.closed.set()
+            super().close()
 
         def show_panel(self, name):
             if self.closing:
@@ -308,6 +368,126 @@ def show_starter(lobby, state, on_ready=None):
                     self.public_panel.panel.pack(side='left', fill='both', expand=True, padx=32, pady=28)
                     return
             super().show_panel(name)
+
+        def show_settings(self):
+            previous = getattr(self, 'settings_window', None)
+            if previous is not None and previous.winfo_exists():
+                previous.lift()
+                return
+            settings = self.settings_window = tk.Toplevel(window, bg=BG, padx=24, pady=20)
+            settings.title('Settings')
+            settings.transient(window)
+            if self.tool_tips is not None:
+                self.tool_tips.event('open_tab', 'settings')
+
+            def note(value):
+                tk.Label(settings, textvariable=value, bg=BG, fg=MUTED, anchor='w', justify='left',
+                         wraplength=420).pack(fill='x', pady=(4, 10))
+
+            self.label(settings, 'Warrior Name', 16, True).pack(anchor='w')
+            self.label(settings, 'Leave blank to use your Steam name.', color=MUTED).pack(anchor='w', pady=(4, 8))
+            name = tk.StringVar(settings, warrior_name)
+            entry = ttk.Entry(settings, textvariable=name)
+            entry.pack(fill='x')
+            name_status = tk.StringVar(settings)
+
+            def save_name():
+                nonlocal warrior_name
+                raw = name.get().strip()
+                try:
+                    value = display_name(raw) if raw else ''
+                    write_json(name_file, {'name': value})
+                except (OSError, ValueError) as exc:
+                    name_status.set(str(exc))
+                    return
+                warrior_name = value
+                name.set(value)
+                self.name.set(value)
+                if not value:
+                    fill_steam_name()
+                name_status.set('Name saved for your next join.' if value else 'Using your Steam name.')
+
+            self.button(settings, 'Save name', save_name, False).pack(anchor='w', pady=(8, 0))
+            entry.bind('<Return>', lambda _event: save_name())
+            note(name_status)
+
+            self.label(settings, 'Game settings', 16, True).pack(anchor='w')
+            detail = self.label(settings, 'Import your retail key bindings, sensitivity, and game options. '
+                                'The import runs before your next match and backs up replaced settings.', color=MUTED)
+            detail.configure(wraplength=420, justify='left')
+            detail.pack(anchor='w', pady=(5, 8))
+            import_status = tk.StringVar(settings)
+            try:
+                if (storage/IMPORT_FILE).is_file():
+                    import_status.set('Retail settings are queued for your next game.')
+                else:
+                    import_status.set(read_json(storage/IMPORT_RESULT, 4096)['message'])
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+
+            def import_settings():
+                if self.controls_busy or self.game_status in ACTIVE:
+                    import_status.set('Close TRIBES 3 and wait for the launcher to finish its current action.')
+                    return
+                try:
+                    profiles = retail_profiles(shutil.which('steam'), home)
+                    if len(profiles) == 1:
+                        config = profiles[0]
+                    else:
+                        initial = profiles[0] if profiles else home
+                        selected = filedialog.askdirectory(parent=settings, initialdir=initial, mustexist=True,
+                                                          title='Choose the retail Saved/Config/Windows folder')
+                        if not selected:
+                            return
+                        config = Path(selected)
+                    with exclusive(state/'steam-session.lock'):
+                        queue_retail_settings(config, storage)
+                except (OSError, ValueError) as exc:
+                    import_status.set(str(exc))
+                    return
+                import_status.set('Retail settings are queued for your next game.')
+
+            self.button(settings, 'Import settings from retail', import_settings).pack(anchor='w')
+            note(import_status)
+
+            if lobby.proximity_supported:
+                self.label(settings, 'Proximity voice', 16, True).pack(anchor='w')
+                keys = direct_client.PTT_KEY_NAMES
+                key_names = {name: code for code, name in keys.items()}
+                prefs = voice_preferences(storage/VOICE_FILE)
+                enabled = tk.BooleanVar(settings, prefs.get('enabled') is not False)
+                saved_key = prefs.get('key')
+                key = tk.StringVar(settings, keys[saved_key] if type(saved_key) is int and saved_key in keys
+                                   else keys[direct_client.DEFAULT_PTT_KEY])
+                voice_status = tk.StringVar(settings)
+
+                def save_voice():
+                    try:
+                        write_json(storage/VOICE_FILE, {'enabled': enabled.get(), 'key': key_names[key.get()]})
+                    except (OSError, ValueError, KeyError) as exc:
+                        voice_status.set(str(exc))
+                        return
+                    voice_status.set('Proximity voice on.' if enabled.get() else 'Proximity voice off.')
+                    self.refresh_voice_notice()
+                    if self.tool_tips is not None:
+                        self.tool_tips.event('setting_changed', 'proximity_voice')
+
+                row = tk.Frame(settings, bg=BG)
+                row.pack(anchor='w', pady=(6, 0))
+                tk.Checkbutton(row, text='Enable proximity voice', variable=enabled, command=save_voice,
+                               bg=BG, fg=TEXT, activebackground=BG, activeforeground=TEXT,
+                               selectcolor='#20374a').pack(side='left')
+                picker = ttk.Combobox(row, textvariable=key, values=tuple(key_names), state='readonly', width=14)
+                picker.pack(side='left', padx=(12, 0))
+                picker.bind('<<ComboboxSelected>>', lambda _event: save_voice())
+                note(voice_status)
+
+            self.button(settings, 'About this launcher', lambda: messagebox.showinfo(
+                'About this launcher',
+                f'Clan Wars connects to {lobby.authority} for lobbies and matches. '
+                'It uses your Steam copy of TRIBES 3 in a separate Proton session and verifies community downloads.',
+                parent=settings), False).pack(anchor='w')
+            settings.bind('<Escape>', lambda _event: settings.destroy())
 
     def show_setup():
         setup = tk.Toplevel(window)
@@ -333,14 +513,20 @@ def show_starter(lobby, state, on_ready=None):
     steam = shutil.which('steam')
     home = Path.home()
     common = steam_snap_common(steam, home)
-    workspace = (snap_state(common) if common else state)/'game-files'
+    storage = snap_state(common) if common else state
+    workspace = storage/'game-files'
+    name_file = state/'warrior-name.json'
+    try:
+        warrior_name = display_name(read_json(name_file, 1024)['name'])
+    except (OSError, ValueError, KeyError, TypeError):
+        warrior_name = ''
     map_sync = MapSync(lobby, ROOT, workspace)
     app = UbuntuDesktop(window, lobby, lambda current:GameHandoff(current,state), map_sync=map_sync)
 
     def fill_steam_name():
         if app.closing or app.name.get().strip():
             return
-        persona = steam_persona(shutil.which('steam'), home)
+        persona = warrior_name or steam_persona(shutil.which('steam'), home)
         if persona:
             app.name.set(persona)
         else:
@@ -350,8 +536,24 @@ def show_starter(lobby, state, on_ready=None):
     window.title('Clan Wars • Ubuntu Starter Preview')
     app.button(app.sidebar, 'Steam Setup', show_setup, False).pack(fill='x', padx=18, pady=(6,0))
     if lobby.public_supported:
-        app.public_panel = PublicCTFPanel(tk, app, lobby)
+        app.public_panel = direct_client.PublicCTFPanel(tk, app, lobby)
         app.show_panel('public' if lobby.public_only else 'lobbies')
+    app.settings_nav = app.button(app.sidebar, 'Settings', app.show_settings, False)
+    app.settings_nav.pack(fill='x', padx=18, pady=(6, 0))
+    launcher_tips = getattr(direct_client, 'LauncherTips', None)
+    if launcher_tips is not None:
+        sidebar_bg = app.sidebar.cget('bg')
+        tips = tk.Frame(app.sidebar, bg=sidebar_bg)
+        tips.pack(fill='x', padx=20, pady=(14, 0))
+        app.label(tips, 'Tool Tips', 10, True, bg=sidebar_bg).pack(anchor='w')
+        app.tool_tips = launcher_tips(tk, app, lobby, state, tips)
+        app.voice_notice = app.label(tips, '', 9, color=MUTED, bg=sidebar_bg)
+        app.refresh_voice_notice()
+        app.tool_tips.tip_region.pack(fill='x')
+        tk.Button(tips, text='Key Bindings Import in Settings', command=app.show_settings,
+                  bg=sidebar_bg, fg=MUTED, activebackground=sidebar_bg, activeforeground=TEXT,
+                  relief='flat', bd=0, padx=0, pady=2, anchor='w', cursor='hand2',
+                  font=('Segoe UI', 9)).pack(anchor='w')
     if on_ready is not None:
         window.update_idletasks()
         on_ready()

@@ -1,3 +1,11 @@
+# Native Ubuntu Settings and Tool Tips
+
+The Ubuntu sidebar shows the same host-delivered Tool Tips and announcements
+as the Direct Windows launcher. Settings saves a Warrior Name, stores
+proximity-voice preferences for the Proton game worker, and queues retail
+key bindings and game options for import before the next match. The import
+uses the same profile merge and backups as the Windows release.
+
 # Native Ubuntu join paths
 
 The Proton bridge converts the game and workspace arguments to paths before

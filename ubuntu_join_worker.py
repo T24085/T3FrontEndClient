@@ -1,10 +1,59 @@
 """Windows-side game ownership for a native Ubuntu Join Game request."""
 from contextlib import suppress
+from base64 import b64decode
 import json
 from pathlib import Path
 import re
 import threading
 import time
+from tempfile import TemporaryDirectory
+
+
+VOICE_FILE = 'proximity-voice.json'
+IMPORT_FILE = 'retail-settings-import.json'
+IMPORT_RESULT = 'retail-settings-result.json'
+IMPORT_INIS = ('Input.ini', 'GameUserSettings.ini')
+IMPORT_LIMIT = 3 * 1024 * 1024
+
+
+def voice_preferences(path):
+    from direct_network import read_json
+    try:
+        value = read_json(path, 1024)
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def apply_retail_import(state, directory):
+    from direct_network import read_json, write_json
+    from player_profile import CONFIG_DIRECTORY, INI_LIMIT, ProfileError, import_retail_settings
+    pending = state/IMPORT_FILE
+    try:
+        data = read_json(pending, IMPORT_LIMIT)
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as exc:
+        message = f'Could not read the queued retail settings: {exc}'
+    else:
+        try:
+            if not isinstance(data, dict) or not data or not data.keys() <= set(IMPORT_INIS):
+                raise ProfileError('Invalid queued retail settings.')
+            with TemporaryDirectory(dir=directory) as temporary:
+                local = Path(temporary)
+                config = local/'Topaz'/CONFIG_DIRECTORY
+                config.mkdir(parents=True)
+                for name, encoded in data.items():
+                    raw = b64decode(encoded, validate=True)
+                    if len(raw) > INI_LIMIT:
+                        raise ProfileError('Retail settings exceed their size limit.')
+                    (config/name).write_bytes(raw)
+                changed = import_retail_settings(retail_local_app_data=local)
+            message = ('Retail settings imported.' if changed else 'Community settings already match retail.')
+        except (OSError, TypeError, ValueError) as exc:
+            message = f'Retail settings were not imported: {exc}'
+    write_json(state/IMPORT_RESULT, {'message': message})
+    pending.unlink(missing_ok=True)
 
 
 def status(directory, phase, *, error=None, progress=None):
@@ -49,6 +98,30 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
     try:
         caps = lobby.capabilities()
         lobby.code, lobby.token, lobby.player_id = request['code'], request['token'], request['player']
+        state = directory.parent.parent
+        voice_path = state/VOICE_FILE
+        if (state/IMPORT_FILE).is_file():
+            try:
+                apply_retail_import(state, directory)
+            except OSError as exc:
+                print(f'Could not finish the retail settings import: {exc}', flush=True)
+        previous_voice = None
+
+        def refresh_voice():
+            nonlocal previous_voice
+            if not getattr(lobby, 'proximity_supported', False):
+                return
+            from direct_client import DEFAULT_PTT_KEY, PTT_KEY_NAMES
+            preferences = voice_preferences(voice_path)
+            key = preferences.get('key', DEFAULT_PTT_KEY)
+            choice = (key if type(key) is int and key in PTT_KEY_NAMES else DEFAULT_PTT_KEY,
+                      preferences.get('enabled') is not False)
+            if choice != previous_voice:
+                lobby.bind_proximity_key(choice[0])
+                lobby.set_proximity_voice(choice[1])
+                previous_voice = choice
+
+        refresh_voice()
         sync = MapSync(lobby,package,workspace)
         if hasattr(sync, 'session_enabled'):
             sync.start(caps.get('mapFileSync'), session_version=caps.get('mapSessionSync'))
@@ -70,6 +143,7 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
         launch = threading.Thread(target=join,name='ubuntu-owned-game')
         launch.start()
         next_poll = 0
+        next_voice = 0
         last = None
         while True:
             snapshot = game.snapshot()
@@ -78,6 +152,9 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
             if cancelled:
                 game.stop()
             now = time.monotonic()
+            if now >= next_voice:
+                refresh_voice()
+                next_voice = now + 1
             if public and not cancelled and phase == 'playing' and now >= next_poll:
                 next_poll = now + 2
                 with suppress(RuntimeError, OSError):
