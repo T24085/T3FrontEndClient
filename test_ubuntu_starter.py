@@ -22,7 +22,8 @@ if sys.platform == 'linux':
 
 
 class UbuntuJoinWorkerTest(unittest.TestCase):
-    def join(self, sync, caps, *, session=None, through_bridge=False, spectator=False):
+    def join(self, sync, caps, *, session=None, through_bridge=False, spectator=False,
+             public=False, team=None):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             directory = root/'joins'/'fixture'
@@ -39,6 +40,10 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
             watch_id, watch_token = 'fixture-watch-id', 'T' * 32
             if spectator:
                 request.update(role='spectator', watch_id=watch_id, watch_token=watch_token)
+            if public:
+                request.update(role='public', name='Pilot')
+                if team is not None:
+                    request['team'] = team
             (directory/'claimed.json').write_text(json.dumps(request), encoding='utf-8')
             observed = []
 
@@ -70,6 +75,7 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
                 start()
             game.start_spectating = Mock(side_effect=spectate)
             game.stop_spectating = Mock()
+            game.start_public = Mock(side_effect=lambda *args, **kwargs: start())
             direct = SimpleNamespace(DirectClient=Lobby, DirectGame=Mock(return_value=game))
             map_sync = Mock(return_value=sync)
             with patch.dict(sys.modules, direct_client=direct, map_sync=SimpleNamespace(MapSync=map_sync)):
@@ -101,6 +107,13 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
                 game.start_spectating.assert_called_once_with(watch_id)
                 game.start.assert_not_called()
                 self.assertTrue(outcome['watch_released'])
+            elif public:
+                if team is None or team == 'auto':
+                    game.start_public.assert_called_once_with('Pilot')
+                else:
+                    game.start_public.assert_called_once_with('Pilot', team=team)
+                game.start.assert_not_called()
+                game.start_spectating.assert_not_called()
             else:
                 game.start.assert_called_once_with(expected_map='Stonehenge2026', expected_match_id='match')
             self.assertEqual(outcome['status'], 'finished')
@@ -126,6 +139,15 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
     def test_proton_bridge_passes_cli_paths_to_the_join_worker(self):
         sync = SimpleNamespace(session_enabled=False, start=Mock(), cancelled=threading.Event())
         self.join(sync, {'mapFileSync': 2, 'mapSessionSync': 3}, through_bridge=True)
+
+    def test_proton_worker_preserves_public_team_or_defaults_to_auto(self):
+        for team in ('blue', 'red', 'auto', None):
+            with self.subTest(team=team):
+                sync = SimpleNamespace(session_enabled=False, start=Mock(), cancelled=threading.Event())
+                session = 'c'*32
+                observed = self.join(sync, {'mapFileSync': 2, 'mapSessionSync': 3},
+                                     through_bridge=True, session=session, public=True, team=team)
+                self.assertEqual(observed, [session, session])
 
     def test_proton_worker_uses_reserved_spectator_grant_and_session(self):
         session = 'c' * 32
@@ -189,6 +211,30 @@ class UbuntuHandoffTest(unittest.TestCase):
             prep.assert_called_once()
         self.assertEqual(handoff.snapshot()['status'],'finished')
         self.assertFalse((request/'claimed.json').exists())
+
+    def test_public_team_passes_through_the_native_steam_handoff(self):
+        for team in ('blue', 'red', 'auto'):
+            with self.subTest(team=team):
+                launch = Mock()
+                handoff = GameHandoff(self.lobby, self.state, launch=launch)
+                with patch('ubuntu_starter.shutil.which', return_value='/usr/bin/steam'):
+                    self.assertEqual(handoff.start_public('Pilot', team=team), 'starting')
+                request = handoff.directory
+                command = ['proton', 'run', 'original.exe', launch.call_args.args[0][-1]]
+
+                def run(*_args):
+                    details = json.loads((request/'claimed.json').read_bytes())
+                    self.assertEqual((details['role'], details['name'], details['team']),
+                                     ('public', 'Pilot', team))
+                    self.assertEqual(details['direct_session'], self.lobby.direct_session)
+                    status(request, 'finished')
+                    return 0
+
+                with patch.dict(os.environ, XDG_DATA_HOME=str(self.state.parent)), \
+                        patch('ubuntu_starter.prepare_launch', return_value=([], {}, None)), \
+                        patch('ubuntu_starter.run_in_terminal', side_effect=run):
+                    self.assertEqual(dispatch(command), 0)
+                self.assertEqual(handoff.snapshot()['status'], 'finished')
 
     def test_ordinary_steam_play_preserves_its_command(self):
         command = ['steam-runtime','proton','run','ordinary-game.exe','-argument']

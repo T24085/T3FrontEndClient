@@ -254,8 +254,8 @@ class GameHandoff:
     def start(self, *, expected_map=None, expected_match_id=None):
         return self._send('player', map=expected_map, match=expected_match_id)
 
-    def start_public(self, name):
-        return self._send('public', name=name)
+    def start_public(self, name, *, team='auto'):
+        return self._send('public', name=name, team=team)
 
     def start_spectating(self, watch_id):
         with self.lock:

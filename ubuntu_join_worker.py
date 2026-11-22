@@ -78,6 +78,10 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
     if (directory/'cancel').exists():
         status(directory,'stopped')
         return 0
+    public = request['role'] == 'public'
+    team = request.get('team', 'auto') if public else 'auto'
+    if team not in ('auto', 'blue', 'red'):
+        raise ValueError('Invalid Public CTF team choice.')
     session = request.get('direct_session')
     client_type = DirectClient
     if session is not None:
@@ -138,12 +142,14 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
         # StableGame binds the desktop Job receipt to this workspace path.
         game = DirectGame(lobby, package, game_dir, workspace,
                           workspace/'direct-desktop-control', map_sync=sync)
-        public = request['role'] == 'public'
         failure = []
         def join():
             try:
                 if public:
-                    game.start_public(request['name'])
+                    if team == 'auto':
+                        game.start_public(request['name'])
+                    else:
+                        game.start_public(request['name'], team=team)
                 elif spectator:
                     game.start_spectating(watch_id)
                 else:

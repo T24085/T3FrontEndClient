@@ -1,3 +1,12 @@
+# Native Ubuntu Public CTF and Maps
+
+The Linux update inherits the live team rosters, join choices and cached Maps
+browser from the paired signed Direct Starter build. The native launcher
+carries the requested team through Steam to the owned Proton join worker.
+Auto Balance and Rejoin use the default seat request, including for saved
+handoffs from older builds. The Linux feed must ship the shared fixes and the
+native handoff changes together.
+
 # Native Ubuntu spectating and armor
 
 Ubuntu enables the Direct Lobby Browser spectator controls and starts an
