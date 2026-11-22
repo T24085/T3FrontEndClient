@@ -1,6 +1,7 @@
 """Exercise desktop controls with a fake lobby and game, without network or game launch."""
 import time
 import gc
+import sys
 import tkinter as tk
 import unittest
 from unittest.mock import patch
@@ -41,6 +42,37 @@ class FakeGame:
 class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Retail profile import is a Windows Starter control.')
+    def test_settings_import_button_uses_saved_profile_only_after_game_exits(self):
+        root = tk.Tk()
+        root.withdraw()
+        app = Desktop(root, FakeLobby(), lambda _: FakeGame())
+        try:
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            settings = next(widget for widget in app.sidebar.winfo_children()
+                            if isinstance(widget, tk.Button) and widget.cget('text') == 'Settings')
+            with patch('player_profile.import_retail_settings', return_value=('Input.ini',)) as importer:
+                settings.invoke()
+                panel = app.settings_window
+                button = next(widget for widget in panel.winfo_children() if isinstance(widget, tk.Button))
+                status = next(widget for widget in panel.winfo_children()
+                              if isinstance(widget, tk.Label) and widget.cget('textvariable'))
+                self.assertEqual(button.cget('text'), 'Import settings from retail')
+                app.game_status = 'playing'
+                button.invoke()
+                importer.assert_not_called()
+                self.assertIn('Close TRIBES 3', status.cget('text'))
+                app.game_status = 'finished'
+                button.invoke()
+                importer.assert_called_once()
+                self.assertIn('Retail settings imported.', status.cget('text'))
+        finally:
+            app.close()
+            app.close_worker.join(2)
 
     def test_match_rules_controls_respect_map_and_leader(self):
         root = tk.Tk()
