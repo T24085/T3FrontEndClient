@@ -2,7 +2,7 @@
 
 Phoenix Rising is a community mod and launcher for TRIBES 3: Rivals. Create private Capture the Flag lobbies, join Public CTF, or spectate a live match. The same community service supports the Windows launcher and the native Ubuntu launcher preview.
 
-[Download and play](#download-and-play) · [Starter screenshots](#starter-screenshots) · [Map gallery](#map-gallery) · [Developer setup](#developer-setup)
+[Download and play](#download-and-play) · [Source preview](#source-preview) · [Starter screenshots](#starter-screenshots) · [Map gallery](#map-gallery) · [Developer setup](#developer-setup)
 
 ![Rollercoaster 2026 authoring preview with turquoise oasis water between sandstone dunes](docs/media/rollercoaster-oasis.webp)
 
@@ -38,6 +38,10 @@ The November 22 Direct rollout was verified with Windows Starter r76 and Ubuntu 
 | Ubuntu Preview 7 update 9 | [Ubuntu release changes](https://github.com/T24085/T3FrontEndClient/commit/34efaa9) |
 
 The [paired backend](https://github.com/T24085/T3BackEndServer) documents host setup and the server components used for the rollout.
+
+## Source preview
+
+The integration branch adds private lobby locking and rejoin, Public CTF team switching, improved map downloads, and CTF flag HUD fixes. It includes the Windows and native Ubuntu launcher sources. Fixture results and pending in-game checks are listed in the [source preview README](https://github.com/T24085/T3FrontEndClient/tree/feat/phoenix-rising-issue-integration#source-preview) and [validation notes](https://github.com/T24085/T3FrontEndClient/blob/feat/phoenix-rising-issue-integration/docs/STATUS.md).
 
 ## Starter screenshots
 
