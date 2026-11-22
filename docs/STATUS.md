@@ -50,9 +50,10 @@ frame on maps without an authored PNG.
 
 Hosts that advertise match restart give the private lobby leader a Restart
 match action with a reason. All lobby members see the countdown and reason.
-Starter closes only the owned game session for the replaced match and joins
-the fresh match through the existing lobby flow. The restart uses the same
-map and teams and starts a new scored round.
+Starter keeps the old game open while the host saves the current score and
+time. Once shutdown starts, it closes only the owned game session for the
+replaced match and joins the fresh match through the existing lobby flow. The
+restart uses the same map and teams and starts a new scored round.
 With a paired Direct Host, rejoining by the same registered device restores a
 reserved place in the replacement even if the player left the original lobby.
 

@@ -222,6 +222,8 @@ def match_phase_text(room):
         reason = restart.get('reason', '')
         if stage == 'countdown':
             return f"Restarting in {restart.get('seconds', 0)}s · {reason}"
+        if stage == 'checkpointing':
+            return f'Saving current score and time · {reason}'
         if stage in ('draining', 'starting') or stage == 'complete' and room['phase'] == 'starting':
             return f'Match restarting · {reason}'
         if stage == 'failed':
@@ -997,7 +999,7 @@ class Desktop:
             self.room_heading.set('Not in a lobby')
         self.phase.set(match_phase_text(room))
         restart = room.get('restart') if in_room else None
-        restarting = isinstance(restart, dict) and restart.get('stage') in ('countdown', 'draining', 'starting')
+        restarting = isinstance(restart, dict) and restart.get('stage') in ('countdown', 'checkpointing', 'draining', 'starting')
         can_restart = (leader and self.caps.get('matchRestartEnabled') is True
                        and phase in ('starting', 'ready', 'stopped', 'ended', 'failed'))
         if can_restart:

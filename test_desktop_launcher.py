@@ -127,6 +127,13 @@ class DesktopTest(unittest.TestCase):
             app.game = game
             previous = {'status':'playing','matchId':'previous','role':'player'}
             self.assertFalse(app.stop_restarted_client(previous))
+            lobby.room['restart']['stage'] = 'checkpointing'
+            app.render(lobby.room)
+            self.assertEqual(app.phase.get(), 'Saving current score and time · Dropped player')
+            self.assertEqual(app.game_button.cget('state'), 'disabled')
+            self.assertEqual(app.restart_button.cget('state'), 'disabled')
+            self.assertFalse(app.stop_restarted_client(previous))
+            self.assertFalse(game.stopped)
             lobby.room['restart']['stage'] = 'draining'
             self.assertFalse(app.stop_restarted_client(dict(previous, role='spectator')))
             self.assertFalse(app.stop_restarted_client(dict(previous, matchId='other')))
