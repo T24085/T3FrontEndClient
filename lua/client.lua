@@ -1813,11 +1813,11 @@ local configure_stock_clouds=(function()
 end)()
 
 local request_public_team_departure=(function()
- local requestPath=OUTPUT:gsub('[^/]+$','public-team-switch.txt')
  local nextRead,sent=0,false
  return function(pc,gs)
     if sent or os.time()<nextRead or not same_object(pc:GetWorld(),gs:GetWorld()) then return end
     nextRead=os.time()+1
+    local requestPath=OUTPUT:gsub('[^/]+$','public-team-switch.txt')
     local request=io.open(requestPath,'rb')
     if not request then return end
     local body=request:read(7)
