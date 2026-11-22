@@ -17,6 +17,39 @@ files, lobby identity, game staging and Proton prefix.
    the match is ready. Use Join Game to retry an unsuccessful launch, or Join
    Public CTF from its own panel for public play.
 
+Run without keeping a terminal open
+-----------------------------------
+Use the terminal for the first launch and for troubleshooting. After setup
+works, open the installed launcher in its own session. Use the folder
+printed by the installer if it differs from the example.
+
+    launcher="$HOME/Games/Clan Wars Ubuntu Preview 7 r75/Start Clan Wars Ubuntu.sh"
+    setsid -f /bin/sh "$launcher" </dev/null >/dev/null 2>&1
+
+You can close the terminal once the launcher opens.
+
+For an app menu shortcut, save this as phoenix-rising.desktop under
+${XDG_DATA_HOME:-$HOME/.local/share}/applications (create that folder if
+needed). Replace the path in Exec with your full launcher path, keeping
+the double quotes.
+
+    [Desktop Entry]
+    Type=Application
+    Name=Phoenix Rising
+    Exec=/bin/sh "/home/you/Games/Clan Wars Ubuntu Preview 7 r75/Start Clan Wars Ubuntu.sh"
+    Terminal=false
+    Categories=Game;
+
+Open Phoenix Rising from your application menu. For a desktop icon, copy
+the file to your desktop and mark it trusted if prompted. This also applies
+to other Linux desktops and Steam Deck in Desktop Mode.
+
+If startup fails, run the installed launcher in a terminal for live output.
+For a game launch failure, use the log path shown in Starter. With default
+paths, look for proton.log in ~/.local/share/ClanWarsUbuntuStarter/joins/
+or bridge.log in ~/.local/share/Tribes3CommunityStarter/linux-launches/.
+With Steam Snap, game-side logs are under ~/snap/steam/common/.local/share/.
+
 Opening the Starter, browsing matches, and working in a lobby use
 native Linux Python. Clicking Join Game asks Steam to start the game, and
 can open Steam if it is closed. First-time shader processing can take several
