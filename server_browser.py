@@ -177,8 +177,10 @@ class ServerBrowserWindow:
         self.join_button = tk.Button(actions, text='Connect', command=self.join,
                                      bg=ACCENT, fg=BG, relief='flat', padx=14, pady=6)
         self.join_button.pack(side='left', padx=(0, 8))
-        self.invitation_button = ttk.Button(actions, text='Use new invitation', command=lambda: self.join(replace=True))
+        self.invitation_button = ttk.Button(actions, text='Replace invitation', command=lambda: self.join(replace=True))
         self.invitation_button.pack(side='left', padx=(0, 8))
+        self.open_invitation_button = ttk.Button(actions, text='Open invitation…', command=self.open_invitation)
+        self.open_invitation_button.pack(side='left', padx=(0, 8))
         self.ping_button = ttk.Button(actions, text='Measure ping', command=self.ping)
         self.ping_button.pack(side='left', padx=(0, 8))
         self.favourite_button = ttk.Button(actions, text='Favourite', command=self.favourite)
@@ -222,6 +224,7 @@ class ServerBrowserWindow:
         can_connect = bool(usable and row['compatible'] and 'connect' not in self.pending)
         for button in (self.join_button, self.invitation_button):
             button.configure(state='normal' if can_connect else 'disabled')
+        self.open_invitation_button.configure(state='disabled' if 'connect' in self.pending else 'normal')
         self.ping_button.configure(state='normal' if usable and 'ping' not in self.pending else 'disabled')
         self.favourite_button.configure(state='normal' if row else 'disabled',
             text='Remove favourite' if row and row['favourite'] else 'Favourite')
@@ -235,6 +238,10 @@ class ServerBrowserWindow:
             self.connect(row, self, replace=replace)
         elif row:
             self.status.set('Refresh to verify that this server is still available.')
+
+    def open_invitation(self):
+        if 'connect' not in self.pending:
+            self.connect(None, self)
 
     def ping(self):
         row = self.selected()

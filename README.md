@@ -54,8 +54,10 @@ on their original team.
 
 A Direct package with directory seeds adds **Community servers** on Windows
 and native Ubuntu. Connect to a host that offers open Public CTF registration,
-or use the selected host's invitation. The browser keeps a saved view for
-master outages and can measure ping to a selected server.
+or use the selected host's invitation. Choose **Open invitation…** for a
+host whose invitation you already have, including one absent from the
+directory. The browser keeps a saved view for master outages and can measure
+ping to a selected server.
 
 Use the [paired backend branch](https://github.com/T24085/T3BackEndServer/tree/feat/phoenix-rising-issue-integration) to test these lobby and map options. The [verification status](docs/STATUS.md) covers the launcher checks and the CTF HUD changes that still need an in-game test.
 

@@ -1520,12 +1520,15 @@ class LauncherTips:
         self.desktop.root.after(600, self.tick)
 
 
+def validate_player_invitation(invitation, *, local_test=False):
+    if isinstance(invitation, dict) and 'enrollment_token' in invitation:
+        return validate_group(invitation, local_test=local_test)
+    return validate_connection(invitation, local_test=local_test)
+
+
 def invitation_for_server(row, invitation, *, local_test=False):
     from server_directory import PROTOCOL_VERSION
-    if isinstance(invitation, dict) and 'enrollment_token' in invitation:
-        connection = validate_group(invitation, local_test=local_test)
-    else:
-        connection = validate_connection(invitation, local_test=local_test)
+    connection = validate_player_invitation(invitation, local_test=local_test)
     if (row['protocol'] != PROTOCOL_VERSION or connection['hostname'].lower() != row['hostname']
             or connection['public_address'] != row['address'] or connection['https_port'] != row['port']):
         raise ValueError('Choose an invitation for the selected server and protocol version.')
@@ -1580,28 +1583,31 @@ def choose_directory_connection(directory, local, row, browser, *, replace=False
     from tkinter import filedialog
     from server_directory import DirectoryError
 
-    profile = local/'directory-invitations'/(row['server_id']+'.json')
-    auto_register = not replace and not profile.exists() and 'open_registration' in row
+    profile = local/'directory-invitations'/(row['server_id']+'.json') if row is not None else None
+    saved = profile is not None and profile.exists()
+    auto_register = row is not None and not replace and not saved and 'open_registration' in row
     if auto_register:
         candidate = None
-    elif profile.exists() and not replace:
+    elif saved and not replace:
         candidate = profile
     else:
+        title = 'Choose the invitation for '+row['name'] if row is not None else 'Choose a host invitation'
         candidate = filedialog.askopenfilename(
-            parent=browser.window, title='Choose the invitation for '+row['name'],
+            parent=browser.window, title=title,
             filetypes=[('Player invitation', '*.json')])
         if not candidate:
             return
 
     def check():
         try:
-            if directory.clock() >= row['expires_at']:
+            if row is not None and directory.clock() >= row['expires_at']:
                 raise DirectoryError('Refresh the listing before connecting.')
             if auto_register:
                 connection = public_directory_connection(row, local)
             else:
                 invitation = read_json(candidate, 16384)
-                connection = invitation_for_server(row, invitation)
+                connection = (invitation_for_server(row, invitation) if row is not None
+                              else validate_player_invitation(invitation))
                 if 'enrollment_token' in connection:
                     connection = enroll_group_connection(connection, local)
                 client = DirectClient(connection)
@@ -1611,12 +1617,14 @@ def choose_directory_connection(directory, local, row, browser, *, replace=False
                         raise DirectoryError('This server does not support the current game client.')
                 finally:
                     client.close()
-                with locked_state(profile):
-                    write_json(profile, connection)
-            try:
-                directory.connected(row['server_id'])
-            except OSError:
-                logging.getLogger(__name__).warning('Could not save directory connection history.')
+                if profile is not None:
+                    with locked_state(profile):
+                        write_json(profile, connection)
+            if row is not None:
+                try:
+                    directory.connected(row['server_id'])
+                except OSError:
+                    logging.getLogger(__name__).warning('Could not save directory connection history.')
             return connection
         except CommunityError as exc:
             raise DirectoryError(str(exc)) from exc

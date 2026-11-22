@@ -5,6 +5,11 @@ columns, region and compatibility filters, favourites, and connection
 history. Starter validates server listings, group membership, and revocations.
 Match traffic and map downloads use the selected Direct Host.
 
+**Open invitation** also connects directly to an unlisted host from a player
+or group invitation file. Starter checks the host's TLS connection and game
+compatibility before switching. A direct invitation can be opened even if
+the master directory is unavailable.
+
 Starter registers a temporary Public CTF guest on hosts that advertise open
 access. Invitations retain their existing access. Starter preserves current
 lobby and game ownership until the new host passes its checks. Event routing

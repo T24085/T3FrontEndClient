@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from server_browser import ServerDirectory, filter_rows
+from server_browser import ServerBrowserWindow, ServerDirectory, filter_rows
 from server_directory import DirectoryError, canonical, encode_blob, key_id, signed_bytes
 
 
@@ -126,6 +126,8 @@ class BrowserTest(unittest.TestCase):
             handlers['connect']({'name': 'New server'}, browser)
             connect.assert_called_once()
             gui.public_panel.pending.add('start')
+            handlers['connect'](None, browser)
+            connect.assert_called_once()
             handlers['on_connected']({'host': 'new'})
             selected.assert_not_called()
             gui.close.assert_not_called()
@@ -135,6 +137,51 @@ class BrowserTest(unittest.TestCase):
             handlers['on_connected']({'host': 'new'})
             selected.assert_called_once_with({'host': 'new'})
             gui.close.assert_called_once()
+
+    def test_open_invitation_does_not_require_a_selected_listing(self):
+        browser = SimpleNamespace(connect=Mock(), pending={'refresh'})
+        ServerBrowserWindow.open_invitation(browser)
+        browser.connect.assert_called_once_with(None, browser)
+        browser.pending.add('connect')
+        ServerBrowserWindow.open_invitation(browser)
+        browser.connect.assert_called_once()
+
+    def test_unlisted_host_accepts_both_invitation_types_after_the_capability_check(self):
+        here = Path(__file__).parent/'experimental/direct-hosting/src'
+        with patch.object(sys, 'path', [str(here), *sys.path]):
+            import direct_client
+        invitation = {
+            'format': 1, 'hostname': 'unlisted.example.com', 'public_address': '93.184.216.34',
+            'https_port': 18443, 'first_udp_port': 18443, 'last_udp_port': 18447, 'access_token': 't'*43,
+        }
+        group = dict(invitation, host_id='a'*32, enrollment_token='g'*43)
+        del group['access_token']
+        directory = Mock()
+        with TemporaryDirectory() as folder:
+            local = Path(folder)
+            invite_file = local/'unlisted.json'
+            browser = Mock()
+            client = Mock()
+            picker = SimpleNamespace(filedialog=SimpleNamespace(askopenfilename=Mock(return_value=str(invite_file))))
+            for data in (invitation, group):
+                invite_file.write_bytes(canonical(data))
+                with self.subTest(group=data is group), \
+                        patch.dict(sys.modules, {'tkinter': picker}), \
+                        patch.object(direct_client, 'DirectClient', return_value=client) as connect, \
+                        patch.object(direct_client, 'enroll_group_connection', return_value=invitation) as enroll:
+                    direct_client.choose_directory_connection(directory, local, None, browser)
+                    task, verify = browser.submit.call_args.args
+                    self.assertEqual(task, 'connect')
+                    client.capabilities.return_value = {'gameClientReady': False}
+                    with self.assertRaisesRegex(DirectoryError, 'current game client'):
+                        verify()
+                    client.capabilities.return_value = {'gameClientReady': True}
+                    self.assertEqual(verify(), invitation)
+                    self.assertEqual(connect.call_count, 2)
+                    self.assertEqual(enroll.call_count, 2 if data is group else 0)
+            self.assertEqual(client.close.call_count, 4)
+            self.assertFalse((local/'directory-invitations').exists())
+            directory.connected.assert_not_called()
 
 
 if __name__ == '__main__':
