@@ -67,6 +67,7 @@ function f.addWidget(world,controller)
     return bar
 end
 local function FindAllOf(className)
+    if className=='TopPickup_Flag' then return {} end
     assert(className=='WBP_Game_ScoreBar_CTF_C')
     return f.widgets
 end

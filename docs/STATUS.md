@@ -66,6 +66,23 @@ and game preparation. The Maps tab retains its last good list and selection
 while refreshing or if the host is unreachable. Hosts with conditional map
 index support send the catalog body only when it changes.
 
+# CTF carrier names and minimap flags
+
+The client reads both teams' replicated flags during the same reconciliation
+as the scores and generator icons. It repairs missing native scorebar flag
+widgets and retries the native carrier name when the remote PlayerState
+arrives. The dropped label and home reset use the retail widget. Detachment
+clears stale holder data in the HUD while the actor's replication catches up.
+
+The minimap binds the retail flag icons and refreshes their home or dropped
+positions with the native projection. Carried flags continue through the
+native player marker. This path is independent of the floating world flag
+indicator option and leaves an intentionally hidden minimap hidden.
+
+Fixture checks cover late flag and player replication, both team views, a
+drop with stale holder data, pickup by another player, return, and a missing
+minimap icon. This source candidate awaits rendered multiplayer qualification.
+
 # Per-session map downloads
 
 Starter connects without checking or downloading map files at startup. It

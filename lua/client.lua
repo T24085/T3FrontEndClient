@@ -548,6 +548,194 @@ local function refresh_generator_icons(widget,gs,world,team)
     end
 end
 
+local ctfFlagHud=(function()
+    local directory='/Game/UI/Components/Game/'
+    local scoreIconClass='WidgetBlueprintGeneratedClass '..directory..'WBP_Game_ScoreBar_CTF_FlagIcon.WBP_Game_ScoreBar_CTF_FlagIcon_C'
+    local mapClass='WidgetBlueprintGeneratedClass '..directory..'UI_Game_Map.UI_Game_Map_C'
+    local mapMarkerClass='WidgetBlueprintGeneratedClass '..directory..'UI_Game_Minimap_Flag.UI_Game_Minimap_Flag_C'
+    local mapIconClass='WidgetBlueprintGeneratedClass '..directory..'WBP_Game_MinimapFlagIcon.WBP_Game_MinimapFlagIcon_C'
+    local worldIdentity,controllerIdentity
+    local retry={}
+    local mapWidgets={}
+    local scanDelay=0
+
+    local function class_is(widget,expected)
+        return valid(widget) and widget:GetClass():GetFullName()==expected
+    end
+
+    local function snapshot(world)
+        local flags,teams={},{}
+        for _,flag in ipairs(FindAllOf('TopPickup_Flag') or {}) do
+            if valid(flag) and same_object(flag:GetWorld(),world) then
+                local team=flag.r_TeamId
+                if team~=1 and team~=2 then return end
+                local info=flag:GetHeldBy()
+                if type(info.bReturned)~='boolean' then return end
+                local holder=info.Holder
+                if info.bReturned then
+                    holder=nil
+                elseif valid(holder) then
+                    local root=flag.RootComponent
+                    local attached=valid(root) and root:GetAttachParent() or nil
+                    if valid(root) and not same_object(flag:GetOwner(),holder)
+                        and not (valid(attached) and same_object(attached:GetOwner(),holder)) then
+                        -- The release can detach before the replicated holder clears.
+                        -- This value is sent only to the HUD; the actor is untouched.
+                        info={bReturned=false}
+                        holder=nil
+                    end
+                end
+                flags[flag:GetAddress()]={flag=flag,team=team,info=info,holder=holder}
+                teams[team]=true
+            end
+        end
+        if teams[1] and teams[2] then return flags end
+    end
+
+    local function inspect(panel,expected,flags,team)
+        if not valid(panel) then return end
+        local count=panel:GetChildrenCount()
+        if count<0 or count>32 then return end
+        local view={panel=panel,icons={},remove={},other=false}
+        for index=0,count-1 do
+            local child=panel:GetChildAt(index)
+            if class_is(child,expected) then
+                local actor=child.CachedActor
+                local key=valid(actor) and actor:GetAddress() or nil
+                local row=flags[key]
+                if row and (not team or team==row.team) and not view.icons[key] then
+                    view.icons[key]=child
+                else
+                    view.remove[#view.remove+1]=index
+                end
+            else
+                view.other=true
+            end
+        end
+        return view
+    end
+
+    local function remove_stale(view)
+        for i=#view.remove,1,-1 do view.panel:RemoveChildAt(view.remove[i]) end
+    end
+
+    local function retry_binding(widget,now)
+        local key=widget:GetAddress()
+        local due=retry[key]
+        if due and due>now then return false end
+        retry[key]=now+3
+        return true
+    end
+
+    local function matches(icon,row)
+        local current=icon.CachedHolderInfo
+        if current.bReturned~=row.info.bReturned then return false end
+        if row.info.bReturned then return true end
+        if valid(row.holder) then return same_object(current.Holder,row.holder) end
+        return not valid(current.Holder)
+    end
+
+    local function score_text(icon,row)
+        local changed=not matches(icon,row)
+        local name
+        if valid(row.holder) then
+            local player=row.holder.PlayerState
+            if valid(player) then
+                local value=player:GetPlayerName()
+                name=type(value)=='string' and value or value:ToString()
+            else
+                name=''
+            end
+        elseif row.info.bReturned then
+            name=''
+        end
+        local label=icon.Text
+        local wrongText=name~=nil and valid(label) and label:GetText():ToString()~=name
+        if changed or wrongText then
+            icon:OnFlagHeldChanged(row.flag,row.info,row.info)
+            if name=='' and valid(label) and label:GetText():ToString()~='' then
+                label:SetText(FText(''))
+            end
+        end
+    end
+
+    local runtime={}
+    function runtime.prepare(pc,world)
+        if not same_object(controllerIdentity,pc) or not same_object(worldIdentity,world) then
+            controllerIdentity,worldIdentity=pc,world
+            retry,mapWidgets,scanDelay={},{},0
+        end
+        return snapshot(world)
+    end
+
+    function runtime.score(widget,flags,team,now)
+        local friendly=inspect(widget.FriendlyObjectives,scoreIconClass,flags,team)
+        local enemy=inspect(widget.EnemyObjectives,scoreIconClass,flags,3-team)
+        if not friendly or not enemy then return end
+        remove_stale(friendly);remove_stale(enemy)
+        local missing=false
+        for key,row in pairs(flags) do
+            local view=row.team==team and friendly or enemy
+            local icon=view.icons[key]
+            if icon then score_text(icon,row) else missing=true end
+        end
+        if not missing or not retry_binding(widget,now) then return end
+        -- BindFlags always appends a fresh set. Remove only the verified flag
+        -- icons before rebinding, leaving unrelated objective widgets alone.
+        for _,view in ipairs({friendly,enemy}) do
+            for _,icon in pairs(view.icons) do icon:RemoveFromParent() end
+        end
+        widget:BindFlags()
+        -- Late names and the settled attachment state are read on the next tick.
+    end
+
+    function runtime.minimap(pc,world,flags,now)
+        if scanDelay==0 then
+            mapWidgets={}
+            for _,widget in ipairs(FindAllOf('UI_Game_Map_C') or {}) do
+                if class_is(widget,mapClass) and same_object(widget:GetWorld(),world)
+                    and same_object(widget:GetOwningPlayer(),pc) then mapWidgets[#mapWidgets+1]=widget end
+            end
+            scanDelay=3
+        end
+        scanDelay=scanDelay-1
+        for _,widget in ipairs(mapWidgets) do
+            if valid(widget) and widget:GetVisibility()~=1 and widget:GetVisibility()~=2
+                and type(widget.MapScale)=='number' and widget.MapScale>0 then
+                local view=inspect(widget.Flags,mapMarkerClass,flags)
+                if view then
+                    remove_stale(view)
+                    local missing=false
+                    for key in pairs(flags) do
+                        if not view.icons[key] then missing=true;break end
+                    end
+                    -- The native minimap binder clears its canvas before
+                    -- building it. Never clear a layer with unrelated children.
+                    if missing and not view.other and retry_binding(widget,now) then
+                        widget:BindFlags()
+                        view=inspect(widget.Flags,mapMarkerClass,flags) or view
+                    end
+                    for key,marker in pairs(view.icons) do
+                        local row=flags[key]
+                        local icon=marker.WBP_Game_MinimapFlagIcon
+                        if class_is(icon,mapIconClass) and same_object(icon.CachedActor,row.flag) then
+                            local loose=not valid(row.holder)
+                            if not matches(icon,row) or icon.ShouldUpdateLocation~=loose
+                                or icon:IsVisible()~=loose then
+                                icon:OnFlagHeldChanged(row.flag,row.info,row.info)
+                            end
+                        end
+                    end
+                    -- Carried flags still use retail's moving-player marker.
+                    widget:UpdateFlags()
+                end
+            end
+        end
+    end
+
+    return runtime
+end)()
+
 local function refresh_ctf_score_bar(pc,ps,gs)
     local team=ps.r_TeamId
     if team~=1 and team~=2 then return end
@@ -571,6 +759,13 @@ local function refresh_ctf_score_bar(pc,ps,gs)
         scoreBarScanDelay=3
     end
     scoreBarScanDelay=scoreBarScanDelay-1
+    local flags
+    reconcile_score_bar('flags',function() flags=ctfFlagHud.prepare(pc,world) end)
+    if flags then
+        reconcile_score_bar('minimap_flags',function()
+            ctfFlagHud.minimap(pc,world,flags,gs:GetServerWorldTimeSeconds())
+        end)
+    end
     if #scoreBars==0 then return end
 
     local rows=gs.r_CurrentTeamScores
@@ -594,6 +789,11 @@ local function refresh_ctf_score_bar(pc,ps,gs)
             reconcile_score_bar('generators',function()
                 refresh_generator_icons(widget,gs,world,team)
             end)
+            if flags then
+                reconcile_score_bar('score_flags',function()
+                    ctfFlagHud.score(widget,flags,team,gs:GetServerWorldTimeSeconds())
+                end)
+            end
             local updated=false
             local function sync_counter(score,fill,counter)
                 if score==nil or not valid(fill) or not valid(counter) or not valid(counter.ScoreText) then return end
