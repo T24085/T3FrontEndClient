@@ -302,9 +302,9 @@ class Desktop:
                         borderwidth=0, highlightthickness=0, bg='#0d1927')
         logo.pack(pady=(12, 14))
         self.backdrop.logo(logo, self.emblem)
-        self.lobbies_nav=self.button(side,'Lobbies',lambda:self.show_panel('lobbies'),False)
+        self.lobbies_nav=self.button(side,'Create Lobby',lambda:self.show_panel('lobbies'),False)
         self.lobbies_nav.pack(fill='x',padx=18,pady=(0,6))
-        self.live_nav=self.button(side,'Server Browser',lambda:self.show_panel('live'),False)
+        self.live_nav=self.button(side,'Lobby Browser',lambda:self.show_panel('live'),False)
         self.live_nav.pack(fill='x',padx=18)
         if self.map_sync is not None:
             self.button(side, 'Maps', lambda: self.show_panel('maps'), False).pack(fill='x', padx=18, pady=(6, 0))
@@ -320,9 +320,10 @@ class Desktop:
             tk.Label(side,textvariable=self.map_status,bg='#0d1927',fg=MUTED,font=('Segoe UI',10),
                      anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
             self.map_progress = ttk.Progressbar(side, mode='determinate')
+        self.settings_nav = None
         if sys.platform == 'win32':
-            self.button(side, 'Settings', self.show_settings, False).pack(
-                side='bottom', fill='x', padx=18, pady=(8, 14))
+            self.settings_nav = self.button(side, 'Settings', self.show_settings, False)
+            self.settings_nav.pack(fill='x', padx=18, pady=(6, 0))
         main = tk.Frame(root, bg=BG)
         self.lobby_panel=main
         main.pack(side='left', fill='both', expand=True, padx=32, pady=20)
@@ -330,10 +331,7 @@ class Desktop:
         self.hero = tk.Canvas(main, bg=BG, height=64, highlightthickness=0, borderwidth=0)
         self.hero.pack(fill='both', expand=True, pady=(0, 10))
         self.hero_scene = self.hero.create_image(0, 0, anchor='nw')
-        self.hero_title = self.hero.create_text(2, 12, anchor='sw', fill='#fff8ed',
-                                                font=('Segoe UI', 31, 'bold'), text='Lobbies')
         self.backdrop.canvas(self.hero, self.hero_scene)
-        self.hero.bind('<Configure>', lambda e: self.hero.coords(self.hero_title, 2, e.height - 7))
         self.lobby_layout = None
         entry = tk.Frame(main, bg=PANEL, padx=18, pady=14)
         entry.pack(fill='x')
@@ -433,7 +431,7 @@ class Desktop:
         self.leave_button = self.button(actions,'Leave',lambda:self.call_action('leave'),False);self.leave_button.pack(side='left')
         tk.Label(main,textvariable=self.status,bg=BG,fg=MUTED,font=('Segoe UI',10),anchor='w',wraplength=700).pack(side='bottom',before=actions,anchor='w',pady=(12,0))
         self.live_panel=tk.Frame(root,bg=BG)
-        self.label(self.live_panel,'Server Browser',27,True).pack(anchor='w')
+        self.label(self.live_panel,'Lobby Browser',27,True).pack(anchor='w')
         self.live_summary=self.label(self.live_panel,'Left click for next player, right click for previous. F7 for first person, F8 for chase, or middle click to switch views.',
                    11,color=MUTED)
         self.live_summary.configure(wraplength=500,justify='left')
@@ -1197,8 +1195,6 @@ class Desktop:
             tk.Label(window, textvariable=notice, bg=BG, fg=MUTED, font=('Segoe UI', 10),
                      justify='left', wraplength=420, anchor='w').pack(fill='x', pady=(3, 10))
             tk.Frame(window, bg=PANEL, height=1).pack(fill='x', pady=(0, 14))
-        self.button(window, 'About this launcher', self.show_connection_info, False).pack(
-            anchor='w', pady=(0, 14))
         self.label(window, 'Game settings', 16, True).pack(anchor='w')
         description = self.label(
             window, 'Copy your retail key bindings, sensitivity, and game options. '
@@ -1222,6 +1218,8 @@ class Desktop:
         self.button(window, 'Import settings from retail', import_settings).pack(anchor='w')
         tk.Label(window, textvariable=status, bg=BG, fg=MUTED, font=('Segoe UI', 10),
                  justify='left', wraplength=420, anchor='w').pack(fill='x', pady=(12, 0))
+        self.button(window, 'About this launcher', self.show_connection_info, False).pack(
+            anchor='w', pady=(12, 0))
         window.bind('<Escape>', lambda _event: window.destroy())
 
     def render_live_controls(self):

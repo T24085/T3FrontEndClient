@@ -1280,6 +1280,11 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
                     return
             super().show_panel(name)
 
+        def refresh_voice_notice(self):
+            enabled = lobby.proximity_enabled.is_set()
+            self.voice_notice.configure(text='On' if enabled else 'Off',
+                                        fg='#80e6bd' if enabled else '#ffaaaa')
+
         def show_settings(self):
             previous = self.settings_window
             super().show_settings()
@@ -1295,7 +1300,7 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
 
             def toggle():
                 lobby.set_proximity_voice(enabled.get())
-                self.voice_notice.set('Proximity voice: On' if lobby.proximity_enabled.is_set() else 'Proximity voice: Off')
+                self.refresh_voice_notice()
 
             def save_key(value):
                 lobby.bind_proximity_key(value)
@@ -1337,15 +1342,26 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
         if lobby.armor_supported:
             gui.armor_panel = ArmorPanel(tk, gui, lobby, model_directory=root/'armor-models',
                                          weapon_directory=weapon_directory or local/'weapon-library')
-        if lobby.proximity_supported or os.name == 'nt':
-            state = ('On' if lobby.proximity_enabled.is_set() else 'Off') if lobby.proximity_supported else 'Unavailable'
-            gui.voice_notice = tk.StringVar(window, value='Proximity voice: ' + state)
-            tk.Label(gui.sidebar, textvariable=gui.voice_notice, bg='#0d1927', fg='#eff7ff',
-                     anchor='w').pack(anchor='w', padx=20, pady=(16, 0))
-            tk.Button(gui.sidebar, text='Keybindings Import in Settings', command=gui.show_settings,
-                      bg='#0d1927', fg='#9fb3c6', activebackground='#0d1927', activeforeground='#eff7ff',
-                      relief='flat', bd=0, padx=0, pady=2, anchor='w', cursor='hand2',
-                      font=('Segoe UI', 9)).pack(anchor='w', padx=20)
+        if gui.settings_nav is not None:
+            gui.settings_nav.pack_forget()
+            gui.settings_nav.pack(fill='x', padx=18, pady=(6, 0))
+        if lobby.proximity_supported or gui.settings_nav is not None:
+            sidebar_bg = '#0d1927'
+            tips = tk.Frame(gui.sidebar, bg=sidebar_bg)
+            tips.pack(fill='x', padx=20, pady=(16, 0))
+            gui.label(tips, 'Tool Tips', 10, True, bg=sidebar_bg).pack(anchor='w')
+            if lobby.proximity_supported:
+                voice = tk.Frame(tips, bg=sidebar_bg)
+                voice.pack(anchor='w', pady=(5, 0))
+                gui.label(voice, 'Proximity voice', 9, bg=sidebar_bg).pack(side='left')
+                gui.voice_notice = gui.label(voice, '', 9, True, bg=sidebar_bg)
+                gui.voice_notice.pack(side='left', padx=(5, 0))
+                gui.refresh_voice_notice()
+            if gui.settings_nav is not None:
+                tk.Button(tips, text='Key Bindings Import in Settings', command=gui.show_settings,
+                          bg=sidebar_bg, fg='#9fb3c6', activebackground=sidebar_bg, activeforeground='#eff7ff',
+                          relief='flat', bd=0, padx=0, pady=2, anchor='w', cursor='hand2',
+                          font=('Segoe UI', 9)).pack(anchor='w')
         window.protocol('WM_DELETE_WINDOW',gui.close)
         if on_ready is not None:
             window.update_idletasks()
