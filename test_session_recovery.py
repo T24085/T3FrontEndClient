@@ -37,4 +37,18 @@ class SessionRecoveryTests(unittest.TestCase):
    self.assertIsInstance(error.exception.__cause__,TimeoutError)
    connection.return_value.close.assert_called_once()
 
+ def test_live_match_join_remembers_identity_and_rejects_replaced_match(self):
+  client=self.client()
+  original=self.response()
+  expected='a'*32
+  wrong=dict(original,room=dict(original['room'],match={'id':'b'*32}))
+  with patch.object(client,'_request',return_value=wrong):
+   with self.assertRaisesRegex(CommunityError,'replaced'):
+    client.join_match(expected,'One')
+  self.assertIsNone(client.code)
+  correct=dict(original,room=dict(original['room'],match={'id':expected}))
+  with patch.object(client,'_request',return_value=correct) as request:
+   self.assertEqual(client.join_match(expected,'One',team='red'),correct['room'])
+   request.assert_called_once_with('join-match', {'matchId':expected,'name':'One','team':'red'}, use_lobby_token=False)
+
 if __name__=='__main__':unittest.main()

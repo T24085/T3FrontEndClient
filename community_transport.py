@@ -17,6 +17,8 @@ from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION, LIVE_ROSTER_HEADE
 from player_names import display_name
 
 MAX_LOBBY_BOTS = 12
+PRIVATE_ADMISSION_HEADER = 'X-T3-Private-Join'
+
 DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True, 'fallDamage': False}
 
 
@@ -115,7 +117,7 @@ class CommunityClient:
     def request_headers(self):
         return {'Host': self.authority, 'Accept': 'application/json', CATALOG_HEADER: str(CATALOG_VERSION),
                 'X-T3-Map-Labels': '1', SESSION_HEADER: str(SESSION_VERSION),
-                MINIMAP_HEADER: MINIMAP_VERSION}
+                MINIMAP_HEADER: MINIMAP_VERSION, PRIVATE_ADMISSION_HEADER: '1'}
 
     def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True, live_roster=None):
         headers = self.request_headers()
@@ -150,7 +152,8 @@ class CommunityClient:
             if response.status != 200:
                 code = value.get('code')
                 if code not in ('lobby_missing', 'session_invalid','spectator_session_invalid',
-                                'spectator_unavailable','spectator_forbidden','spectator_conflict','spectator_capacity'): code = None
+                                'spectator_unavailable','spectator_forbidden','spectator_conflict','spectator_capacity',
+                                'lobby_locked','lobby_team_balance'): code = None
                 raise CommunityError(str(value.get('error', 'Lobby request failed.'))[:256], code=code)
             return value
         except CommunityError:
@@ -179,7 +182,7 @@ class CommunityClient:
             return self.server_maps.get(name)
         return BY_ID[name].label if name in BY_ID else None
 
-    def create(self, name, *, map_id=None):
+    def create(self, name, *, map_id=None, locked=None):
         with self.lock:
             if self.code is not None:
                 try:
@@ -190,6 +193,10 @@ class CommunityClient:
             data = {'name':name}
             if map_id is not None:
                 data['map'] = map_id
+            if locked is not None:
+                if type(locked) is not bool:
+                    raise CommunityError('Choose whether to lock the lobby.')
+                data['locked'] = locked
             return self._remember(self._request('create', data))
 
     def join(self, code, name):
@@ -203,6 +210,19 @@ class CommunityClient:
                 else:
                     raise CommunityError('Leave lobby '+self.code+' before joining another lobby.')
             return self._remember(self._request('join', {'code':code, 'name':name}))
+
+    def join_match(self, match_id, name, *, team='auto'):
+        if (not isinstance(match_id, str) or re.fullmatch('[0-9a-f]{32}', match_id) is None
+                or team not in ('auto', 'blue', 'red')):
+            raise CommunityError('Select a live match and a valid team.')
+        with self.lock:
+            response = self._request('join-match', {'matchId':match_id, 'name':name, 'team':team},
+                                     use_lobby_token=False)
+            room = response.get('room')
+            match = room.get('match') if isinstance(room, dict) else None
+            if not isinstance(match, dict) or match.get('id') != match_id:
+                raise CommunityError('The selected match was replaced. Refresh and try again.')
+            return self._remember(response)
 
     def resume(self):
         """Recover only this freshly verified device's existing membership."""
@@ -298,8 +318,9 @@ class CommunityClient:
             if not isinstance(matches,list):raise CommunityError('Invalid live match list.')
             seen=set();result=[]
             fields={'id','map','label','playerCount','playerCapacity','spectatorCount','spectatorCapacity','canSpectate'}
+            admission_fields = {'locked', 'canJoin', 'rejoin', 'joinReason', 'teamCounts'}
             for item in matches:
-                if (not isinstance(item,dict) or not fields <= set(item) <= fields|{'roster','contentHash','manifestHash'} or not isinstance(item['id'],str)
+                if (not isinstance(item,dict) or not fields <= set(item) <= fields|{'roster','contentHash','manifestHash'}|admission_fields or not isinstance(item['id'],str)
                         or any(key in item and not valid_sha(item[key]) for key in ('contentHash','manifestHash'))
                         or re.fullmatch('[0-9a-f]{32}',item['id'])is None or item['id']in seen
                         or self.map_label(item['map']) is None or item['label']!=self.map_label(item['map'])
@@ -308,6 +329,16 @@ class CommunityClient:
                                ('playerCount','playerCapacity','spectatorCount','spectatorCapacity'))
                         or item['playerCount']>item['playerCapacity']):
                     raise CommunityError('Invalid live match list.')
+                if admission_fields & item.keys():
+                    counts = item.get('teamCounts')
+                    if (not admission_fields <= item.keys()
+                            or any(type(item[key]) is not bool for key in ('locked', 'canJoin', 'rejoin'))
+                            or not isinstance(item['joinReason'], str) or len(item['joinReason']) > 160
+                            or item['canJoin'] == bool(item['joinReason'])
+                            or not isinstance(counts, dict) or set(counts) != {'blue', 'red'}
+                            or any(type(value) is not int or not 0 <= value <= 12 for value in counts.values())
+                            or sum(counts.values()) != item['playerCount']):
+                        raise CommunityError('Invalid player admission details.')
                 if 'roster' in item:
                     roster = item['roster']
                     if (item['id'] != roster_match_id or not isinstance(roster, dict) or set(roster) != {'blue','red'}

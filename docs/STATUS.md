@@ -1,3 +1,13 @@
+# Private lobby admission
+
+When Direct Host advertises private match admission, both Create lobby controls
+offer a lock option. The Lobby Browser marks locked matches, shows the reason
+when Join is unavailable, and offers Rejoin to players with a reserved place.
+Players joining an unlocked match can choose a team or Auto Balance. Starter
+waits for the host to register the player before launching the game.
+
+The paired Direct Host and Starter changes still need an in-game multiplayer test.
+
 # Per-map minimap presentation
 
 Starter requests a hash-pinned minimap descriptor for a selected map when
