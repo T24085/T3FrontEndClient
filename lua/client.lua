@@ -438,6 +438,15 @@ end
 local generatorIconClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_GeneratorIcon.WBP_Game_GeneratorIcon_C'
 local bindGeneratorsPath='/Game/UI/Components/Game/WBP_Game_ScoreBar_CTF.WBP_Game_ScoreBar_CTF_C:BindGenerators'
 local generatorIconRepairs={}
+local scoreBarErrors={}
+
+local function reconcile_score_bar(part,work)
+    local ok,why=pcall(work)
+    if not ok and not scoreBarErrors[part] then
+        report('CTF_SCORE_BAR_ERROR|part='..part..'|'..tostring(why):sub(1,250))
+    end
+    scoreBarErrors[part]=not ok or nil
+end
 
 local function replicated_generators(gs,world)
     local generators=gs.r_Generators
@@ -467,7 +476,7 @@ local function inspect_generator_panel(panel,world,expected)
     if not valid(panel) then return end
     local count=panel:GetChildrenCount()
     if count<0 or count>32 then return end
-    local seen,duplicates={},{}
+    local seen,duplicates,stale={},{},{}
     for index=0,count-1 do
         local icon=panel:GetChildAt(index)
         if valid(icon) and icon:GetClass():GetFullName()==generatorIconClass then
@@ -477,40 +486,51 @@ local function inspect_generator_panel(panel,world,expected)
                 if expected[key] then
                     if seen[key] then duplicates[#duplicates+1]=index end
                     seen[key]=true
+                else
+                    stale[#stale+1]=index
                 end
             end
         end
     end
     for key in pairs(expected) do
-        if not seen[key] then return false end
+        if not seen[key] then return false,duplicates,stale end
     end
-    return true,duplicates
+    return true,duplicates,stale
 end
 
 local function refresh_generator_icons(widget,gs,world,team)
     local teams,key=replicated_generators(gs,world)
     if not teams then return end
     local friendly,enemy=widget.FriendlyGenerators,widget.EnemyGenerators
-    local haveFriendly,friendlyDuplicates=inspect_generator_panel(friendly,world,teams[team])
-    local haveEnemy,enemyDuplicates=inspect_generator_panel(enemy,world,teams[3-team])
+    local haveFriendly,friendlyDuplicates,friendlyStale=inspect_generator_panel(friendly,world,teams[team])
+    local haveEnemy,enemyDuplicates,enemyStale=inspect_generator_panel(enemy,world,teams[3-team])
     if haveFriendly==nil or haveEnemy==nil then return end
     local address=widget:GetAddress()
-    if haveFriendly and haveEnemy then
-        for index=#friendlyDuplicates,1,-1 do friendly:RemoveChildAt(friendlyDuplicates[index]) end
-        for index=#enemyDuplicates,1,-1 do enemy:RemoveChildAt(enemyDuplicates[index]) end
+    local complete=haveFriendly and haveEnemy
+    local function remove_known_icons(panel,duplicates,stale)
+        if complete then
+            for _,index in ipairs(stale) do duplicates[#duplicates+1]=index end
+        end
+        table.sort(duplicates,function(a,b)return a>b end)
+        for _,index in ipairs(duplicates) do panel:RemoveChildAt(index) end
+    end
+    remove_known_icons(friendly,friendlyDuplicates,friendlyStale)
+    remove_known_icons(enemy,enemyDuplicates,enemyStale)
+    if complete then
         generatorIconRepairs[address]=nil
         return
     end
 
     local now=gs:GetServerWorldTimeSeconds()
+    key=team..':'..key
     local attempt=generatorIconRepairs[address]
     if not attempt or attempt.key~=key then
         attempt={key=key,nextAt=now+.5,tries=0}
         generatorIconRepairs[address]=attempt
     end
-    if now<attempt.nextAt or attempt.tries>=3 then return end
+    if now<attempt.nextAt then return end
     attempt.tries=attempt.tries+1
-    attempt.nextAt=now+1
+    attempt.nextAt=now+(attempt.tries>=3 and 5 or 1)
     local binding=StaticFindObject(bindGeneratorsPath)
     if not valid(binding) or binding:GetFullName()~='Function '..bindGeneratorsPath then return end
     local initialized=widget.bGeneratorsInitialized
@@ -538,6 +558,7 @@ local function refresh_ctf_score_bar(pc,ps,gs)
         scoreBarScanDelay=0
         scoreBarReported=false
         generatorIconRepairs={}
+        scoreBarErrors={}
     end
     if scoreBarScanDelay==0 then
         scoreBars={}
@@ -553,9 +574,11 @@ local function refresh_ctf_score_bar(pc,ps,gs)
     if #scoreBars==0 then return end
 
     local rows=gs.r_CurrentTeamScores
-    local count=rows:GetArrayNum()
-    local scores,malformed={},count>4
-    if not malformed then
+    local scores,malformed={},false
+    reconcile_score_bar('replication',function()
+        if not rows then return end
+        local count=rows:GetArrayNum()
+        if count>4 then malformed=true;return end
         rows:ForEach(function(_,param)
             local row=param:get()
             local id,score=row.TeamNum,row.Score
@@ -563,12 +586,14 @@ local function refresh_ctf_score_bar(pc,ps,gs)
             if scores[id]~=nil or type(score)~='number' or score<0 or score%1~=0 then malformed=true;return end
             scores[id]=score
         end)
-    end
-    if malformed then scores={} end
+    end)
+    if malformed or scoreBarErrors.replication then scores={} end
     local friendly,enemy=scores[team],scores[3-team]
     for _,widget in ipairs(scoreBars) do
-        if valid(widget) and widget:IsVisible() then
-            refresh_generator_icons(widget,gs,world,team)
+        if valid(widget) then
+            reconcile_score_bar('generators',function()
+                refresh_generator_icons(widget,gs,world,team)
+            end)
             local updated=false
             local function sync_counter(score,fill,counter)
                 if score==nil or not valid(fill) or not valid(counter) or not valid(counter.ScoreText) then return end
@@ -579,8 +604,12 @@ local function refresh_ctf_score_bar(pc,ps,gs)
                     updated=true
                 end
             end
-            sync_counter(friendly,widget.FriendlyScoreFill,widget.UI_Game_Scorebar_ScoreCount)
-            sync_counter(enemy,widget.EnemyScoreFill,widget.UI_Game_Scorebar_ScoreCount_1)
+            reconcile_score_bar('friendly',function()
+                sync_counter(friendly,widget.FriendlyScoreFill,widget.UI_Game_Scorebar_ScoreCount)
+            end)
+            reconcile_score_bar('enemy',function()
+                sync_counter(enemy,widget.EnemyScoreFill,widget.UI_Game_Scorebar_ScoreCount_1)
+            end)
             if updated and not scoreBarReported then
                 scoreBarReported=true
                 report('CTF_SCORE_BAR_REFRESHED|team='..team..'|friendly='..tostring(friendly)..'|enemy='..tostring(enemy))
@@ -846,7 +875,7 @@ local function enabled_flag_markers(env)
  end
 end
 
-local scoreBarFailed,shockLanceVisualFailed
+local shockLanceVisualFailed
 local markerFailed
 local function update_flag_markers(pc,ps,gs)
  if not markerService then
@@ -1889,10 +1918,9 @@ local function client_tick(sys)
     local pawnReady=valid(pc.Pawn) and pc.Pawn.bInitialized==true
     update_match_music(pc,gs,settingsApplied)
     configure_shield_wall_preview()
-    if not scoreBarFailed then
-        local ok,why=pcall(refresh_ctf_score_bar,pc,ps,gs)
-        if not ok then scoreBarFailed=true;report('CTF_SCORE_BAR_ERROR|'..tostring(why):sub(1,300)) end
-    end
+    reconcile_score_bar('refresh',function()
+        refresh_ctf_score_bar(pc,ps,gs)
+    end)
     if not shockLanceVisualFailed then
         local ok,why=pcall(configure_shock_lance)
         if not ok then shockLanceVisualFailed=true;report('SHOCK_LANCE_CAMERA_EFFECTS_ERROR|'..tostring(why):sub(1,300)) end

@@ -133,7 +133,7 @@ class DirectPlaytestPresentationTests(unittest.TestCase):
         self.assertEqual(bar.UI_Game_Scorebar_ScoreCount_1.ScoreText.value, '2')
         self.assertEqual(bar.calls, 1)
 
-    def test_late_bar_refreshes_and_foreign_or_hidden_bars_are_excluded(self):
+    def test_late_and_hidden_local_bars_refresh_without_touching_foreign_bars(self):
         f = self.fixture()
         f.setScores(1, 0)
         f.refresh()
@@ -143,7 +143,7 @@ class DirectPlaytestPresentationTests(unittest.TestCase):
         local = f.addWidget(f.world, f.pc)
         for _ in range(3):
             f.refresh()
-        self.assertEqual((local.calls, foreign.calls, hidden.calls), (1, 0, 0))
+        self.assertEqual((local.calls, foreign.calls, hidden.calls), (1, 0, 1))
         f.setScores(9, 0, True)
         f.refresh()
         self.assertEqual(local.calls, 1)
