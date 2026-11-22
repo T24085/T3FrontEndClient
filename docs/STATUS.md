@@ -73,8 +73,8 @@ host confirms readiness.
 
 When the host advertises score-preserving restart, Starter can request it for
 an active round. The lobby distinguishes waiting for players to load from a
-confirmed score-and-clock restore. The current host source still needs the
-native restore writer before exposing this option.
+confirmed score-and-clock restore. The paired host contains the native restore
+writer and keeps the option disabled pending the isolated two-client test.
 
 # Public CTF team selection and the Maps tab
 
