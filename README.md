@@ -1,4 +1,4 @@
-# Tribes Rivals: Clan Wars
+# Tribes 3 Mod Community Edition: Phoenix Rising
 
 Clan Wars is a community mod and playtest launcher for TRIBES 3: Rivals. Set up private Capture the Flag matches, join Public CTF when your host offers it, or watch a live match from first person or a chase camera.
 
@@ -27,11 +27,15 @@ disabled choice shows the host's reason.
 
 In **Lobbies**, **Competition**, **Scrim**, and **PUG** lock the player roster
 after the match starts. Players with a reserved place can still select **Rejoin**.
+If a lobby leader restarts the match, reserved players can rejoin the replacement
+on their original team.
 
 A Direct package with directory seeds adds **Community servers**. Connect to
 a host that offers open Public CTF registration, or use the selected host's
 invitation. The browser keeps a saved view for master outages and can measure
 ping to a selected server.
+
+The [paired backend branch](https://github.com/T24085/T3BackEndServer/tree/feat/phoenix-rising-issue-integration) supports these lobby and map options. The [verification status](docs/STATUS.md) covers the CTF scorebar, generator icons, flag carrier names, and minimap markers in this branch.
 
 ## Starter screenshots
 

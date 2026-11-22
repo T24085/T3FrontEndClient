@@ -53,6 +53,8 @@ match action with a reason. All lobby members see the countdown and reason.
 Starter closes only the owned game session for the replaced match and joins
 the fresh match through the existing lobby flow. The restart uses the same
 map and teams and starts a new scored round.
+With a paired Direct Host, rejoining by the same registered device restores a
+reserved place in the replacement even if the player left the original lobby.
 
 # Public CTF team selection and the Maps tab
 

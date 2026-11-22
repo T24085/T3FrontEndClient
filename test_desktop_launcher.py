@@ -218,6 +218,8 @@ class DesktopTest(unittest.TestCase):
 
     def test_artwork_stays_behind_lobby_and_spectator_controls(self):
         root = tk.Tk()
+        # Tk's coordinate hit-test includes other desktop windows on Windows.
+        root.attributes('-topmost', True)
         lobby = FakeLobby()
         app = Desktop(root, lobby, lambda _: FakeGame())
 
