@@ -129,9 +129,9 @@ class Desktop:
         else:
             self.label(side, 'TRIBES 3', 25, True, bg='#0d1927').pack(anchor='w', padx=24, pady=(36, 0))
             self.label(side, 'COMMUNITY STARTER', 9, color=ACCENT, bg='#0d1927').pack(anchor='w', padx=26, pady=(4, 32))
-        self.lobbies_nav=self.button(side,'Lobbies',lambda:self.show_panel('lobbies'),False)
+        self.lobbies_nav=self.button(side,'Create Lobby',lambda:self.show_panel('lobbies'),False)
         self.lobbies_nav.pack(fill='x',padx=18,pady=(0,6))
-        self.live_nav=self.button(side,'Live matches',lambda:self.show_panel('live'),False)
+        self.live_nav=self.button(side,'Lobby Browser',lambda:self.show_panel('live'),False)
         self.live_nav.pack(fill='x',padx=18)
         self.button(side, 'About this launcher', self.show_connection_info, False).pack(
             fill='x', padx=18, pady=(6, 0))
@@ -146,13 +146,13 @@ class Desktop:
             self.map_status = tk.StringVar(value='')
             tk.Label(side,textvariable=self.map_status,bg='#0d1927',fg=MUTED,font=('Segoe UI',10),
                      anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
+        self.settings_nav = None
         if sys.platform == 'win32':
-            self.button(side, 'Settings', self.show_settings, False).pack(
-                side='bottom', fill='x', padx=18, pady=(8, 14))
+            self.settings_nav = self.button(side, 'Settings', self.show_settings, False)
+            self.settings_nav.pack(fill='x', padx=18, pady=(6, 0))
         main = tk.Frame(root, bg=BG)
         self.lobby_panel=main
         main.pack(side='left', fill='both', expand=True, padx=32, pady=20)
-        self.label(main, 'Get your team together.', 27, True).pack(anchor='w', pady=(0, 12))
         entry = tk.Frame(main, bg=PANEL, padx=18, pady=14)
         entry.pack(fill='x')
         self.label(entry, 'STEAM PLAYER NAME' if steam_name_loader else 'YOUR PLAYER NAME', 9, color=ACCENT, bg=PANEL).grid(row=0,column=0,sticky='w')
@@ -245,7 +245,7 @@ class Desktop:
         self.leave_button = self.button(actions,'Leave',lambda:self.call_action('leave'),False);self.leave_button.pack(side='left')
         tk.Label(main,textvariable=self.status,bg=BG,fg=MUTED,font=('Segoe UI',10),anchor='w',wraplength=700).pack(side='bottom',before=actions,fill='x',pady=(12,0))
         self.live_panel=tk.Frame(root,bg=BG)
-        self.label(self.live_panel,'Watch live matches.',27,True).pack(anchor='w')
+        self.label(self.live_panel,'Lobby Browser',27,True).pack(anchor='w')
         self.live_summary=self.label(self.live_panel,'Left click for next player, right click for previous. F7 for first person, F8 for chase, or middle click to switch views.',
                    11,color=MUTED)
         self.live_summary.configure(wraplength=500,justify='left')
