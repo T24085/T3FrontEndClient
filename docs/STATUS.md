@@ -1,3 +1,14 @@
+# Community server browser
+
+A Direct package with a signed seed opens a directory browser with sortable
+columns, region and compatibility filters, favourites, and connection
+history. Starter validates server listings, group membership, and revocations.
+Match traffic and map downloads use the selected Direct Host.
+
+Connecting uses an invitation for the signed endpoint. Starter preserves
+current lobby and game ownership until the new host passes its checks.
+Public enrollment, event-lobby group routing, and a live release remain open.
+
 # Public CTF team switching
 
 On a host that advertises switch choices, the Public CTF panel can start a

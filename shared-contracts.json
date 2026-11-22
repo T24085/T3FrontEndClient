@@ -15,6 +15,8 @@
     "tools/apply_lobby_recovery_update.py": "7b1acd94cc25c80948b66789befc289df3ff880c69dcb7abfcdcb08b1fe76068",
     "server_access_contract.py": "62155a3c7e5d8a314c4e7928e0ddee92cb0d6417d72253d305dd996deec84e1a",
     "map_sync_contract.py": "2de77f0c399bfe230736487f364bc4efafe1d07928d0077556c7645a9a9685a8",
-    "direct_update_contract.py": "3609373a057a05a9988cf695d04d7eba8e776087f4bc2e7c79493af7521ca683"
+    "direct_update_contract.py": "3609373a057a05a9988cf695d04d7eba8e776087f4bc2e7c79493af7521ca683",
+    "server_directory.py": "6d63fcd02387440a3504907a8d5539f0d8256ad61bd860f587da734a7b83a5f9",
+    "directory_transport.py": "38fd92b2185cb26aa1c4ace5652370b91f24bb25fe1fb536f413df7e93335714"
   }
 }

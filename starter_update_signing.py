@@ -20,8 +20,8 @@ class PKCS1PaddingInfo(ctypes.Structure):
     _fields_ = [('algorithm', ctypes.c_wchar_p)]
 
 
-def verify(payload, signature):
-    if len(signature) != len(PUBLIC_MODULUS):
+def verify(payload, signature, *, modulus=PUBLIC_MODULUS):
+    if len(signature) != len(modulus):
         return False
     cng = ctypes.WinDLL('bcrypt.dll', use_last_error=True, winmode=0x800)
     handle = ctypes.c_void_p
@@ -32,8 +32,8 @@ def verify(payload, signature):
     cng.BCryptVerifySignature.argtypes = (handle, ctypes.POINTER(PKCS1PaddingInfo), buffer, dword, buffer, dword, dword)
     cng.BCryptDestroyKey.argtypes = (handle,)
     cng.BCryptCloseAlgorithmProvider.argtypes = (handle, dword)
-    blob = struct.pack('<6I', 0x31415352, len(PUBLIC_MODULUS) * 8, len(PUBLIC_EXPONENT), len(PUBLIC_MODULUS), 0, 0)
-    blob += PUBLIC_EXPONENT + PUBLIC_MODULUS
+    blob = struct.pack('<6I', 0x31415352, len(modulus) * 8, len(PUBLIC_EXPONENT), len(modulus), 0, 0)
+    blob += PUBLIC_EXPONENT + modulus
     provider, key = handle(), handle()
     if cng.BCryptOpenAlgorithmProvider(ctypes.byref(provider), 'RSA', None, 0):
         raise OSError('Windows update signature verification is unavailable.')

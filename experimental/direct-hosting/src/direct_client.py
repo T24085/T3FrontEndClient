@@ -592,8 +592,13 @@ class DirectClient(CommunityClient):
             self.proxies.clear()
 
 def group_connection(root, local, *, ssl_context=None, test_source=None):
+    return enroll_group_connection(read_json(root/GROUP_FILE,16384), local,
+                                   ssl_context=ssl_context, test_source=test_source)
+
+
+def enroll_group_connection(group, local, *, ssl_context=None, test_source=None):
     test=test_source is not None
-    group=validate_group(read_json(root/GROUP_FILE,16384),local_test=test)
+    group=validate_group(group,local_test=test)
     path=local/'hosts'/(group['host_id']+'.json')
     with locked_state(path):
         if path.exists():
@@ -1506,7 +1511,28 @@ class LauncherTips:
         self.desktop.root.after(600, self.tick)
 
 
+def invitation_for_server(row, invitation, *, local_test=False):
+    from server_directory import PROTOCOL_VERSION
+    if isinstance(invitation, dict) and 'enrollment_token' in invitation:
+        connection = validate_group(invitation, local_test=local_test)
+    else:
+        connection = validate_connection(invitation, local_test=local_test)
+    if (row['protocol'] != PROTOCOL_VERSION or connection['hostname'].lower() != row['hostname']
+            or connection['public_address'] != row['address'] or connection['https_port'] != row['port']):
+        raise ValueError('Choose an invitation for the selected server and protocol version.')
+    return connection
+
+
 def main(root=ROOT, *, on_ready=None, weapon_directory=None):
+    connection = None
+    while True:
+        connection = run_starter(root, on_ready=on_ready, weapon_directory=weapon_directory, selected=connection)
+        if connection is None:
+            return
+        on_ready = None
+
+
+def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
     import tkinter as tk
     from tkinter import filedialog,messagebox
     from desktop_launcher import APP_TITLE, Desktop
@@ -1517,34 +1543,93 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
     local=pathlib.Path(os.environ.get('LOCALAPPDATA',pathlib.Path.home()))/'Tribes3DirectStarter'
     local.mkdir(parents=True,exist_ok=True);saved=local/'connection.json'
     chooser=tk.Tk();chooser.withdraw()
-    lobby=None
+    lobby = source = directory = None
+    if (root/'directory-seed.json').is_file():
+        try:
+            from server_browser import ServerBrowserWindow, ServerDirectory
+            directory = ServerDirectory(root/'directory-seed.json', local)
+        except (ImportError, ValueError, OSError):
+            logging.getLogger(__name__).warning('The Starter directory seed is unavailable.')
+
+    def choose_connection(row, browser, *, replace=False):
+        from server_directory import DirectoryError
+        profile = local/'directory-invitations'/(row['server_id']+'.json')
+        if profile.exists() and not replace:
+            candidate = profile
+        else:
+            candidate = filedialog.askopenfilename(
+                parent=browser.window, title='Choose the invitation for '+row['name'],
+                filetypes=[('Player invitation', '*.json')])
+            if not candidate:
+                return
+        def check():
+            try:
+                invitation = read_json(candidate, 16384)
+                connection = invitation_for_server(row, invitation)
+                if directory.clock() >= row['expires_at']:
+                    raise DirectoryError('Refresh the listing before connecting.')
+                if 'enrollment_token' in connection:
+                    connection = enroll_group_connection(connection, local)
+                client = DirectClient(connection)
+                try:
+                    caps = client.capabilities()
+                    if not caps.get('gameClientReady'):
+                        raise DirectoryError('This server does not support the current game client.')
+                finally:
+                    client.close()
+                with locked_state(profile):
+                    write_json(profile, connection)
+                try:
+                    directory.connected(row['server_id'])
+                except OSError:
+                    logging.getLogger(__name__).warning('Could not save directory connection history.')
+                return connection
+            except CommunityError as exc:
+                raise DirectoryError(str(exc)) from exc
+        browser.status.set('Checking the invitation and server…')
+        browser.submit('connect', check)
+
+    selected_hosts = []
     try:
         try:
-            game,workspace=installation_options();source=discover_game(game)
-        except RuntimeError as exc:
-            # Steam discovery reports a missing or ambiguous game as RuntimeError.
-            raise ValueError(str(exc)) from exc
-        if (root/GROUP_FILE).exists():
-            connection=group_connection(root,local)
-        else:
-            if not saved.exists():
-                filename=filedialog.askopenfilename(title='Choose the player invitation JSON sent by your host',filetypes=[('Player invitation','*.json')])
-                if filename:
-                    write_json(saved,validate_connection(read_json(filename,16384)))
-            connection=validate_connection(read_json(saved,16384)) if saved.exists() else None
-        if connection is not None:
-            lobby=DirectClient(connection, proximity_settings=local/'proximity-voice.json')
-            try:lobby.capabilities()
-            except CommunityError:
+            try:
+                game,workspace=installation_options();source=discover_game(game)
+            except RuntimeError as exc:
+                # Steam discovery reports a missing or ambiguous game as RuntimeError.
+                raise ValueError(str(exc)) from exc
+            if selected is not None:
+                connection=selected
+            elif (root/GROUP_FILE).exists():
+                connection=group_connection(root,local)
+            else:
+                if not saved.exists():
+                    filename=filedialog.askopenfilename(title='Choose the player invitation JSON sent by your host',filetypes=[('Player invitation','*.json')])
+                    if filename:
+                        write_json(saved,validate_connection(read_json(filename,16384)))
+                connection=validate_connection(read_json(saved,16384)) if saved.exists() else None
+            if connection is not None:
+                lobby=DirectClient(connection, proximity_settings=local/'proximity-voice.json')
+                try:lobby.capabilities()
+                except CommunityError:
+                    lobby.close()
+                    lobby=None
+                    messagebox.showerror('Direct host connection','Could not open the lobby. Ask the host to check your access, certificate and TCP forwarding.')
+        except (OSError, ValueError, CommunityError) as exc:
+            if lobby is not None:
                 lobby.close()
-                lobby=None
-                messagebox.showerror('Direct host connection','Could not open the lobby. Ask the host to check your access, certificate and TCP forwarding.')
-    except (OSError, ValueError, CommunityError) as exc:
-        if lobby is not None:
-            lobby.close()
-        lobby=None
-        messagebox.showerror('Direct Starter setup',str(exc))
-    finally:chooser.destroy()
+            lobby=None
+            messagebox.showerror('Direct Starter setup',str(exc))
+        if lobby is None and directory is not None and source is not None:
+            def initial_connection(connection):
+                selected_hosts.append(connection)
+                browser.window.destroy()
+            browser = ServerBrowserWindow(chooser, directory, connect=choose_connection,
+                                          on_connected=initial_connection)
+            chooser.wait_window(browser.window)
+    finally:
+        chooser.destroy()
+    if selected_hosts:
+        return selected_hosts[0]
     if lobby is None:
         # A canceled invitation or unreachable host does not invalidate the update.
         if on_ready is not None:
@@ -1637,6 +1722,7 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
             try:super().close()
             finally:lobby.close()
 
+    chosen = []
     try:
         window=tk.Tk();window.title(APP_TITLE)
         map_sync=MapSync(lobby,root,workspace)
@@ -1650,6 +1736,36 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
         if lobby.armor_supported:
             gui.armor_panel = ArmorPanel(tk, gui, lobby, model_directory=root/'armor-models',
                                          weapon_directory=weapon_directory or local/'weapon-library')
+        if directory is not None:
+            browser = None
+
+            def can_change_host():
+                return not (gui.room or gui.watch_id or gui.controls_busy
+                            or gui.game_status not in ('idle', 'stopped', 'finished', 'failed'))
+
+            def show_directory():
+                nonlocal browser
+                if browser is not None and browser.window.winfo_exists():
+                    browser.window.lift()
+                    return
+
+                def select_host(row, view, *, replace=False):
+                    if can_change_host():
+                        choose_connection(row, view, replace=replace)
+                    else:
+                        view.status.set('Leave the current lobby or game before changing servers.')
+
+                def switch_host(connection):
+                    if can_change_host():
+                        chosen.append(connection)
+                        gui.close()
+                    else:
+                        browser.status.set('Leave the current lobby or game before changing servers.')
+                        browser.poll_handle = browser.window.after(120, browser.poll)
+
+                browser = ServerBrowserWindow(window, directory, connect=select_host, on_connected=switch_host)
+
+            gui.button(gui.sidebar, 'Community servers', show_directory, False).pack(fill='x', padx=18, pady=(6, 0))
         if gui.settings_nav is not None:
             gui.settings_nav.pack_forget()
             gui.settings_nav.pack(fill='x', padx=18, pady=(6, 0))
@@ -1679,6 +1795,9 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
         window.mainloop()
     finally:
         lobby.close()
+    if chosen and getattr(gui, 'close_worker', None) is not None:
+        gui.close_worker.join(8)
+    return chosen[0] if chosen else None
 
 def change_invitation():
     import tkinter as tk

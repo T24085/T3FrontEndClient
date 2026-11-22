@@ -28,6 +28,10 @@ disabled choice shows the host's reason.
 In **Lobbies**, **Competition**, **Scrim**, and **PUG** lock the player roster
 after the match starts. Players with a reserved place can still select **Rejoin**.
 
+A Direct package with directory seeds adds **Community servers**. Choose a
+listed host with its matching invitation. The browser keeps a saved view for
+master outages and can measure ping to a selected server.
+
 ## Starter screenshots
 
 | Private lobby | Live matches |
