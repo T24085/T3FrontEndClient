@@ -1,5 +1,6 @@
 """Install signed Community Starter changes before importing the desktop launcher."""
 from base64 import b64decode
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
 import json
@@ -39,6 +40,7 @@ MAX_INDEX = 32768
 MAX_FILE = 1024 * 1024
 MAX_TOTAL = 8 * MAX_FILE
 MAX_LIFETIME = 180 * 86400
+LINUX_CHUNK_BYTES = 32 * 1024
 INVENTORY = 'package-manifest.json'
 STATE_DIRECTORY = '.starter-update'
 
@@ -75,11 +77,19 @@ def decode_index(raw, *, channel=CHANNEL, verifier=verify, now=None):
     files = index['files']
     if not isinstance(files, dict) or not files.keys() <= UPDATE_CHANNELS[channel][1]:
         raise ValueError('Update contains an unsupported file path.')
+    required = {'bytes', 'sha256'}
+    allowed = required | {'chunks'} if channel == LINUX_CHANNEL else required
     for row in files.values():
-        if (not isinstance(row, dict) or row.keys() != {'bytes', 'sha256'}
+        if (not isinstance(row, dict) or not required <= row.keys() <= allowed
                 or type(row['bytes']) is not int or not 0 < row['bytes'] <= MAX_FILE
                 or not isinstance(row['sha256'], str) or re.fullmatch('[a-f0-9]{64}', row['sha256']) is None):
             raise ValueError('Invalid update file inventory.')
+        if 'chunks' in row:
+            chunks = row['chunks']
+            count = (row['bytes'] + LINUX_CHUNK_BYTES - 1) // LINUX_CHUNK_BYTES
+            if (not isinstance(chunks, list) or count < 2 or len(chunks) != count
+                    or any(not isinstance(part, str) or re.fullmatch('[a-f0-9]{64}', part) is None for part in chunks)):
+                raise ValueError('Invalid Linux update chunks.')
     if sum(row['bytes'] for row in files.values()) > MAX_TOTAL:
         raise ValueError('Update exceeds its total size limit.')
     return index
@@ -128,14 +138,15 @@ def fetcher(*, channel=CHANNEL, ssl_context=None, root=None):
         base_url = UPDATE_CHANNELS[channel][0]
         redirect = GitHubRedirect()
     opener = build_opener(redirect, HTTPSHandler(context=ssl_context))
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + (180 if channel == LINUX_CHANNEL else 20)
 
     def fetch(name, bound):
         left = deadline - time.monotonic()
         if left <= 0:
             raise TimeoutError('The Community Starter update check timed out.')
         request = Request(base_url + name, headers=headers)
-        with opener.open(request, timeout=min(4, left)) as response:
+        timeout = 10 if channel == LINUX_CHANNEL else 4
+        with opener.open(request, timeout=min(timeout, left)) as response:
             if response.status != 200:
                 raise OSError('Update download did not complete.')
             raw = bytearray()
@@ -219,6 +230,22 @@ def accept(state):
     os.replace(pending, previous)
 
 
+def download_update_file(row, fetch):
+    if 'chunks' not in row:
+        return fetch(f"starter-file-{row['sha256']}.bin", row['bytes'])
+
+    def download(pinned, length):
+        raw = fetch(f'starter-file-{pinned}.bin', length)
+        if (len(raw), sha(raw)) != (length, pinned):
+            raise ValueError('Starter update file failed verification.')
+        return raw
+
+    sizes = [min(LINUX_CHUNK_BYTES, row['bytes'] - i * LINUX_CHUNK_BYTES)
+             for i in range(len(row['chunks']))]
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        return b''.join(workers.map(download, row['chunks'], sizes))
+
+
 def prepare(root, state, *, channel=CHANNEL, fetch=None, verifier=verify):
     fetch = fetch or fetcher(channel=channel, root=root)
     inventory = inside(root, INVENTORY)
@@ -255,13 +282,13 @@ def prepare(root, state, *, channel=CHANNEL, fetch=None, verifier=verify):
             raise ValueError('Starter file differs from its inventory: ' + name)
         if (len(previous), sha(previous)) == (row['bytes'], row['sha256']):
             continue
-        raw = fetch('starter-file-' + row['sha256'] + '.bin', row['bytes'])
+        raw = download_update_file(row, fetch)
         if (len(raw), sha(raw)) != (row['bytes'], row['sha256']):
             raise ValueError('Starter update file failed verification: ' + name)
         if name.endswith(('.py', '.pyw')):
             compile(raw, name, 'exec')
         changes[name], originals[name] = raw, previous
-        rows[name].update(row)
+        rows[name].update(bytes=row['bytes'], sha256=row['sha256'])
     manifest.update({revision_key: index['revision'], files_key: sorted(files)})
     changes[INVENTORY], originals[INVENTORY] = encoded(manifest), original
     stage = inside(state, 'staging-' + uuid.uuid4().hex)

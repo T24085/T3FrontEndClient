@@ -104,6 +104,7 @@ def install_preview(root):
         manifest.update(starter_update_revision=revision, starter_update_files=PREVIEW_RELEASE['files'])
         if 'linux_update_channel' in PREVIEW_RELEASE:
             manifest.update(linux_starter_update_channel=PREVIEW_RELEASE['linux_update_channel'],
+                            linux_starter_update_bootstrap=2,
                             linux_starter_update_revision=0)
     manifest.update(files=list(rows.values()), build_id=build, revision_id=build)
     compact = json.dumps(manifest,separators=(',',':'),ensure_ascii=True)+'\n'

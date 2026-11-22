@@ -30,6 +30,7 @@ Increment the Linux revision independently. The build carries forward the
 signed Windows Direct runtime, retains the Proton compatibility overlay, and
 adds the native Ubuntu modules. Upload and verify the content files in the
 same host directory before replacing `starter-linux-update.json` atomically.
-Renew the Linux index before its
-120-day expiration. Use a full installer or a separate bootstrap repair for
-changes to the updater itself.
+The Linux build splits larger files into individually signed-index-verified
+32 KiB downloads. The launcher verifies the reconstructed files before
+installing them. Renew the Linux index before its 120-day expiration. Use a
+full installer or a separate bootstrap repair for changes to the updater.

@@ -15,7 +15,10 @@ from ubuntu_preview_inventory import proton_profile_overlay
 
 sys.path.insert(0, str(SOURCE))
 from direct_update_contract import LINUX_INDEX
-from starter_update import LINUX_CHANNEL, MAX_FILE, MAX_TOTAL, UPDATE_CHANNELS, decode_index, encoded, sha
+from starter_update import (LINUX_CHANNEL, LINUX_CHUNK_BYTES, MAX_FILE, MAX_TOTAL, UPDATE_CHANNELS,
+                            decode_index, encoded, sha)
+
+FIRST_UPDATER = '2e5692114053e3b753f018230048e2ee30c65cd6e2f22bb857f740e51d24cdc4'
 
 
 def base_data(installer):
@@ -43,11 +46,12 @@ def enable(installer, output):
     with ZipFile(installer) as archive:
         for name in replacements:
             old = b64decode(overlay[name], validate=True) if name in overlay else archive.read(name)
-            patches[name] = ((sha(old),), b64encode(source_bytes(name)).decode('ascii'))
+            accepted = (sha(old), FIRST_UPDATER) if name == 'starter_update.py' else (sha(old),)
+            patches[name] = (accepted, b64encode(source_bytes(name)).decode('ascii'))
     write_repair(output, 'Clan Wars Ubuntu Preview 6 r74', ('ClanWarsUbuntuNativePreview6R74',), patches,
                  'Linux Starter auto-updates enabled. Reopen Clan Wars to check for an update.',
                  additions={'ubuntu_startup.py':b64encode(source_bytes('ubuntu_startup.py')).decode('ascii')},
-                 channel=LINUX_CHANNEL)
+                 channel=LINUX_CHANNEL, bootstrap=2)
 
 
 def feed(installer, snapshot, output, revision, certificate):
@@ -66,19 +70,29 @@ def feed(installer, snapshot, output, revision, certificate):
             or any(not 0 < len(raw) <= MAX_FILE for raw in files.values())
             or sum(map(len, files.values())) > MAX_TOTAL):
         raise ValueError('Linux update exceeds the supported revision or file limits.')
-    rows = {}
+    rows, blobs = {}, {}
     for name, raw in files.items():
         if name.endswith(('.py', '.pyw')):
             compile(raw, name, 'exec')
-        rows[name] = {'bytes':len(raw), 'sha256':sha(raw)}
+        pinned = sha(raw)
+        row = rows[name] = {'bytes':len(raw), 'sha256':pinned}
+        if len(raw) <= LINUX_CHUNK_BYTES:
+            blobs[pinned] = raw
+            continue
+        row['chunks'] = []
+        for offset in range(0, len(raw), LINUX_CHUNK_BYTES):
+            part = raw[offset:offset + LINUX_CHUNK_BYTES]
+            part_sha = sha(part)
+            blobs[part_sha] = part
+            row['chunks'].append(part_sha)
     now = int(time.time())
     index = dict(channel=LINUX_CHANNEL, revision=revision, issued=now, expires=now+120*86400, files=rows)
     signed = sign_index(encoded(index), certificate)
     if decode_index(signed, channel=LINUX_CHANNEL) != index:
         raise ValueError('Signed Linux update index does not match its payload.')
     output.mkdir(exist_ok=False)
-    for name, raw in files.items():
-        (output/f"starter-file-{rows[name]['sha256']}.bin").write_bytes(raw)
+    for pinned, raw in blobs.items():
+        (output/f'starter-file-{pinned}.bin').write_bytes(raw)
     (output/LINUX_INDEX).write_bytes(signed)
     print(f'Linux update {revision} from signed Direct Starter r{current["revision"]}: {len(rows)} files.')
 

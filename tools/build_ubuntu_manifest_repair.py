@@ -67,7 +67,8 @@ if len(original)>4*1024*1024:
 manifest = json.loads(original)
 if manifest.get('build_id') not in BUILDS:
     sys.exit('This repair only applies to ' + TITLE + '.')
-if UPDATE_CHANNEL is not None and manifest.get('linux_starter_update_channel') == UPDATE_CHANNEL:
+if (UPDATE_CHANNEL is not None and manifest.get('linux_starter_update_channel') == UPDATE_CHANNEL
+        and manifest.get('linux_starter_update_bootstrap') == BOOTSTRAP):
     print('Linux Starter auto-updates are already enabled.')
     sys.exit(0)
 rows = {row['path']:row for row in manifest['files']}
@@ -96,7 +97,8 @@ for name,encoded in ADDITIONS.items():
         pending[target] = updated
     rows[name] = {'path':name,'bytes':len(updated),'sha256':sha256(updated).hexdigest()}
 if UPDATE_CHANNEL is not None:
-    manifest.update(linux_starter_update_channel=UPDATE_CHANNEL, linux_starter_update_revision=0)
+    manifest.update(linux_starter_update_channel=UPDATE_CHANNEL, linux_starter_update_bootstrap=BOOTSTRAP)
+    manifest.setdefault('linux_starter_update_revision',0)
 manifest['files'] = list(rows.values())
 compact = (json.dumps(manifest,separators=(',',':'),ensure_ascii=True)+'\n').encode()
 with ExitStack() as locks:
@@ -171,10 +173,11 @@ def main():
     write_repair(args.output, title, builds, patches, success, find_legacy=not args.preview5_map_sync)
 
 
-def write_repair(path, title, builds, patches, success, *, additions=None, channel=None, find_legacy=False):
+def write_repair(path, title, builds, patches, success, *, additions=None, channel=None, bootstrap=None,
+                 find_legacy=False):
     header = HEADER.replace('@DESTINATION@', title).replace('@FIND_PREVIEW@', FIND_LEGACY if find_legacy else '')
     settings = dict(TITLE=title, BUILDS=builds, SUCCESS=success, PATCHES=patches,
-                    ADDITIONS=additions or {}, UPDATE_CHANNEL=channel)
+                    ADDITIONS=additions or {}, UPDATE_CHANNEL=channel, BOOTSTRAP=bootstrap)
     with path.open('x',encoding='utf-8',newline='\n') as output:
         output.write(header+''.join(f'{key} = {value!r}\n' for key,value in settings.items())+REPAIR+'\nCLAN_WARS_REPAIR\n')
 
