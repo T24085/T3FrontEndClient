@@ -5,9 +5,10 @@ columns, region and compatibility filters, favourites, and connection
 history. Starter validates server listings, group membership, and revocations.
 Match traffic and map downloads use the selected Direct Host.
 
-Connecting uses an invitation for the signed endpoint. Starter preserves
-current lobby and game ownership until the new host passes its checks.
-Public enrollment, event-lobby group routing, and a live release remain open.
+Starter registers a temporary Public CTF guest on hosts that advertise open
+access. Invitations retain their existing access. Starter preserves current
+lobby and game ownership until the new host passes its checks. Event routing
+and a live release remain open.
 
 # Public CTF team switching
 

@@ -161,7 +161,7 @@ class ServerBrowserWindow:
         shell.pack(fill='both', expand=True)
         columns = (('name', 'Server', 185), ('region', 'Region', 85), ('map', 'Map', 135),
                    ('players', 'Players', 72), ('ping', 'Ping', 55), ('mode', 'Mode', 70),
-                   ('locked', 'Access', 65), ('version', 'Version', 66), ('badge', 'Group', 155))
+                   ('access', 'Access', 85), ('version', 'Version', 66), ('badge', 'Group', 155))
         self.columns = {key: title for key, title, _ in columns}
         self.table = ttk.Treeview(shell, columns=tuple(self.columns), show='headings', selectmode='browse')
         for key, _, width in columns:
@@ -174,7 +174,7 @@ class ServerBrowserWindow:
         self.table.bind('<Double-1>', lambda event: self.join() if self.table.identify_row(event.y) else None)
         actions = tk.Frame(frame, bg=BG)
         actions.pack(fill='x', pady=(12, 0))
-        self.join_button = tk.Button(actions, text='Connect with invitation', command=self.join,
+        self.join_button = tk.Button(actions, text='Connect', command=self.join,
                                      bg=ACCENT, fg=BG, relief='flat', padx=14, pady=6)
         self.join_button.pack(side='left', padx=(0, 8))
         self.invitation_button = ttk.Button(actions, text='Use new invitation', command=lambda: self.join(replace=True))
@@ -273,6 +273,8 @@ class ServerBrowserWindow:
         for row in rows:
             row['ping'] = self.pings.get(row['server_id'])
             row['badge'] = ', '.join(badge['name'] for badge in row['badges'])
+            row['access'] = ('Locked' if row['locked'] else 'Public CTF'
+                             if 'open_registration' in row else 'Invitation')
         known = [row for row in rows if row.get(self.sort_key) is not None]
         known.sort(key=lambda row: row[self.sort_key].casefold() if isinstance(row[self.sort_key], str)
                    else row[self.sort_key], reverse=self.descending)
@@ -285,7 +287,7 @@ class ServerBrowserWindow:
             self.table.insert('', 'end', iid=row['server_id'], values=(
                 ('★ ' if row['favourite'] else '') + row['name'], row['region'], row['map'], count,
                 f'{row["ping"]} ms' if row['ping'] is not None else '—', row['mode'].title(),
-                'Locked' if row['locked'] else 'Open', version, row['badge'] or '—'))
+                row['access'], version, row['badge'] or '—'))
         if selected and selected[0] in self.targets:
             self.table.selection_set(selected[0])
         self.controls()
@@ -299,7 +301,7 @@ class ServerBrowserWindow:
                 if error:
                     self.status.set(error)
                 elif name == 'refresh':
-                    self.status.set('Choose an invitation or measure ping for a server.' if self.directory.online
+                    self.status.set('Choose a server to connect or measure ping.' if self.directory.online
                                     else 'No master answered. Showing the last saved directory.')
                 elif name == 'connect':
                     self.on_connected(value)

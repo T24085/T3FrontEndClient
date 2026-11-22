@@ -235,9 +235,15 @@ def verify_membership(document, group, server_id, now):
 
 def verify_heartbeat(document, now, *, stale=0):
     payload = _envelope(document)
-    _fields(payload, ('format', 'server_id', 'key', 'name', 'region', 'hostname', 'address', 'port', 'protocol',
-                      'version', 'mode', 'map', 'game_type', 'players', 'max_players', 'spectators', 'locked',
-                      'memberships', 'issued_at', 'expires_at'))
+    required = {'format', 'server_id', 'key', 'name', 'region', 'hostname', 'address', 'port', 'protocol',
+                'version', 'mode', 'map', 'game_type', 'players', 'max_players', 'spectators', 'locked',
+                'memberships', 'issued_at', 'expires_at'}
+    if not required <= payload.keys() <= required | {'open_registration'}:
+        raise DirectoryError('Invalid directory heartbeat fields.')
+    if 'open_registration' in payload:
+        registration = payload['open_registration']
+        _fields(registration, ('udp_port',))
+        _integer(registration['udp_port'], 1024, 65535)
     if len(canonical(document)) > MAX_HEARTBEAT:
         raise DirectoryError('Directory heartbeat is too large.')
     _integer(payload['format'], VERSION, VERSION)

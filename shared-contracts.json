@@ -11,12 +11,12 @@
     "verified_file_cache.py": "6161be82a4f5552d05d228b113c51e03019dbda258a3505c64424c93cb433e8f",
     "bulk_verification_receipts.py": "02caca4f3252688e2abf1097bd6dcf4a27e05f53b75d71c50a6563e694a02bc8",
     "dynamic_destination.py": "e3a94c755b1f3b6d9650752714c37e70874443a606533e670b1095c90cc58cba",
-    "experimental/direct-hosting/src/direct_network.py": "161b42b9706445cd0d421c772596ca524656d99bf366d6b7ea4a65f494cb11b5",
+    "experimental/direct-hosting/src/direct_network.py": "c7aec043041ad24a059630b09b99bb0b4c26008f501eee4fabd6ad5a729d7241",
     "tools/apply_lobby_recovery_update.py": "7b1acd94cc25c80948b66789befc289df3ff880c69dcb7abfcdcb08b1fe76068",
     "server_access_contract.py": "62155a3c7e5d8a314c4e7928e0ddee92cb0d6417d72253d305dd996deec84e1a",
     "map_sync_contract.py": "2de77f0c399bfe230736487f364bc4efafe1d07928d0077556c7645a9a9685a8",
     "direct_update_contract.py": "3609373a057a05a9988cf695d04d7eba8e776087f4bc2e7c79493af7521ca683",
-    "server_directory.py": "6d63fcd02387440a3504907a8d5539f0d8256ad61bd860f587da734a7b83a5f9",
+    "server_directory.py": "22e42dbe140fa6ec5785189f4d6c46e7fbede01a7e597aa827f1d5ac25a3648d",
     "directory_transport.py": "38fd92b2185cb26aa1c4ace5652370b91f24bb25fe1fb536f413df7e93335714"
   }
 }

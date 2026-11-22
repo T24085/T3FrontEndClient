@@ -15,7 +15,7 @@ import secrets
 import socket
 import threading
 import time
-from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLOT_LIMIT, MATCH_UDP_BASES,
+from direct_network import (DIRECTORY_GUEST_LIMIT, DIRECTORY_GUEST_OFFSET, ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLOT_LIMIT, MATCH_UDP_BASES,
                             MAX_DEVICES, TOKEN, UdpClient, UDP_GRANT_HEADER, UDP_GRANT_RELATIVE,
                             VoiceFrames, VOICE_AUDIO, VOICE_FRAME_BYTES, VOICE_KEEPALIVE, VOICE_PROTOCOL,
                             VOICE_RELEASE, VOICE_ROUTE, VOICE_SAMPLE_RATE,
@@ -522,6 +522,15 @@ class DirectClient(CommunityClient):
             self.close()
             self.direct_session = secrets.token_hex(16)
             self.public_transport_state = None
+
+    def enroll_public_directory(self):
+        response = self._request(ENROLL_ROUTE.removeprefix('/api/'),
+                                 {'public_device_token': self.access_token}, use_lobby_token=False)
+        identity = response.get('device_id')
+        if (set(response) != {'registered', 'device_id'} or response['registered'] is not True
+                or type(identity) is not int or not DIRECTORY_GUEST_OFFSET < identity <= DIRECTORY_GUEST_LIMIT):
+            raise CommunityError('The host returned an invalid Public CTF registration.')
+        return identity
 
     def enroll(self, group):
         response=self._request(ENROLL_ROUTE.removeprefix('/api/'),{
@@ -1523,6 +1532,39 @@ def invitation_for_server(row, invitation, *, local_test=False):
     return connection
 
 
+def public_directory_connection(row, local, *, ssl_context=None, test_source=None):
+    from server_directory import HEX_ID, PROTOCOL_VERSION
+    registration = row.get('open_registration')
+    ident = row['server_id']
+    if (row['protocol'] != PROTOCOL_VERSION or not isinstance(ident, str) or HEX_ID.fullmatch(ident) is None
+            or not isinstance(registration, dict) or set(registration) != {'udp_port'}):
+        raise ValueError('This listing does not support open Public CTF registration.')
+    path = local/'directory-public-devices'/(ident+'.json')
+    with locked_state(path):
+        if path.exists():
+            saved = read_json(path, 4096)
+            if not isinstance(saved, dict) or set(saved) != {'access_token'}:
+                raise ValueError('Invalid saved Public CTF registration.')
+            token = saved['access_token']
+        else:
+            token = secrets.token_urlsafe(32)
+            write_json(path, {'access_token': token})
+        connection = validate_connection({
+            'format': 1, 'hostname': row['hostname'], 'public_address': row['address'], 'https_port': row['port'],
+            'first_udp_port': registration['udp_port'], 'last_udp_port': registration['udp_port'], 'access_token': token,
+        }, local_test=test_source is not None)
+        client = DirectClient(connection, ssl_context=ssl_context, test_source=test_source)
+        try:
+            client.enroll_public_directory()
+            caps = client.capabilities()
+            if (caps.get('publicOnly') is not True or caps.get('publicCTF') is not True
+                    or caps.get('gameClientReady') is not True):
+                raise CommunityError('The host did not confirm Public CTF guest access.')
+        finally:
+            client.close()
+    return connection
+
+
 def main(root=ROOT, *, on_ready=None, weapon_directory=None):
     connection = None
     while True:
@@ -1554,7 +1596,10 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
     def choose_connection(row, browser, *, replace=False):
         from server_directory import DirectoryError
         profile = local/'directory-invitations'/(row['server_id']+'.json')
-        if profile.exists() and not replace:
+        auto_register = not replace and not profile.exists() and 'open_registration' in row
+        if auto_register:
+            candidate = None
+        elif profile.exists() and not replace:
             candidate = profile
         else:
             candidate = filedialog.askopenfilename(
@@ -1564,21 +1609,24 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
                 return
         def check():
             try:
-                invitation = read_json(candidate, 16384)
-                connection = invitation_for_server(row, invitation)
                 if directory.clock() >= row['expires_at']:
                     raise DirectoryError('Refresh the listing before connecting.')
-                if 'enrollment_token' in connection:
-                    connection = enroll_group_connection(connection, local)
-                client = DirectClient(connection)
-                try:
-                    caps = client.capabilities()
-                    if not caps.get('gameClientReady'):
-                        raise DirectoryError('This server does not support the current game client.')
-                finally:
-                    client.close()
-                with locked_state(profile):
-                    write_json(profile, connection)
+                if auto_register:
+                    connection = public_directory_connection(row, local)
+                else:
+                    invitation = read_json(candidate, 16384)
+                    connection = invitation_for_server(row, invitation)
+                    if 'enrollment_token' in connection:
+                        connection = enroll_group_connection(connection, local)
+                    client = DirectClient(connection)
+                    try:
+                        caps = client.capabilities()
+                        if not caps.get('gameClientReady'):
+                            raise DirectoryError('This server does not support the current game client.')
+                    finally:
+                        client.close()
+                    with locked_state(profile):
+                        write_json(profile, connection)
                 try:
                     directory.connected(row['server_id'])
                 except OSError:
@@ -1586,7 +1634,7 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
                 return connection
             except CommunityError as exc:
                 raise DirectoryError(str(exc)) from exc
-        browser.status.set('Checking the invitation and server…')
+        browser.status.set('Registering for Public CTF…' if auto_register else 'Checking the invitation and server…')
         browser.submit('connect', check)
 
     selected_hosts = []

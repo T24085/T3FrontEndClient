@@ -9,6 +9,8 @@ import hashlib, hmac, ipaddress, json, os, pathlib, re, secrets, select, socket,
 MAGIC=b'T3D1'
 MAX_PAYLOAD=65000
 MAX_DEVICES=2048
+DIRECTORY_GUEST_OFFSET = 2 * MAX_DEVICES
+DIRECTORY_GUEST_LIMIT = DIRECTORY_GUEST_OFFSET + 128 * 250 * 250
 MATCH_SLOT_LIMIT = 10
 LEGACY_MATCH_UDP_BASE = 18000
 MATCH_UDP_BASE = 18443
@@ -136,7 +138,11 @@ class InviteStore:
                 self.records=[];self.by_id={};self.by_token={};self.last_read=0;raise
 
     @staticmethod
-    def address(identity):return '127.90.'+str(identity//250)+'.'+str(identity%250+2)
+    def address(identity):
+        if DIRECTORY_GUEST_OFFSET < identity <= DIRECTORY_GUEST_LIMIT:
+            ordinal = identity - DIRECTORY_GUEST_OFFSET - 1
+            return f'127.{128 + ordinal // (250 * 250)}.{ordinal // 250 % 250}.{ordinal % 250 + 2}'
+        return '127.90.' + str(identity // 250) + '.' + str(identity % 250 + 2)
 
     def issue(self,label):
         token=secrets.token_urlsafe(32)
