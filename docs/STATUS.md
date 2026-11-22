@@ -1,3 +1,15 @@
+# Public CTF team selection and the Maps tab
+
+Public CTF shows player names and live counts by team. Auto Balance picks a
+team, Join A and Join B request a specific team, and disabled choices show the
+host's reason. Returning roster members see Rejoin. Hosts with the original
+Public CTF API continue to accept Auto Balance.
+
+Starter preloads map names and refreshes the index independently of downloads
+and game preparation. The Maps tab retains its last good list and selection
+while refreshing or if the host is unreachable. Hosts with conditional map
+index support send the catalog body only when it changes.
+
 # Per-session map downloads
 
 Starter connects without checking or downloading map files at startup. It

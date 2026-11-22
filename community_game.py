@@ -196,7 +196,7 @@ class CommunityGame:
         return self._start(expected_map=expected_map, expected_match_id=expected_match_id)
 
     def _start(self, *, watch_id=None, expected_map=None, expected_match_id=None, public_name=None,
-               public_cancel=None):
+               public_cancel=None, public_team='auto'):
         self._release_watch()
         # Desktop calls this on a worker. Reserve the session briefly, then keep
         # expensive verification outside the snapshot lock used by the Tk loop.
@@ -217,6 +217,13 @@ class CommunityGame:
             self.startup_failure = None
         prepared = None
         try:
+            public_reserved = False
+            def reserve_public():
+                if public_team == 'auto':
+                    self.lobby.public_join(public_name)
+                else:
+                    self.lobby.public_join(public_name, team=public_team)
+
             begin_attempt = getattr(self.lobby, 'begin_game_attempt', None)
             if begin_attempt is not None:
                 begin_attempt()
@@ -248,6 +255,9 @@ class CommunityGame:
                     raise CommunityError('Client map files could not be verified.') from exc
                 if catalog.get(target['map']) != target['contentHash']:
                     raise CommunityError('Your map files do not match this match. Update the community client.')
+            if public_name is not None and target.get('phase') == 'idle' and not self.stop_requested:
+                reserve_public()
+                public_reserved = True
             if startup_contract=='prepared-client-v1':
                 revision = None
                 if self.map_sync is not None:
@@ -267,8 +277,9 @@ class CommunityGame:
                         self.status = 'stopped'
                         return self.status
                     self.startup_phase = 'checking_match'
-                self.lobby.public_map()
-                self.lobby.public_join(public_name)
+                if not public_reserved:
+                    self.lobby.public_map()
+                    reserve_public()
                 prepared_target = target
                 target = target_loader()
                 self.public_round = target.get('publicRound')

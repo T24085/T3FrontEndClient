@@ -3,12 +3,13 @@ import json
 import tempfile
 import threading
 import time
+import tkinter as tk
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))
-from direct_client import DirectGame, PublicCTFPanel
+from direct_client import DirectClient, DirectGame, PublicCTFPanel
 from steam_identity import SteamIdentityError
 
 
@@ -17,19 +18,59 @@ class PublicNameTest(unittest.TestCase):
         panel = PublicCTFPanel.__new__(PublicCTFPanel)
         calls, status = [], []
         panel.status = SimpleNamespace(set=status.append)
+        panel.team_buttons = {'auto': SimpleNamespace(cget=lambda _: 'normal'),
+                              'blue': SimpleNamespace(cget=lambda _: 'normal')}
+        panel.tooltip = None
         panel.desktop = SimpleNamespace(
-            game=SimpleNamespace(start_public=calls.append), player_name_for_action=lambda: 'Warrior Name')
+            game=SimpleNamespace(start_public=lambda name, *, team: calls.append((name, team))),
+            player_name_for_action=lambda: 'Warrior Name')
         panel.submit = lambda _action, work: work()
-        panel.start()
-        self.assertEqual(calls, ['Warrior Name'])
+        panel.start('blue')
+        self.assertEqual(calls, [('Warrior Name', 'blue')])
 
         def unavailable():
             raise SteamIdentityError('Set a Warrior Name in Settings.')
 
         panel.desktop.player_name_for_action = unavailable
         panel.start()
-        self.assertEqual(calls, ['Warrior Name'])
+        self.assertEqual(calls, [('Warrior Name', 'blue')])
         self.assertEqual(status[-1], 'Set a Warrior Name in Settings.')
+
+
+    def test_roster_counts_balance_reason_and_rejoin_render_in_tk(self):
+        root = tk.Tk()
+        root.geometry('660x480+0+0')
+        root.attributes('-alpha', 0)
+        self.addCleanup(root.destroy)
+        from desktop_launcher import Desktop
+        desktop = SimpleNamespace(root=root, sidebar=tk.Frame(root), closing=True, show_panel=lambda _: None)
+        desktop.label = lambda *args, **kwargs: Desktop.label(desktop, *args, **kwargs)
+        desktop.button = lambda *args, **kwargs: Desktop.button(desktop, *args, **kwargs)
+        panel = PublicCTFPanel(tk, desktop, SimpleNamespace(public_only=False))
+        panel.panel.pack(fill='both', expand=True)
+        state = {'teams': {'blue': ['Alice'], 'red': ['Bob', 'Carol']},
+                 'joinChoices': {'auto': None, 'blue': None, 'red': 'Joining Team B would unbalance the teams.'}}
+        panel.render_teams(state, True)
+        root.update()
+        self.assertEqual(panel.team_lists['red'][2].get(0, 'end'), ('Bob', 'Carol'))
+        self.assertEqual(panel.team_lists['blue'][1].cget('text'), 'Team A (1)')
+        button = panel.team_buttons['red']
+        self.assertEqual((button.cget('text'), button.cget('state')), ('Join B (2)', 'disabled'))
+        self.assertTrue(all(widget.winfo_ismapped() for widget in panel.team_buttons.values()))
+        panel.show_team_reason(button, 'red')
+        self.assertIn('unbalance', panel.tooltip.winfo_children()[0].cget('text'))
+        panel.hide_team_reason()
+        panel.render_teams(dict(state, rejoin=True, joinChoices={
+            'auto': None, 'blue': 'Rejoin your previous team.', 'red': 'Rejoin your previous team.'
+        }), True)
+        self.assertEqual(panel.team_buttons['auto'].cget('text'), 'Rejoin')
+        self.assertEqual(panel.team_buttons['blue'].cget('state'), 'disabled')
+
+    def test_explicit_team_uses_the_new_request_and_auto_uses_the_legacy_shape(self):
+        lobby = SimpleNamespace(_public=lambda action, **request: (action, request))
+        self.assertEqual(DirectClient.public_join(lobby, 'Player'), ('join', {'name': 'Player'}))
+        self.assertEqual(DirectClient.public_join(lobby, 'Player', team='red'),
+                         ('join', {'name': 'Player', 'team': 'red'}))
 
 
 class PublicRoundReconnectTest(unittest.TestCase):
@@ -48,7 +89,7 @@ class PublicRoundReconnectTest(unittest.TestCase):
         self.closing = threading.Event()
         self.cleanup_allowed = threading.Event()
         self.successor_started = threading.Event()
-        lobby = SimpleNamespace(test_source=None, public_map=self.target, public_target=self.target,
+        lobby = SimpleNamespace(test_source=None, public_map=self.target, public_target=lambda **_: self.target(),
                                 public_join=lambda name: self.calls.append(('join', name)),
                                 public_leave=lambda: self.calls.append(('leave', None)))
         self.game = DirectGame(lobby, root, root / 'source', root / 'workspace', root / 'control',
@@ -89,6 +130,14 @@ class PublicRoundReconnectTest(unittest.TestCase):
         self.addCleanup(thread.join, 6)
         self.assertTrue(self.closing.wait(5))
         return thread, results
+
+    def test_join_b_starts_a_sleeping_server_before_waiting_for_the_target(self):
+        lobby = self.game.lobby
+        lobby.public_map = lambda: dict(self.target(), phase='idle')
+        lobby.public_join = lambda name, *, team: self.calls.append(('join', name, team))
+        self.assertEqual(self.game.start_public('Player', team='red'), 'starting')
+        self.assertEqual(self.calls[0], ('join', 'Player', 'red'))
+        self.assertEqual(sum(item[0] == 'join' for item in self.calls), 1)
 
     def test_successor_waits_for_cleanup_and_keeps_seat(self):
         thread, results = self.begin_rotation()
