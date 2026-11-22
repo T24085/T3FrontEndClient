@@ -65,6 +65,9 @@ With a paired Direct Host, rejoining by the same registered device restores a
 reserved place in the replacement even if the player left the original lobby.
 The native Ubuntu launcher reports its owned match ID during Steam startup
 and gameplay so this flow can identify the replaced session on both platforms.
+While the replacement server starts, Starter shows loading progress and lets
+the lobby leader stop the allocated replacement. Players can join when the
+host confirms readiness.
 
 # Public CTF team selection and the Maps tab
 

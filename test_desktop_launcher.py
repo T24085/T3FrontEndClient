@@ -824,6 +824,9 @@ class DesktopTest(unittest.TestCase):
             app.close()
 
     def test_match_status_and_roster_use_utf8_punctuation(self):
+        self.assertEqual(match_phase_text({'phase': 'starting', 'match': {'progress': 'Loading replacement map'},
+            'restart': {'stage': 'starting', 'reason': 'Player dropped', 'replacementMatchId': 'replacement'}}),
+            'Match restarting · Player dropped — Loading replacement map')
         source = Path(__file__).with_name('desktop_launcher.py').read_text(encoding='utf-8')
         self.assertNotIn('\u00e2\u20ac', source)
         self.assertNotIn('\u00c2\u00b7', source)

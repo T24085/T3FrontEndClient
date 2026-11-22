@@ -225,7 +225,9 @@ def match_phase_text(room):
         if stage == 'checkpointing':
             return f'Saving current score and time · {reason}'
         if stage in ('draining', 'starting') or stage == 'complete' and room['phase'] == 'starting':
-            return f'Match restarting · {reason}'
+            progress = (room.get('match') or {}).get('progress') if restart.get('replacementMatchId') else None
+            text = f'Match restarting · {reason}'
+            return text + f' — {progress.strip()}' if isinstance(progress, str) and progress.strip() else text
         if stage == 'failed':
             return 'Restart failed · ' + restart.get('error', 'Try again.')
     text = 'Match: ' + room['phase']
@@ -1053,7 +1055,10 @@ class Desktop:
         self.start_button.configure(state='normal' if setup and leader and not self.controls_busy and self.pending_map is None and self.caps.get('matchStartEnabled') else 'disabled')
         join_pending = in_room and (room.get('match') or {}).get('status') == 'starting'
         self.game_button.configure(state='normal' if in_room and phase=='ready' and not join_pending and not restarting and not self.controls_busy and self.pending_map is None and self.caps.get('gameClientReady') else 'disabled')
-        self.stop_button.configure(state='normal' if leader and not restarting and phase in ('starting','ready') else 'disabled')
+        replacement = restart.get('replacementMatchId') if restarting else None
+        allocated_replacement = replacement and replacement == (room.get('match') or {}).get('id')
+        can_stop = leader and phase in ('starting', 'ready') and (not restarting or allocated_replacement)
+        self.stop_button.configure(state='normal' if can_stop else 'disabled')
         self.reset_button.configure(state='normal' if leader and not restarting and phase in ('stopped','ended','failed') else 'disabled')
         self.leave_button.configure(state='normal' if in_room and not self.controls_busy else 'disabled')
         # Preparation has no match endpoint or player profile. Start it as soon
