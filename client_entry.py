@@ -44,11 +44,11 @@ def weather_runtime_path(root, run, package):
         return root / 'lua/weather.lua'
     return root / 'lua/snowblind_weather.lua'
 
-def write_map_definitions(root, run, definitions, selected, package, *, public=False, objectives=None):
+def write_map_definitions(root, run, definitions, selected, package, *, public=False, objectives=None, minimap=None):
     """Extend the map catalog with descriptors verified during map preparation."""
     from hashlib import sha256
     from community_maps import BY_ID, lua_map_definitions
-    from map_sync_contract import map_objective_rows
+    from map_sync_contract import map_objective_rows, minimap_payload, png_dimensions
 
     if public:
         generated = run / 'public-maps.lua'
@@ -92,14 +92,44 @@ def write_map_definitions(root, run, definitions, selected, package, *, public=F
             output.write(raw)
         adapters.append((definition.id, source))
 
-    if not adapters:
-        return generated
     calls = [f'load_weather({json.dumps(map_id)}, {json.dumps(source.as_posix(), ensure_ascii=False)})'
              for map_id, source in adapters]
+    if minimap is not None and selected is not None:
+        entry = minimap_payload(selected.id, minimap)
+        settings = entry['settings'].copy()
+        settings.pop('image', None)
+        image = entry['image']
+        if image is not None:
+            path = run / 'minimap.png'
+            try:
+                if path.resolve(strict=True) != path or path.is_symlink() or path.is_junction():
+                    raise ValueError('Minimap graphic escaped the prepared session.')
+                with path.open('rb') as stream:
+                    raw = stream.read(image['bytes'] + 1)
+                if len(raw) != image['bytes'] or sha256(raw).hexdigest() != image['sha256']:
+                    raise ValueError('Minimap graphic no longer matches the prepared session.')
+                png_dimensions(raw[:33])
+                settings['image_file'] = path.as_posix()
+            except (OSError, ValueError):
+                pass  # The selected map can still use its live map capture.
+        if 'image_file' not in settings:
+            settings.pop('image_bounds', None)
+        calls.append(f'maps[{json.dumps(selected.id)}].minimap={_minimap_lua(settings)}')
+    if not calls:
+        return generated
     result = run / 'catalog-weather.lua'
     result.write_text(f'local maps=assert(loadfile({json.dumps(generated.as_posix(), ensure_ascii=False)}))()\n'
                       + _MAP_WEATHER_LUA + '\n'.join([*calls, 'return maps', '']), encoding='utf-8')
     return result
+
+
+def _minimap_lua(value):
+    """Write the strictly validated framing data as a Lua table literal."""
+    if isinstance(value, dict):
+        return '{' + ','.join(f'[{json.dumps(key)}]={_minimap_lua(item)}' for key, item in value.items()) + '}'
+    if isinstance(value, list):
+        return '{' + ','.join(_minimap_lua(item) for item in value) + '}'
+    return json.dumps(value, ensure_ascii=False, allow_nan=False)
 
 
 _MAP_WEATHER_LUA = """
@@ -257,13 +287,14 @@ def main():
         with startup.phase('original-verification'):
             manifest,identities,verification=verify_game(source,workspace,args.rehash)
         from map_catalog import verified_catalog
-        map_overlay, custom_maps, objectives_downloaded = None, None, False
+        map_overlay, custom_maps, objectives_downloaded, minimap = None, None, False, None
         with startup.phase('map-verification'):
             if args.map_revision is None:
                 catalog = verified_catalog(ROOT)
             else:
                 from map_sync import load_overlay
-                map_overlay, catalog, custom_maps, objectives_downloaded = load_overlay(workspace, args.map_revision, package)
+                (map_overlay, catalog, custom_maps, objectives_downloaded, minimap) = load_overlay(
+                    workspace, args.map_revision, package, with_minimap=True)
         if args.expected_map is not None and catalog.get(args.expected_map)!=args.expected_content_hash:
             raise ValueError('Your map files do not match this match. Update the community client.')
         if args.check:
@@ -272,7 +303,7 @@ def main():
         startup_progress('staging_game')
         with startup.phase('client-preparation'):
             descriptor=stage(ROOT,source,workspace,package,manifest,identities,verification,catalog=catalog,map_overlay=map_overlay,
-                             custom_maps=custom_maps, objectives_downloaded=objectives_downloaded,
+                             custom_maps=custom_maps, objectives_downloaded=objectives_downloaded, minimap=minimap,
                              emit=lambda line:print(line,flush=True))
         if args.prepare_only:return
         prepared=consume(ROOT,source,workspace,descriptor['path'],descriptor['sha256'],
@@ -304,7 +335,8 @@ def main():
                                  bootstrap_id, definitions=definitions)
     map_definitions = write_map_definitions(ROOT, run, definitions, definitions.get(args.expected_map),
                                             package, public=args.public_session,
-                                            objectives=prepared.get('map_objectives'))
+                                            objectives=prepared.get('map_objectives'),
+                                            minimap=prepared.get('map_minimap'))
     diagnostic_profile = bool(args.headless or args.test_source or args.seconds is not None)
     with ProfileSession(mode=MODE, workspaces=(workspace, source.parent / 'TRIBES3 Client Sessions'),
                         diagnostic=diagnostic_profile, source_game=source, package_root=ROOT,

@@ -69,6 +69,32 @@ class ClientPreparationTest(unittest.TestCase):
   record=self.claim(descriptor)
   self.assertEqual((Path(record['run'])/'game/Topaz/Content/Maps/map.uasset').read_bytes(),b'new-map')
   self.assertEqual((self.package/row['path']).read_bytes(),b'cooked-map')
+ def test_optional_minimap_graphic_is_staged_privately_and_missing_file_falls_back(self):
+  from base64 import b64decode
+  png=b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX2sAAAAASUVORK5CYII=')
+  download=self.workspace/'image.asset'
+  download.write_bytes(png)
+  row={'path':'lua/Stonehenge/map.png','bytes':len(png),'sha256':digest(download)}
+  config={'settings':{'image':'map.png','center':[50,120]},'image':row}
+  for available in (True, False):
+   with self.subTest(available=available):
+    if not available:download.unlink()
+    descriptor=stage(self.package,self.source,self.workspace,self.package_manifest,self.original,self.source_ids,
+                     'fixture',catalog=self.catalog,map_overlay=[(row,None,download)],emit=lambda _:None,
+                     patches=((4,'e8621439ff'),),minimap=config)
+    record=self.claim(descriptor)
+    self.assertEqual(record['map_minimap']['settings']['center'], [50,120])
+    image=Path(record['run'])/'minimap.png'
+    if available:
+     self.assertEqual(record['map_minimap']['image'],row)
+     self.assertEqual(image.read_bytes(),png)
+     self.assertFalse(image.samefile(download))
+     client_preparation.remove_staged_game(self.workspace, Path(record['run']))
+     self.assertFalse(image.exists())
+     self.assertEqual(download.read_bytes(),png)
+    else:
+     self.assertIsNone(record['map_minimap']['image'])
+     self.assertFalse(image.exists())
  def test_selected_map_preparation_does_not_read_unrelated_bundled_assets(self):
   (self.package/'content/Maps/map.uasset').unlink()
   package = verify_package(self.package, skip_cooked=True)

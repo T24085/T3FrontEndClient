@@ -1,3 +1,4 @@
+from base64 import b64decode
 import hashlib
 from pathlib import Path
 import shutil
@@ -81,6 +82,24 @@ class PackagedMapWeatherTest(unittest.TestCase):
                 self.assertEqual(kata.weather.color[3], 1)
                 self.assertIsNone(kata.objectives)
                 self.assertEqual(maps[BLIZZARD.id].weather.kind, 'snow')
+
+    def test_minimap_config_loads_verified_png_and_falls_back_when_it_changes(self):
+        png = b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX2sAAAAASUVORK5CYII=')
+        picture = {'path':f'lua/{KATA.id}/map.png','bytes':len(png),'sha256':hashlib.sha256(png).hexdigest()}
+        config = {'settings':{'center':[12,-24],'image':'map.png','image_bounds':[[0,0],[100,200]]},'image':picture}
+        (self.run/'minimap.png').write_bytes(png)
+        entry = write_map_definitions(self.root, self.run, self.definitions, KATA, {'files':[]}, minimap=config)
+        settings = self.lua.execute(entry.read_text(encoding='utf-8'))[KATA.id].minimap
+        self.assertEqual(settings.image_file, (self.run/'minimap.png').as_posix())
+        self.assertEqual(settings.image_bounds[2][2], 200)
+        self.run = self.root/'changed'
+        self.run.mkdir()
+        (self.run/'minimap.png').write_bytes(b'X'+png[1:])
+        entry = write_map_definitions(self.root, self.run, self.definitions, KATA, {'files':[]}, minimap=config)
+        settings = self.lua.execute(entry.read_text(encoding='utf-8'))[KATA.id].minimap
+        self.assertIsNone(settings.image_file)
+        self.assertIsNone(settings.image_bounds)
+        self.assertEqual((settings.center[1],settings.center[2]), (12,-24))
 
     def test_minimap_option_uses_the_same_verified_descriptors(self):
         for public in (False, True):

@@ -13,7 +13,7 @@ import threading
 
 from dynamic_destination import destination,isolated_source
 from community_maps import BY_ID, MAX_MAPS, valid_id, valid_label
-from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION, LIVE_ROSTER_HEADER, SESSION_HEADER, SESSION_VERSION, valid_sha
+from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION, LIVE_ROSTER_HEADER, MINIMAP_HEADER, MINIMAP_VERSION, SESSION_HEADER, SESSION_VERSION, valid_sha
 from player_names import display_name
 
 MAX_LOBBY_BOTS = 12
@@ -114,7 +114,8 @@ class CommunityClient:
 
     def request_headers(self):
         return {'Host': self.authority, 'Accept': 'application/json', CATALOG_HEADER: str(CATALOG_VERSION),
-                'X-T3-Map-Labels': '1', SESSION_HEADER: str(SESSION_VERSION)}
+                'X-T3-Map-Labels': '1', SESSION_HEADER: str(SESSION_VERSION),
+                MINIMAP_HEADER: MINIMAP_VERSION}
 
     def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True, live_roster=None):
         headers = self.request_headers()

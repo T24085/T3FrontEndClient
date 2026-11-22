@@ -1,3 +1,17 @@
+# Per-map minimap presentation
+
+Starter requests a hash-pinned minimap descriptor for a selected map when
+the host offers an authored frame. The verified session can supply a map
+center, capture scale or extent, rotation, zoom range, and frame size. An
+optional verified PNG uses world-space bounds to align with native markers.
+The live capture remains available when the PNG fails to download, verify,
+or import. Existing map manifests and unconfigured maps use their native
+presentation.
+
+This source candidate has fixture coverage for projection and PNG fallback.
+Rendered gameplay remains to be verified, including the reported blank
+frame on maps without an authored PNG.
+
 # Private match restart
 
 Hosts that advertise match restart give the private lobby leader a Restart

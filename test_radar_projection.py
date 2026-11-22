@@ -49,7 +49,7 @@ target.SizeX,target.SizeY=1024,1024
 local api=object('GameplayStatics /Script/Engine.Default__GameplayStatics')
 function api:BeginDeferredActorSpawnFromClass(context,klass,transform)
     assert(context==pc and klass:GetFullName():find('BP_MinimapCapture_C',1,true))
-    f.spawns=f.spawns+1;f.height=transform.Translation.Z
+    f.spawns=f.spawns+1;f.height=transform.Translation.Z;f.origin=transform.Translation
     local capture=object('MinimapCapture');capture.world=world
     local component={ProjectionType=1,TextureTarget=target}
     function component:GetOwner() return capture end
@@ -66,6 +66,14 @@ function StaticFindObject(path)
     if path=='/Game/UI/Components/Game/UI_Game_Minimap_Radar.UI_Game_Minimap_Radar_C' then return radarWidgetClass end
     if path=='/Script/ValhallaUI.Default__UILibrary' then return lib end
     if path=='/Script/Engine.Default__GameplayStatics' then return api end
+    if path=='/Script/Engine.Default__KismetRenderingLibrary' then
+        local renderer=object('KismetRenderingLibrary '..path)
+        function renderer:ImportFileAsTexture2D(context,name)
+            assert(context==pc)
+            if name=='valid.png' then f.png=object(name);return f.png end
+        end
+        return renderer
+    end
     if path=='/Game/Common/Blueprints/Cameras/BP_MinimapCapture.BP_MinimapCapture_C' then
         return object('BlueprintGeneratedClass '..path)
     end
@@ -88,8 +96,46 @@ widget.visibility=0
 function widget:GetVisibility() return self.visibility end
 function widget:SetVisibility(value) self.visibility=value end
 widget.Material=object('Map material')
-widget.MapTexture={Brush={ResourceObject=widget.Material}}
+local function slot()
+    local s={}
+    function s:SetPosition(value) self.position=value end
+    function s:SetSize(value) self.size=value end
+    function s:SetAlignment(value) self.alignment=value end
+    function s:SetAnchors(value) self.anchors=value end
+    function s:SetAutoSize(value) self.automatic=value end
+    return s
+end
+widget.MapTexture={Brush={ResourceObject=widget.Material},Slot=slot()}
+function widget.MapTexture:SetBrushFromTexture(texture,matchSize)
+    assert(not matchSize)
+    self.Brush.ResourceObject=texture
+end
+function widget.MapTexture:SetVisibility(value) self.visibility=value end
+widget.EmptyTexture={SetVisibility=widget.MapTexture.SetVisibility}
+f.frame=slot()
+local wrapper=object('minimap root')
+function wrapper:GetClass()
+    return object('WidgetBlueprintGeneratedClass /Game/UI/Components/Game/UI_Game_MiniMap.UI_Game_MiniMap_C')
+end
+wrapper.RetainerBox_0={Slot=f.frame}
+function widget:GetOuter() return {GetOuter=function()return wrapper end} end
 widget.CachedZoom,widget.TargetZoom=1,1
+widget.DefaultMinZoom,widget.DefaultMaxZoom,widget.DefaultZoom=1,3,1
+widget.CachedMapRotationAngle=0
+function widget:RotateMapToVector(v)
+    self.CachedMapRotationAngle=(math.deg(math.atan(v.Y,v.X))-90)%360
+end
+function widget:UpdateScale(delta)
+    assert(delta==0)
+    self.MapScale=self.DefaultZoom*self.CachedMapScale
+end
+function widget:UpdateTranslation(delta,interpolate)
+    assert(delta==0 and not interpolate)
+    self.CachedMapTranslation=self.TargetTranslation
+end
+function widget:UpdateTexture()
+    self.MapTexture.Brush.ResourceObject=self.Material
+end
 widget.RadarSensors={children=0,GetChildrenCount=function(self) return self.children end}
 function widget.RadarSensors:GetChildAt() return {GetClass=function()return radarWidgetClass end} end
 function widget.RadarSensors:ClearChildren() self.children=0 end
@@ -145,7 +191,7 @@ return f
 
 
 class RadarProjectionTest(unittest.TestCase):
-    def fixture(self, map_id, group, level, size, *, retail=False, radar_count=None, hide=False):
+    def fixture(self, map_id, group, level, size, *, retail=False, radar_count=None, hide=False, minimap=None):
         lua = LuaRuntime()
         if retail:
             package = f'/Game/Maps/Active/{group}/{level}'
@@ -161,11 +207,53 @@ class RadarProjectionTest(unittest.TestCase):
             self.assertIsNone(row.assembly_asset)
         row.radars_per_team = radar_count
         row.hide_minimap = hide
+        if minimap:
+            row.minimap = lua.execute("return " + minimap)
         lua.globals().descriptor = row
         lua.globals().authored = size
         start = SOURCE.index('local function community_radar_group(')
         end = SOURCE.index('local releaseRadarRuntime=releaseRadarRuntimeFactory(', start)
         return lua.execute(SOURCE[start:end] + FIXTURE)
+
+    def test_authored_frame_and_png_share_the_native_world_projection(self):
+        f = self.fixture(*MAPS[-1], minimap=(
+            "{center={1500,-4000},extent={90000,60000},scale=1.5,rotation_deg=35,"
+            "zoom={min=.5,max=2,default=1.4},frame={width=420,height=260},"
+            "image_file='valid.png',image_bounds={{-1000,-3000},{60000,21000}}}"
+        ))
+        self.assertTrue(f.tick())
+        self.assertEqual((f.origin.X, f.origin.Y), (1500, -4000))
+        self.assertEqual(f.component.OrthoWidth, 60000)
+        world_to_canvas = 1024 / 60000
+        self.assertAlmostEqual(f.widget.MapScale, world_to_canvas)
+        self.assertAlmostEqual(f.widget.CachedZoom, 1.7)
+        self.assertAlmostEqual(f.widget.DefaultMinZoom, 1.25)
+        self.assertAlmostEqual(f.widget.DefaultMaxZoom, 2)
+        self.assertAlmostEqual(f.widget.CachedMapRotationAngle, 35)
+        self.assertEqual((f.frame.size.X, f.frame.size.Y), (420, 260))
+        art = f.widget.MapTexture.Slot
+        self.assertAlmostEqual(art.size.X, 61000 * world_to_canvas)
+        self.assertAlmostEqual(art.size.Y, 24000 * world_to_canvas)
+        self.assertAlmostEqual(art.position.X, 29500 * world_to_canvas)
+        self.assertAlmostEqual(art.position.Y, 9000 * world_to_canvas)
+        self.assertAlmostEqual(f.widget.TargetTranslation.X, -1500 * world_to_canvas)
+        self.assertEqual(f.widget.MapTexture.Brush.ResourceObject.GetFullName(f.widget.MapTexture.Brush.ResourceObject), 'valid.png')
+        f.widget.TargetZoom = 1.8
+        self.assertTrue(f.tick())
+        self.assertAlmostEqual(f.widget.TargetZoom, 1.8)
+
+    def test_png_import_failure_uses_the_aligned_live_capture(self):
+        f = self.fixture(*MAPS[-1], minimap=(
+            "{center={1000,2000},extent={60000,70000},image_file='unavailable.png',"
+            "image_bounds={{0,0},{1000,1000}}}"
+        ))
+        self.assertTrue(f.tick())
+        self.assertEqual(f.requests, 1)
+        self.assertEqual(f.component.OrthoWidth, 70000)
+        self.assertEqual(f.widget.MapTexture.Brush.ResourceObject.GetFullName(f.widget.MapTexture.Brush.ResourceObject), 'Map material')
+        self.assertAlmostEqual(f.widget.MapTexture.Slot.size.X, 1024)
+        self.assertAlmostEqual(f.widget.MapTexture.Slot.position.Y, 2000 * 1024 / 70000)
+        self.assertTrue(any(line.startswith('MINIMAP_PNG_FALLBACK|') for line in f.reports.values()))
 
     def test_generated_native_rows_use_own_cooked_meshes_and_authored_map_size(self):
         for map_id, group, level, size in MAPS:

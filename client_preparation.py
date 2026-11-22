@@ -17,6 +17,7 @@ import time
 import uuid
 
 from bulk_asset_cache import BulkStageCache
+from map_sync_contract import minimap_payload, png_dimensions
 from verified_file_cache import MAX_PACKAGE_FILES, identity
 
 CONTRACT='prepared-client-v1'
@@ -67,7 +68,7 @@ def _copy_private(source,destination):
 
 def stage(root,source,workspace,package,original,original_identities,verification,*,catalog,
           emit=print,cache_factory=BulkStageCache,patches=PATCHES,map_overlay=None,custom_maps=None,
-          objectives_downloaded=False):
+          objectives_downloaded=False,minimap=None):
  """Stage exactly the verified inventories into a fresh private directory."""
  root=Path(root).resolve(strict=True);source=Path(source).resolve(strict=True);workspace=Path(workspace).resolve(strict=True)
  if workspace==source or source in workspace.parents:raise ValueError('Client workspace must be outside the original game.')
@@ -110,9 +111,25 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
   elif name.startswith('content/') and map_overlay is None:
    jobs.append((_member(root,name),game/'Topaz/Content'/_relative(name[len('content/'):]),item['sha256'],item['bytes'],None))
  map_objectives=[]
+ if minimap is not None:
+  if map_overlay is None or len(catalog)!=1:raise ValueError('Minimap metadata requires a selected map session.')
+  minimap=minimap_payload(next(iter(catalog)),minimap)
+ image=minimap['image'] if minimap is not None else None
  if map_overlay is not None:
   for item,bundled,download in map_overlay:
    name=item['path']
+   if item==image:
+    target=run/'minimap.png'
+    try:
+     src=_member(workspace,download.relative_to(workspace).as_posix())
+     _copy_private(src,target)
+     if target.stat().st_size!=item['bytes'] or digest(target)!=item['sha256']:
+      raise ValueError('Minimap graphic changed during preparation.')
+     with target.open('rb') as stream:png_dimensions(stream.read(33))
+    except (OSError, ValueError):
+     target.unlink(missing_ok=True)
+     minimap['image']=None
+    continue
    src=_member(root,bundled) if bundled is not None else _member(workspace,download.relative_to(workspace).as_posix())
    if name.startswith('lua/'):
     target=run/'downloaded-objectives'/_relative(name)
@@ -142,6 +159,7 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
          'bulk_stage':cache.snapshot(),'native_started':False,'profile_created':False}
  if custom_maps:record['custom_maps']=custom_maps
  if objectives_downloaded:record['map_objectives']=map_objectives
+ if minimap is not None:record['map_minimap']=minimap
  path=run/'prepared.json';sha=_write(path,record)
  emit('BULK_STAGE_SUMMARY|'+json.dumps(cache.snapshot(),separators=(',',':')))
  result={'path':str(path),'sha256':sha}
@@ -177,6 +195,7 @@ def remove_staged_game(workspace, run):
                 raise
             # Never change attributes on files that can be hardlinked to Steam.
             time.sleep(.25)
+    (run / 'minimap.png').unlink(missing_ok=True)
 
 
 def logged_stage(lines):
