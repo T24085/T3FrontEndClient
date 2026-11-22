@@ -1812,6 +1812,27 @@ local configure_stock_clouds=(function()
     end
 end)()
 
+local request_public_team_departure=(function()
+ local requestPath=OUTPUT:gsub('[^/]+$','public-team-switch.txt')
+ local nextRead,sent=0,false
+ return function(pc,gs)
+    if sent or os.time()<nextRead or not same_object(pc:GetWorld(),gs:GetWorld()) then return end
+    nextRead=os.time()+1
+    local request=io.open(requestPath,'rb')
+    if not request then return end
+    local body=request:read(7)
+    request:close()
+    if body~='leave\n' then return end
+    sent=true
+    local ok,why=pcall(function()
+        signature('/Script/Valhalla.ValPlayerController:ServerLeaveMatch',{})
+        pc:ServerLeaveMatch()
+    end)
+    if ok then report('PUBLIC_TEAM_SWITCH_LEAVE_SENT')
+    else report('PUBLIC_TEAM_SWITCH_LEAVE_ERROR|'..tostring(why):sub(1,200)) end
+ end
+end)()
+
 local function client_tick(sys)
     if joined and os.time()-lastJoin>=30 then
         local modes=FindAllOf('TopGameMode_Topaz') or {}
@@ -1849,6 +1870,7 @@ local function client_tick(sys)
         spectatorRuntime.tick(pc,ps,gs);return
     end
     assert(SPECTATOR_ROLE=="player","unknown_client_role")
+    request_public_team_departure(pc,gs)
     if nativeSpectatorPresentation~=false and (nativeSpectatorPresentation or ps.r_bDead==true) then
         local ok,why=pcall(function()
             if not nativeSpectatorPresentation then

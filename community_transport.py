@@ -18,6 +18,7 @@ from player_names import display_name
 
 MAX_LOBBY_BOTS = 12
 PRIVATE_ADMISSION_HEADER = 'X-T3-Private-Join'
+LOBBY_MATCH_TYPES = ('standard', 'competition', 'scrim', 'pug')
 
 DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True, 'fallDamage': False}
 
@@ -182,7 +183,7 @@ class CommunityClient:
             return self.server_maps.get(name)
         return BY_ID[name].label if name in BY_ID else None
 
-    def create(self, name, *, map_id=None, locked=None):
+    def create(self, name, *, map_id=None, locked=None, match_type=None):
         with self.lock:
             if self.code is not None:
                 try:
@@ -197,6 +198,10 @@ class CommunityClient:
                 if type(locked) is not bool:
                     raise CommunityError('Choose whether to lock the lobby.')
                 data['locked'] = locked
+            if match_type is not None:
+                if match_type not in LOBBY_MATCH_TYPES:
+                    raise CommunityError('Select a valid match type.')
+                data['matchType'] = match_type
             return self._remember(self._request('create', data))
 
     def join(self, code, name):

@@ -402,6 +402,11 @@ class Desktop:
         self.lobby_create_button = self.button(entry, 'Create lobby', self.create)
         self.lobby_create_button.grid(row=2, column=0, sticky='w')
         self.lock_lobby = tk.BooleanVar(value=False)
+        self.lobby_match_type = tk.StringVar(value='Standard')
+        self.lobby_type_row = tk.Frame(entry, bg=PANEL)
+        self.label(self.lobby_type_row, 'MATCH TYPE', 9, color=ACCENT, bg=PANEL).pack(side='left', padx=(0, 8))
+        self.lobby_type_picker = self.match_type_picker(self.lobby_type_row)
+        self.lobby_type_picker.pack(side='left')
         self.lobby_lock = tk.Checkbutton(entry, text='Lock lobby after start', variable=self.lock_lobby,
             bg=PANEL, fg=TEXT, selectcolor='#20374a', activebackground=PANEL, activeforeground=TEXT)
         self.join_button = self.button(entry,'Join lobby',self.join,False)
@@ -510,6 +515,7 @@ class Desktop:
         self.create_button.pack(side='right')
         self.browser_lock = tk.Checkbutton(create_card, text='Lock lobby', variable=self.lock_lobby,
             bg=PANEL, fg=TEXT, selectcolor='#20374a', activebackground=PANEL, activeforeground=TEXT)
+        self.browser_type_picker = self.match_type_picker(create_card)
         live_actions = tk.Frame(self.live_panel, bg=BG)
         live_actions.pack(fill='x')
         self.spectate_button = self.button(live_actions, 'Spectate', self.spectate_selected)
@@ -968,8 +974,27 @@ class Desktop:
         else:
             self.lobby_lock.grid_remove()
             self.browser_lock.pack_forget()
-        self.room_heading.set(('Lobby  '+room['code']+('  ·  Locked' if room.get('locked') else ''))
-                              if in_room else 'Not in a lobby')
+        if self.caps.get('lobbyMatchTypes') is True:
+            self.lobby_type_row.grid(row=3, column=1, sticky='w', padx=(12,0), pady=(4,0))
+            self.browser_type_picker.pack(side='right', before=self.create_button, padx=(0,8))
+            for picker in (self.lobby_type_picker, self.browser_type_picker):
+                picker.configure(state='disabled' if in_room or self.controls_busy else 'readonly')
+            if self.lobby_match_type.get() != 'Standard':
+                self.lobby_lock.configure(state='disabled')
+                self.browser_lock.configure(state='disabled')
+        else:
+            self.lobby_type_row.grid_remove()
+            self.browser_type_picker.pack_forget()
+        if in_room:
+            heading = 'Lobby  ' + room['code']
+            match_type = room.get('matchType', 'standard')
+            if match_type != 'standard' and match_type in ('competition', 'scrim', 'pug'):
+                heading += '  ·  ' + ('PUG' if match_type == 'pug' else match_type.title())
+            if room.get('locked'):
+                heading += '  ·  Locked'
+            self.room_heading.set(heading)
+        else:
+            self.room_heading.set('Not in a lobby')
         self.phase.set(match_phase_text(room))
         restart = room.get('restart') if in_room else None
         restarting = isinstance(restart, dict) and restart.get('stage') in ('countdown', 'draining', 'starting')
@@ -1036,6 +1061,16 @@ class Desktop:
             except Exception as exc:
                 self.preparation.set('Game preparation: '+str(exc))
 
+    def match_type_picker(self, parent):
+        picker = ttk.Combobox(parent, textvariable=self.lobby_match_type,
+                              values=('Standard', 'Competition', 'Scrim', 'PUG'), width=13, state='disabled')
+        picker.bind('<<ComboboxSelected>>', self.change_lobby_match_type)
+        return picker
+
+    def change_lobby_match_type(self, _event):
+        self.lock_lobby.set(self.lobby_match_type.get() != 'Standard')
+        self.render(self.room)
+
     def create(self):
         def created(room):
             self.render(room)
@@ -1044,6 +1079,8 @@ class Desktop:
         options = {'map_id': selected} if selected and self.caps.get('mapSessionSync') == SESSION_VERSION else {}
         if self.caps.get('privateLobbyAdmission') is True:
             options['locked'] = self.lock_lobby.get()
+        if self.caps.get('lobbyMatchTypes') is True:
+            options['match_type'] = self.lobby_match_type.get().lower()
         self.enter_lobby(lambda name: self.lobby.create(name, **options), success=created)
 
     def paste_lobby_code(self, _event=None):

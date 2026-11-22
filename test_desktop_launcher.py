@@ -65,6 +65,15 @@ class DesktopTest(unittest.TestCase):
                 app.create()
                 enter.call_args.args[0]('Player')
                 create.assert_called_once_with('Player', locked=True)
+            app.caps['lobbyMatchTypes'] = True
+            app.lobby_match_type.set('Scrim')
+            app.change_lobby_match_type(None)
+            self.assertTrue(app.lock_lobby.get())
+            self.assertEqual(app.lobby_lock.cget('state'), 'disabled')
+            with patch.object(app, 'enter_lobby') as enter, patch.object(lobby, 'create') as create:
+                app.create()
+                enter.call_args.args[0]('Player')
+                create.assert_called_once_with('Player', locked=True, match_type='scrim')
             match_id = 'a'*32
             locked = {'id':match_id, 'label':'Stonehenge', 'playerCount':2, 'playerCapacity':24,
                       'spectatorCount':0, 'spectatorCapacity':0, 'canSpectate':False,

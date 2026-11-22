@@ -21,7 +21,7 @@ from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLO
                             VOICE_RELEASE, VOICE_ROUTE, VOICE_SAMPLE_RATE,
                             locked_state, read_json, valid_public_address, validate_endpoint, validate_group, write_json)
 from direct_network import TOOL_TIPS_ROUTE, TOOL_TIPS_LIMIT, decode_tool_tips
-from community_transport import CommunityClient, CommunityError, PinnedHTTPSConnection
+from community_transport import CommunityClient, CommunityConnectionError, CommunityError, PinnedHTTPSConnection
 from community_game import CommunityGame
 from dynamic_destination import DIRECT_BRIDGE_POLICY
 
@@ -407,9 +407,11 @@ class DirectClient(CommunityClient):
                     self._validated_target(state['target'], state.get('map'), public=True, existing_only=True)
         return state
 
-    def public_target(self):
-        deadline = time.monotonic() + 45
+    def public_target(self, *, cancel=None):
+        deadline = time.monotonic() + (80 if cancel is not None else 45)
         while True:
+            if cancel is not None and cancel.is_set():
+                raise CommunityError('Team switch cancelled.')
             state = self.public_state()
             if state.get('target'):
                 with self.lock:
@@ -418,10 +420,18 @@ class DirectClient(CommunityClient):
                     return dict(target, publicRound=self.public_transport_state)
             if not state.get('team') or time.monotonic() >= deadline:
                 raise CommunityError(state.get('error') or 'Your public match seat was not ready. Try joining again.')
-            time.sleep(1)
+            if cancel is None:
+                time.sleep(1)
+            else:
+                cancel.wait(1)
 
     def public_vote(self, round_id, map_id):
         return self._public('vote', round=round_id, map=map_id)
+
+    def public_switch(self, round_id, team):
+        if type(round_id) is not int or team not in ('blue', 'red'):
+            raise CommunityError('Choose Team A or Team B in the current round.')
+        return self._public('switch', round=round_id, team=team)
 
     def public_leave(self):
         self._public('leave')
@@ -970,10 +980,11 @@ class DirectGame(CommunityGame):
         self.round_change = None
         self.retiring_public_session = None
 
-    def start_public(self, name, *, cancel=None, team='auto'):
+    def start_public(self, name, *, cancel=None, team='auto', retained_seat=False):
         self.public_name = name
         try:
-            status = self._start(public_name=name, public_cancel=cancel, public_team=team)
+            status = self._start(public_name=name, public_cancel=cancel, public_team=team,
+                                 retained_public_seat=retained_seat)
         except Exception:
             if self.role == 'public' and self.status in ('failed', 'stopped'):
                 self.release_public()
@@ -983,27 +994,66 @@ class DirectGame(CommunityGame):
         return status
 
     def continue_public(self, next_round):
+        return self._reconnect_public(next_round)
+
+    def switch_public_team(self, round_id, team):
         with self.lock:
             current = self.public_round
-            if (self.role != 'public' or self.status not in ('starting', 'playing') or self.thread is None
-                    or self.round_change is not None or current is None
-                    or current[0] != next_round[0] or current[1] >= next_round[1]):
+            if current is None or current[1] != round_id:
+                raise CommunityError('The round changed. Refresh Public CTF and try again.')
+        return self._reconnect_public(current, switch_team=team)
+
+    def _reconnect_public(self, next_round, *, switch_team=None):
+        switching = switch_team is not None
+        with self.lock:
+            current = self.public_round
+            if (self.role != 'public' or self.thread is None or self.round_change is not None
+                    or current is None or current[0] != next_round[0]
+                    or (switching and (self.status != 'playing' or current != next_round))
+                    or (not switching and (self.status not in ('starting', 'playing') or current[1] >= next_round[1]))):
                 return None
             cancel = self.round_change = threading.Event()
             self.retiring_public_session = self.current_artifacts
             old_thread = self.thread
+        handed_off = False
         try:
+            if switching:
+                try:
+                    reply = self.lobby.public_switch(current[1], switch_team)
+                except CommunityConnectionError:
+                    reply = self.lobby.public_switch(current[1], switch_team)
+                if reply.get('switchPending') is not True:
+                    raise CommunityError('The host did not reserve the requested team switch.')
+                if not cancel.is_set() and self._request_team_departure():
+                    old_thread.join(2)
             super().stop()
             old_thread.join(45)
             with self.lock:
                 if old_thread.is_alive() or self.status == 'quarantined':
-                    raise CommunityError('The previous round is still closing. Wait for it to close before rejoining.')
+                    raise CommunityError('The previous game is still closing. Wait for it to close before rejoining.')
                 self.retiring_public_session = None
-            return self.start_public(self.public_name, cancel=cancel)
+            handed_off = True
+            return self.start_public(self.public_name, cancel=cancel, retained_seat=switching)
         finally:
             with self.lock:
                 self.retiring_public_session = None
                 self.round_change = None
+            if not handed_off and cancel.is_set() and not old_thread.is_alive() and self.status != 'quarantined':
+                self.release_public()
+
+    def _request_team_departure(self):
+        with self.lock:
+            run = self.run
+        if run is None or run.parent != self.workspace or not run.name.startswith('client-'):
+            return False
+        try:
+            if run.resolve(strict=True) != run or run.is_symlink() or run.is_junction():
+                return False
+            with (run / 'public-team-switch.txt').open('xb') as request:
+                request.write(b'leave\n')
+        except OSError:
+            return False
+        return True
 
     def stop(self):
         with self.lock:
@@ -1114,6 +1164,11 @@ class PublicCTFPanel:
         if self.team_buttons[team].cget('state') == 'disabled':
             return
         self.hide_team_reason()
+        if getattr(self, 'switching_controls', False):
+            self.status.set('Requesting team switch…')
+            game, round_id = self.desktop.game, self.state['round']
+            self.submit('switch', lambda: game.switch_public_team(round_id, team))
+            return
         from steam_identity import SteamIdentityError
 
         ui = self.desktop
@@ -1147,9 +1202,10 @@ class PublicCTFPanel:
             self.tooltip.destroy()
             self.tooltip = None
 
-    def render_teams(self, state, can_join):
+    def render_teams(self, state, can_join, *, can_switch=False, switching_controls=False):
         teams = state.get('teams')
-        choices = state.get('joinChoices')
+        self.switching_controls = switching_controls
+        choices = state.get('switchChoices' if switching_controls else 'joinChoices')
         rejoin = state.get('rejoin') is True
         has_roster = isinstance(teams, dict)
         counts = {}
@@ -1172,11 +1228,12 @@ class PublicCTFPanel:
             reason = (choices.get(team, 'This team choice is unavailable.') if isinstance(choices, dict)
                       else None if team == 'auto' else 'This host only supports automatic team assignment.')
             self.team_reasons[team] = reason
-            enabled = can_join and reason is None
+            enabled = ((can_switch and team != 'auto') if switching_controls else can_join) and reason is None
             if team == 'auto':
                 label = 'Rejoin' if rejoin else 'Auto Balance'
             else:
-                label = f'Join {"A" if team == "blue" else "B"}'
+                action = 'Switch to' if switching_controls else 'Join'
+                label = f'{action} {"A" if team == "blue" else "B"}'
                 if has_roster:
                     label += f' ({counts[team]})'
             button.configure(text=label, state='normal' if enabled else 'disabled')
@@ -1270,22 +1327,32 @@ class PublicCTFPanel:
                     if type(team_size) is not int or not 1 <= team_size <= 64:
                         team_size = 12
                     self.format_label.set(f'{team_size} vs. {team_size} · Bots fill open slots')
-                    self.status.set(state.get('error') or f'{summary} · {state["players"]}/{2 * team_size} players')
+                    notice = state.get('switchNotice')
+                    message = f'{summary} · {state["players"]}/{2 * team_size} players'
+                    if isinstance(notice, str) and len(notice) <= 160:
+                        message += '\n' + notice
+                    self.status.set(state.get('error') or message)
         except queue.Empty:
             pass
         state = self.state
         if public and state.get('phase') == 'playing' and state.get('team'):
             current = game.public_round
             round_id = state.get('round')
-            if current and current[0] == state.get('id') and type(round_id) is int and round_id > current[1]:
+            if ('switch' not in self.pending and current and current[0] == state.get('id')
+                    and type(round_id) is int and round_id > current[1]):
                 self.submit('continue', lambda: game.continue_public((current[0], round_id)))
         if public and ui.game_status != 'playing':
             self.status.set(ui.status.get())
-        continuing = 'continue' in self.pending
+        continuing = bool({'continue', 'switch'} & self.pending)
         joinable = state.get('phase') in ('idle', 'playing') or (
             isinstance(state.get('joinChoices'), dict) and state.get('phase') in ('loading', 'voting', 'traveling'))
         can_join = joinable and not active and not continuing and 'start' not in self.pending
-        self.render_teams(state, can_join)
+        switch_controls = (public or continuing) and isinstance(state.get('switchChoices'), dict)
+        can_switch = (public and ui.game_status == 'playing' and state.get('phase') == 'playing'
+                      and type(state.get('round')) is int and not continuing)
+        if 'switch' in self.pending or state.get('switchPending') is True:
+            self.status.set('Switching teams. Waiting for your previous player to clear…')
+        self.render_teams(state, can_join, can_switch=can_switch, switching_controls=switch_controls)
         self.leave.configure(state='normal' if public or continuing else 'disabled')
         self.refresh_ballot(state, public and ui.game_status == 'playing')
         now = time.monotonic()

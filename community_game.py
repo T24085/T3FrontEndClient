@@ -196,7 +196,7 @@ class CommunityGame:
         return self._start(expected_map=expected_map, expected_match_id=expected_match_id)
 
     def _start(self, *, watch_id=None, expected_map=None, expected_match_id=None, public_name=None,
-               public_cancel=None, public_team='auto'):
+               public_cancel=None, public_team='auto', retained_public_seat=False):
         self._release_watch()
         # Desktop calls this on a worker. Reserve the session briefly, then keep
         # expensive verification outside the snapshot lock used by the Tk loop.
@@ -217,7 +217,7 @@ class CommunityGame:
             self.startup_failure = None
         prepared = None
         try:
-            public_reserved = False
+            public_reserved = retained_public_seat
             def reserve_public():
                 if public_team == 'auto':
                     self.lobby.public_join(public_name)
@@ -228,7 +228,8 @@ class CommunityGame:
             if begin_attempt is not None:
                 begin_attempt()
             if public_name is not None:
-                target_loader = self.lobby.public_target
+                target_loader = ((lambda: self.lobby.public_target(cancel=public_cancel))
+                                 if retained_public_seat else self.lobby.public_target)
                 target = self.lobby.public_map()
             else:
                 target_loader = (lambda: self.lobby.spectator_target(watch_id)) if watch_id is not None else self.lobby.match_target
@@ -255,7 +256,8 @@ class CommunityGame:
                     raise CommunityError('Client map files could not be verified.') from exc
                 if catalog.get(target['map']) != target['contentHash']:
                     raise CommunityError('Your map files do not match this match. Update the community client.')
-            if public_name is not None and target.get('phase') == 'idle' and not self.stop_requested:
+            if (public_name is not None and target.get('phase') == 'idle'
+                    and not public_reserved and not self.stop_requested):
                 reserve_public()
                 public_reserved = True
             if startup_contract=='prepared-client-v1':

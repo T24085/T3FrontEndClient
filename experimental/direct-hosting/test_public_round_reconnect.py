@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))
 from direct_client import DirectClient, DirectGame, PublicCTFPanel
+from community_transport import CommunityError
 from steam_identity import SteamIdentityError
 
 
@@ -65,6 +66,11 @@ class PublicNameTest(unittest.TestCase):
         }), True)
         self.assertEqual(panel.team_buttons['auto'].cget('text'), 'Rejoin')
         self.assertEqual(panel.team_buttons['blue'].cget('state'), 'disabled')
+        panel.render_teams(dict(state, switchChoices={'blue': 'You are already on this team.', 'red': None}),
+                           False, can_switch=True, switching_controls=True)
+        self.assertEqual(panel.team_buttons['red'].cget('text'), 'Switch to B (2)')
+        self.assertEqual(panel.team_buttons['red'].cget('state'), 'normal')
+        self.assertEqual(panel.team_buttons['auto'].cget('state'), 'disabled')
 
     def test_explicit_team_uses_the_new_request_and_auto_uses_the_legacy_shape(self):
         lobby = SimpleNamespace(_public=lambda action, **request: (action, request))
@@ -153,6 +159,50 @@ class PublicRoundReconnectTest(unittest.TestCase):
         self.assertEqual(self.calls[:4], [('join', 'Player'), ('process', ('public-server', 1)),
                                           ('cleaned', ('public-server', 1)), ('join', 'Player')])
         self.assertNotIn(('leave', None), self.calls)
+
+    def test_team_switch_rejoins_same_round_only_after_own_job_has_closed(self):
+        self.assertEqual(self.game.start_public('Player'), 'starting')
+        self.game.status = 'playing'
+        self.game.lobby.public_switch = lambda round_id, team: (
+            self.calls.append(('switch', round_id, team)) or {'switchPending':True})
+        self.game.lobby.public_target = lambda **_options: (
+            self.calls.append(('target', self.current)) or self.target())
+        results = []
+        thread = threading.Thread(target=lambda: results.append(self.game.switch_public_team(1, 'red')))
+        thread.start()
+        self.addCleanup(thread.join, 6)
+        self.assertTrue(self.closing.wait(5))
+        self.assertNotIn(('target', self.current), self.calls)
+        self.cleanup_allowed.set()
+        thread.join(5)
+        self.assertEqual(results, ['starting'])
+        self.assertEqual(self.game.public_round, self.current)
+        self.assertIn(('switch', 1, 'red'), self.calls)
+        self.assertLess(self.calls.index(('cleaned', self.current)), self.calls.index(('target', self.current)))
+        self.assertEqual(self.calls.count(('join', 'Player')), 1)
+        self.assertNotIn(('leave', None), self.calls)
+
+    def test_denied_switch_keeps_the_current_native_game_open(self):
+        self.assertEqual(self.game.start_public('Player'), 'starting')
+        self.game.status = 'playing'
+
+        def reject(round_id, team):
+            raise CommunityError('That switch would unbalance the teams.')
+
+        self.game.lobby.public_switch = reject
+        with self.assertRaisesRegex(CommunityError, 'unbalance'):
+            self.game.switch_public_team(1, 'red')
+        self.assertEqual(self.game.status, 'playing')
+        self.assertFalse((self.game.current_artifacts / 'stop.json').exists())
+
+    def test_native_leave_request_is_written_only_to_the_current_run(self):
+        self.game.run = self.game.workspace / 'client-123456789abc'
+        self.game.run.mkdir(parents=True)
+        self.assertTrue(self.game._request_team_departure())
+        self.assertEqual((self.game.run / 'public-team-switch.txt').read_bytes(), b'leave\n')
+        self.assertFalse(self.game._request_team_departure())
+        self.game.run = self.game.workspace.parent / 'client-123456789abc'
+        self.assertFalse(self.game._request_team_departure())
 
     def test_leave_while_old_round_closes_cancels_successor(self):
         thread, results = self.begin_rotation()

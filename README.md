@@ -18,6 +18,16 @@ Use a matching Steam installation of TRIBES 3: Rivals and a player package or in
 
 In **Lobbies**, create a room or enter a lobby code, choose teams and a map, then start the match. The first preparation checks the original Steam files. Starter reuses verified files and syncs compatible map updates from the host.
 
+### Join or switch teams
+
+On supported hosts, **Public CTF** shows both teams and **Auto Balance**.
+While playing, **Switch to A** or **Switch to B** asks the host to move you.
+Starter reconnects to the same round after your previous game closes. A
+disabled choice shows the host's reason.
+
+In **Lobbies**, **Competition**, **Scrim**, and **PUG** lock the player roster
+after the match starts. Players with a reserved place can still select **Rejoin**.
+
 ## Starter screenshots
 
 | Private lobby | Live matches |

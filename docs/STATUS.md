@@ -1,3 +1,15 @@
+# Public CTF team switching
+
+On a host that advertises switch choices, the Public CTF panel can start a
+team switch while a game is active. Starter requests the move, lets the owned
+game leave through its native handler, waits for verified process cleanup,
+and reconnects using the retained public seat. The panel shows current team
+sizes, disabled reasons, and switch announcements from the host.
+
+Competition, Scrim, and PUG lobby choices automatically lock their rosters
+at match start. The Windows and Proton Direct Starter builds use the same
+launcher source for these controls. Native gameplay qualification is pending.
+
 # Private lobby admission
 
 When Direct Host advertises private match admission, both Create lobby controls
