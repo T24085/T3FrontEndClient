@@ -1,6 +1,6 @@
 # Tribes 3 Mod Community Edition: Phoenix Rising
 
-Clan Wars is a community mod and playtest launcher for TRIBES 3: Rivals. Set up private Capture the Flag matches, join Public CTF when your host offers it, or watch a live match from first person or a chase camera.
+Phoenix Rising is a community mod and launcher for TRIBES 3: Rivals. Create private Capture the Flag lobbies, join Public CTF, or spectate a live match. The same community service supports the Windows launcher and the native Ubuntu launcher preview.
 
 [Download and play](#download-and-play) · [Starter screenshots](#starter-screenshots) · [Map gallery](#map-gallery) · [Developer setup](#developer-setup)
 
@@ -10,13 +10,34 @@ Clan Wars is a community mod and playtest launcher for TRIBES 3: Rivals. Set up 
 
 ## Download and play
 
-Use a matching Steam installation of TRIBES 3: Rivals and a player package or invitation supplied by your playtest organizer.
+Install TRIBES 3: Rivals in Steam and sign in. Get a current player package or invitation from your host or playtest organizer.
 
-- **Windows Clan Wars ZIP** — Extract the entire ZIP, leave Steam signed in, and open `Start Clan Wars.bat`. Keep the `Client Files` folder beside it.
-- **Linux Clan Wars package** — From the extracted folder, run `sh "Clan Wars - Linux.sh" --setup`. Enable Proton in the game's Steam properties, paste the printed line into **Launch Options**, then launch from Steam.
-- **GitHub Community Starter r12 prerelease** — This is the separately published r12 playtest build. Use its release-specific install instructions and compatible server access. [Windows ZIP](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.08-r12/TRIBES3-Community-Starter-Windows-20261108-r12.zip) · [Linux/Proton archive](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.08-r12/TRIBES3-Community-Starter-Linux-Proton-20261108-r12.tar.gz) · [Setup and checksums](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.08-r12)
+| Platform | First launch |
+| :--- | :--- |
+| Windows | Extract the entire player ZIP. Open **Start Clan Wars.bat** and keep the **Client Files** folder beside it. |
+| Ubuntu native preview | Run the organizer's `.run` installer in a terminal. Complete **Steam Setup** in Starter, then put its generated line in the game's Steam **Launch Options**. Open **Start Clan Wars Ubuntu.sh** from the installed folder for later sessions. [Desktop shortcut and troubleshooting](docs/LINUX_NATIVE_LAUNCH.md) |
 
-In **Lobbies**, create a room or enter a lobby code, choose teams and a map, then start the match. The first preparation checks the original Steam files. Starter reuses verified files and syncs compatible map updates from the host.
+The launcher verifies the original Steam files on first use and can reuse verified files later. An enrolled launcher receives signed updates for its platform and verifies required maps from the host.
+
+The [GitHub Community Starter r12 prerelease](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.08-r12) contains the November 8 Windows and Linux/Proton packages. Use the instructions and server access for that release.
+
+## Play and spectate
+
+- **Lobbies** — Create a lobby or join by code. The lobby shows Children of The Phoenix and Diamond Sword. The host controls available maps, rules, and spectator access.
+- **Public CTF** — Join an open team or request a balanced seat when the host offers Public CTF. Bots fill open playing slots and players can vote on the next map.
+- **Server Browser** — Browse live matches and select **Spectate** when seats are available.
+- **Maps, Armor, and Settings** — Browse the host map catalog, preview and save armor choices, and configure supported options such as proximity voice and keybind import.
+
+## Current release source
+
+The November 22 Direct rollout was verified with Windows Starter r76 and Ubuntu Preview 7 signed update 9. The changes added team selection and rosters for Public CTF on both platforms and kept the map catalog visible during downloads.
+
+| Platform | Published source |
+| :--- | :--- |
+| Windows Starter r76 | [Windows release changes](https://github.com/T24085/T3FrontEndClient/commit/c13f455fc92f119fbdc6cd30d8e7e49392b4a6f5) |
+| Ubuntu Preview 7 update 9 | [Ubuntu release changes](https://github.com/T24085/T3FrontEndClient/commit/34efaa9) |
+
+The [paired backend](https://github.com/T24085/T3BackEndServer) documents host setup and the server components used for the rollout.
 
 ### Join or switch teams
 
