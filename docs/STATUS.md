@@ -69,6 +69,11 @@ While the replacement server starts, Starter shows loading progress and lets
 the lobby leader stop the allocated replacement. Players can join when the
 host confirms readiness.
 
+When the host advertises score-preserving restart, Starter can request it for
+an active round. The lobby distinguishes waiting for players to load from a
+confirmed score-and-clock restore. The current host source still needs the
+native restore writer before exposing this option.
+
 # Public CTF team selection and the Maps tab
 
 Public CTF shows player names and live counts by team. Auto Balance picks a

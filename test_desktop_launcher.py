@@ -119,6 +119,14 @@ class DesktopTest(unittest.TestCase):
                     app.restart_button.invoke()
             action.assert_called_once_with('restart', matchId='previous', reason='Dropped player')
 
+            app.caps['matchRestartKeepScore'] = True
+            lobby.room['match']['loading'] = {'state': 'playing'}
+            with patch('desktop_launcher.messagebox.askyesnocancel', return_value=True), \
+                    patch('desktop_launcher.simpledialog.askstring', return_value='Dropped player'), \
+                    patch.object(app, 'call_action') as action:
+                app.restart_button.invoke()
+            action.assert_called_once_with('restart', matchId='previous', reason='Dropped player', mode='keep_score')
+
             lobby.room['restart'] = {'stage':'countdown','matchId':'previous','seconds':7,'reason':'Dropped player'}
             app.render(lobby.room)
             self.assertEqual(app.phase.get(), 'Restarting in 7s · Dropped player')
@@ -142,13 +150,19 @@ class DesktopTest(unittest.TestCase):
 
             lobby.room['match'] = {'id':'replacement','status':'ready'}
             lobby.room['players'][0]['team'] = 'blue'
-            lobby.room['restart']['stage'] = 'complete'
+            lobby.room['restart'].update(stage='restoring', replacementMatchId='replacement')
             app.render(lobby.room)
+            self.assertIn('restoring the score and clock', app.phase.get())
+            self.assertEqual(app.game_button.cget('state'), 'normal')
+            self.assertEqual(app.stop_button.cget('state'), 'normal')
             app.game_status = 'stopped'
             app.join_attempted_match = 'previous'
             with patch.object(app, 'join_game') as join_game:
                 app.maybe_auto_join()
             join_game.assert_called_once()
+            lobby.room['restart']['stage'] = 'complete'
+            app.render(lobby.room)
+            self.assertEqual(app.game_button.cget('state'), 'normal')
         finally:
             app.close()
 

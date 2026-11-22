@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import simpledialog, ttk
+from tkinter import messagebox, simpledialog, ttk
 from urllib.parse import parse_qs, urlsplit
 
 from community_game import CommunityGame
@@ -224,6 +224,8 @@ def match_phase_text(room):
             return f"Restarting in {restart.get('seconds', 0)}s · {reason}"
         if stage == 'checkpointing':
             return f'Saving current score and time · {reason}'
+        if stage == 'restoring':
+            return f'Waiting for players to load before restoring the score and clock · {reason}'
         if stage in ('draining', 'starting') or stage == 'complete' and room['phase'] == 'starting':
             progress = (room.get('match') or {}).get('progress') if restart.get('replacementMatchId') else None
             text = f'Match restarting · {reason}'
@@ -1004,7 +1006,7 @@ class Desktop:
             self.room_heading.set('Not in a lobby')
         self.phase.set(match_phase_text(room))
         restart = room.get('restart') if in_room else None
-        restarting = isinstance(restart, dict) and restart.get('stage') in ('countdown', 'checkpointing', 'draining', 'starting')
+        restarting = isinstance(restart, dict) and restart.get('stage') in ('countdown', 'checkpointing', 'draining', 'starting', 'restoring')
         can_restart = (leader and self.caps.get('matchRestartEnabled') is True
                        and phase in ('starting', 'ready', 'stopped', 'ended', 'failed'))
         if can_restart:
@@ -1053,10 +1055,13 @@ class Desktop:
         for widget in (self.blue_button,self.red_button): widget.configure(state='normal' if setup and not self.controls_busy else 'disabled')
         for widget in (self.move_blue,self.move_red): widget.configure(state='normal' if setup and leader and not self.controls_busy else 'disabled')
         self.start_button.configure(state='normal' if setup and leader and not self.controls_busy and self.pending_map is None and self.caps.get('matchStartEnabled') else 'disabled')
-        join_pending = in_room and (room.get('match') or {}).get('status') == 'starting'
-        self.game_button.configure(state='normal' if in_room and phase=='ready' and not join_pending and not restarting and not self.controls_busy and self.pending_map is None and self.caps.get('gameClientReady') else 'disabled')
+        match = (room.get('match') or {}) if in_room else {}
+        join_allowed = not restarting or (restart.get('stage') == 'restoring'
+                                          and match.get('id')
+                                          and restart.get('replacementMatchId') == match.get('id'))
+        self.game_button.configure(state='normal' if in_room and phase=='ready' and match.get('status') != 'starting' and join_allowed and not self.controls_busy and self.pending_map is None and self.caps.get('gameClientReady') else 'disabled')
         replacement = restart.get('replacementMatchId') if restarting else None
-        allocated_replacement = replacement and replacement == (room.get('match') or {}).get('id')
+        allocated_replacement = replacement and replacement == match.get('id')
         can_stop = leader and phase in ('starting', 'ready') and (not restarting or allocated_replacement)
         self.stop_button.configure(state='normal' if can_stop else 'disabled')
         self.reset_button.configure(state='normal' if leader and not restarting and phase in ('stopped','ended','failed') else 'disabled')
@@ -1215,8 +1220,20 @@ class Desktop:
         match = self.room.get('match')
         if not isinstance(match, dict) or not match.get('id'):
             return
+        mode = None
+        if (self.caps.get('matchRestartKeepScore') is True
+                and (match.get('loading') or {}).get('state') == 'playing'):
+            keep_score = messagebox.askyesnocancel(
+                'Restart match', 'Keep the score and remaining time?\n\nChoose No to start a fresh round.',
+                parent=self.root,
+            )
+            if keep_score is None:
+                return
+            mode = 'keep_score' if keep_score else 'full'
         reason = simpledialog.askstring(
-            'Restart match', 'The same map and teams will start a fresh round.\n\nReason for the restart',
+            'Restart match', ('The same map and teams will restart with the saved score and clock.'
+                              if mode == 'keep_score' else 'The same map and teams will start a fresh round.')
+            + '\n\nReason for the restart',
             parent=self.root,
         )
         if reason is not None:
@@ -1224,11 +1241,12 @@ class Desktop:
             if not 1 <= len(reason) <= 120 or not reason.isprintable():
                 self.status.set('Enter a printable restart reason of 1–120 characters.')
                 return
-            self.call_action('restart', matchId=match['id'], reason=reason)
+            details = {'mode': mode} if mode is not None else {}
+            self.call_action('restart', matchId=match['id'], reason=reason, **details)
 
     def stop_restarted_client(self, state):
         restart = self.room.get('restart') if self.room else None
-        if (isinstance(restart, dict) and restart.get('stage') in ('draining', 'starting', 'complete')
+        if (isinstance(restart, dict) and restart.get('stage') in ('draining', 'starting', 'restoring', 'complete')
                 and state.get('role') == 'player' and state['status'] in ('starting', 'playing')
                 and state.get('matchId') and state['matchId'] == restart.get('matchId')):
             self.game.stop()
