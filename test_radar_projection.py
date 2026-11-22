@@ -103,12 +103,19 @@ function widget:GetVisibility() return self.visibility end
 function widget:SetVisibility(value) self.visibility=value end
 widget.Material=object('Map material')
 local function slot()
-    local s={}
-    function s:SetPosition(value) self.position=value end
-    function s:SetSize(value) self.size=value end
-    function s:SetAlignment(value) self.alignment=value end
-    function s:SetAnchors(value) self.anchors=value end
-    function s:SetAutoSize(value) self.automatic=value end
+    local s={position={X=0,Y=0},size={X=150,Y=150},alignment={X=0,Y=0},
+             anchors={Minimum={X=0,Y=0},Maximum={X=0,Y=0}},automatic=true,writes=0}
+    function s:SetPosition(value) self.position=value;self.writes=self.writes+1 end
+    function s:SetSize(value) self.size=value;self.writes=self.writes+1 end
+    function s:SetAlignment(value) self.alignment=value;self.writes=self.writes+1 end
+    function s:SetAnchors(value) self.anchors=value;self.writes=self.writes+1 end
+    function s:SetAutoSize(value) self.automatic=value;self.writes=self.writes+1 end
+    function s:GetSize() return self.size end
+    function s:GetAutoSize() return self.automatic end
+    function s:GetLayout()
+        return {Anchors=self.anchors,Alignment=self.alignment,
+                Offsets={Left=self.position.X,Top=self.position.Y,Right=self.size.X,Bottom=self.size.Y}}
+    end
     return s
 end
 widget.MapTexture={Brush={ResourceObject=widget.Material},Slot=slot(),visibility=4}
@@ -126,6 +133,7 @@ function wrapper:GetClass()
     return object('WidgetBlueprintGeneratedClass /Game/UI/Components/Game/UI_Game_MiniMap.UI_Game_MiniMap_C')
 end
 wrapper.RetainerBox_0={Slot=f.frame}
+f.retainer=wrapper.RetainerBox_0
 function widget:GetOuter() return {GetOuter=function()return wrapper end} end
 widget.CachedZoom,widget.TargetZoom=1,1
 widget.DefaultMinZoom,widget.DefaultMaxZoom,widget.DefaultZoom=1,3,1
@@ -275,6 +283,37 @@ class RadarProjectionTest(unittest.TestCase):
         self.assertAlmostEqual(f.widget.MapTexture.Slot.size.X, 1024)
         self.assertAlmostEqual(f.widget.MapTexture.Slot.position.Y, 2000 * 1024 / 70000)
         self.assertTrue(any(line.startswith('MINIMAP_PNG_FALLBACK|') for line in f.reports.values()))
+
+    def test_retries_late_slots_and_repairs_native_layout_resets_at_the_same_scale(self):
+        f = self.fixture(*MAPS[-1], minimap=(
+            "{frame={width=430,height=250},image_file='valid.png',"
+            "image_bounds={{1000,-2000},{51000,18000}}}"
+        ))
+        art = f.widget.MapTexture.Slot
+        f.widget.MapTexture.Slot, f.retainer.Slot = None, None
+        self.assertFalse(f.tick())
+        self.assertEqual((f.requests, f.frame.writes, art.writes), (0, 0, 0))
+        f.widget.MapTexture.Slot, f.retainer.Slot = art, f.frame
+        self.assertTrue(f.tick())
+        scale = f.widget.MapScale
+        self.assertEqual(f.requests, 1)
+        self.assertEqual((f.frame.size.X, f.frame.size.Y), (430, 250))
+        self.assertAlmostEqual(art.size.X, 50000 * scale)
+        self.assertAlmostEqual(art.size.Y, 20000 * scale)
+        self.assertAlmostEqual(art.position.X, 26000 * scale)
+        self.assertAlmostEqual(art.position.Y, 8000 * scale)
+
+        f.frame.size.X, f.frame.automatic = 310, True
+        art.anchors.Maximum.X, art.position.Y = 1, -55
+        art.automatic = True
+        f.blank(True)
+        self.assertTrue(f.tick())
+        self.assertEqual((f.frame.size.X, f.frame.size.Y, f.frame.automatic), (430, 250, False))
+        self.assertEqual((art.anchors.Minimum.X, art.anchors.Maximum.X, art.automatic), (.5, .5, False))
+        self.assertAlmostEqual(art.position.Y, 8000 * scale)
+        writes = (f.frame.writes, art.writes)
+        self.assertTrue(f.tick())
+        self.assertEqual((f.frame.writes, art.writes), writes)
 
     def test_png_brush_rejection_clears_the_placeholder_using_the_native_capture(self):
         f = self.fixture(*MAPS[-1], minimap="{image_file='valid.png',image_bounds={{0,0},{1000,1000}}}")

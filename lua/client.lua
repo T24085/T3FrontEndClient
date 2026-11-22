@@ -1192,6 +1192,25 @@ return function(env)
   if ok and valid(texture) then return texture end
   report('MINIMAP_PNG_FALLBACK|map='..env.descriptor.name)
  end
+ local function near(actual,wanted)
+  return finite(actual) and math.abs(actual-wanted)<=math.max(.01,math.abs(wanted)*1e-6)
+ end
+ local function configure_frame(widget)
+  local size=minimap.frame
+  if not size then return end
+  local tree=widget:GetOuter()
+  local frame=valid(tree) and tree:GetOuter() or nil
+  if not valid(frame) or frame:GetClass():GetFullName()~=
+      'WidgetBlueprintGeneratedClass /Game/UI/Components/Game/UI_Game_MiniMap.UI_Game_MiniMap_C' then return end
+  local retainer=frame.RetainerBox_0
+  local slot=valid(retainer) and retainer.Slot or nil
+  if not valid(slot) then return end
+  local current=slot:GetSize()
+  if slot:GetAutoSize() or not near(current.X,size.width) or not near(current.Y,size.height) then
+   slot:SetAutoSize(false)
+   slot:SetSize({X=size.width,Y=size.height})
+  end
+ end
  local function configure_framing(widget,initialize)
   local width=state.capture_width
   local scale=1024/width
@@ -1223,19 +1242,6 @@ return function(env)
    local translation={X=-minimap.center[1]*widget.MapScale,Y=-minimap.center[2]*widget.MapScale}
    widget.DefaultMapTranslation,widget.TargetTranslation=translation,translation
    widget:UpdateTranslation(0,false)
-  end
-  if initialize and minimap.frame then
-   local tree=widget:GetOuter()
-   local frame=valid(tree) and tree:GetOuter() or nil
-   if valid(frame) and frame:GetClass():GetFullName()==
-      'WidgetBlueprintGeneratedClass /Game/UI/Components/Game/UI_Game_MiniMap.UI_Game_MiniMap_C' then
-    local retainer=frame.RetainerBox_0
-    local slot=valid(retainer) and retainer.Slot or nil
-    if valid(slot) then
-     slot:SetAutoSize(false)
-     slot:SetSize({X=minimap.frame.width,Y=minimap.frame.height})
-    end
-   end
   end
  end
  local function background_visible(widget)
@@ -1279,18 +1285,25 @@ return function(env)
    spanX,spanY=hi[1]-lo[1],hi[2]-lo[2]
    x,y=(lo[1]+hi[1])/2,(lo[2]+hi[2])/2
   end
-  if record.background_scale~=widget.MapScale or record.background_image~=valid(image) then
-   local slot=background.Slot
-   assert(valid(slot),'minimap_background_canvas_slot_required')
+  local slot=background.Slot
+  if not valid(slot) then return false end
+  local size={X=spanX*widget.MapScale,Y=spanY*widget.MapScale}
+  local offset={X=x*widget.MapScale,Y=y*widget.MapScale}
+  local layout=slot:GetLayout()
+  local min,max=layout.Anchors.Minimum,layout.Anchors.Maximum
+  local alignment,rect=layout.Alignment,layout.Offsets
+  if slot:GetAutoSize() or min.X~=.5 or min.Y~=.5 or max.X~=.5 or max.Y~=.5
+     or alignment.X~=.5 or alignment.Y~=.5
+     or not near(rect.Left,offset.X) or not near(rect.Top,offset.Y)
+     or not near(rect.Right,size.X) or not near(rect.Bottom,size.Y) then
    local pivot={X=.5,Y=.5}
    slot:SetAnchors({Minimum=pivot,Maximum=pivot})
    slot:SetAlignment(pivot)
    slot:SetAutoSize(false)
-   slot:SetSize({X=spanX*widget.MapScale,Y=spanY*widget.MapScale})
-   slot:SetPosition({X=x*widget.MapScale,Y=y*widget.MapScale})
-   record.background_scale=widget.MapScale
-   record.background_image=valid(image)
+   slot:SetSize(size)
+   slot:SetPosition(offset)
   end
+  record.background_image=valid(image)
   return true
  end
  local function setup(pc,gs)
@@ -1459,7 +1472,7 @@ return function(env)
     if record then
      if not valid(widget.MinimapCapture) then widget.MinimapCapture=state.capture end
      assert(same(widget.MinimapCapture,state.capture),'radar_client_widget_binding_changed')
-     if minimap then configure_framing(widget,false) end
+     if minimap then configure_framing(widget,false);configure_frame(widget) end
      if configure_texture(widget,record) then
       projected=projected+1
       if not record.reported then

@@ -56,9 +56,10 @@ refreshes the original capture material and waits for the brush and visibility
 to agree before requesting a capture. It reuses compatible map-owned captures
 and preserves their authored framing when the map supplies no overrides.
 
-Fixtures cover a late material, a native widget reset, and rejected PNG
-brushes. Rendered gameplay remains to be verified, including the reported
-blank frame on maps without an authored PNG.
+The custom frame and artwork layout also recover when their canvas slots
+load late or Unreal resets their geometry. Fixtures cover these resets, late
+materials, and rejected PNG brushes. Rendered gameplay remains to be verified,
+including the reported blank frame on maps without an authored PNG.
 
 # Private match restart
 
