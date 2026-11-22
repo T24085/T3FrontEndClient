@@ -376,6 +376,8 @@ class MapSync:
                 self.notice_active = True
                 self.status = 'Checking selected map…'
                 self._check_cancelled()
+                if obsolete and obsolete():
+                    raise CommunityError('The lobby selected another map.')
                 if manifest_hash is None:
                     metadata = next((row for row in self.map_index() if row['id'] == map_id), None)
                     if metadata is None or metadata['contentHash'] != fingerprint:

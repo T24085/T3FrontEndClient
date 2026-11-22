@@ -1,5 +1,6 @@
 """Development-only Community Starter lobby and owned game launcher."""
 from array import array
+from collections import deque
 from operator import itemgetter
 import base64
 import tempfile
@@ -1191,63 +1192,139 @@ class Desktop:
         table.pack(fill='both', expand=True, pady=(14, 12))
         columns = (('name', 'Map', 165), ('game', 'Game', 62), ('size', 'Size', 72),
                    ('version', 'Version', 78), ('status', 'Local status', 112))
-        self.maps_table = ttk.Treeview(table, columns=tuple(key for key, _, _ in columns),
-                                       show='headings', style='Live.Treeview', selectmode='browse')
+        self.map_sort = None
+        self.map_headings = {key:title for key,title,_ in columns}
+        self.maps_table = ttk.Treeview(table, columns=tuple(self.map_headings),
+                                       show='headings', style='Live.Treeview', selectmode='extended')
         for key, title, width in columns:
-            self.maps_table.heading(key, text=title)
+            self.maps_table.heading(key, text=title, command=lambda column=key: self.sort_maps(column))
             self.maps_table.column(key, width=width, minwidth=width-12)
         scrollbar = ttk.Scrollbar(table, orient='vertical', command=self.maps_table.yview)
         self.maps_table.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side='right', fill='y')
         self.maps_table.pack(side='left', fill='both', expand=True)
         self.maps_table.bind('<<TreeviewSelect>>', lambda _event: self.render_map_controls())
+        self.maps_table.bind('<Control-a>', self.select_all_maps)
+        self.maps_table.bind('<Control-A>', self.select_all_maps)
         self.map_rows = {}
+        self.map_queue = deque()
+        self.map_active = None
+        self.map_queue_total = self.map_queue_done = self.map_queue_cancelled = 0
+        self.map_queue_errors = []
         self.map_index_rows = None
         self.map_index_busy = False
         self.map_state_busy = False
         self.map_state_version = None
         buttons = tk.Frame(panel, bg=BG)
         buttons.pack(fill='x')
-        self.map_download = self.button(buttons, 'Download', lambda: self.manage_map(False))
+        self.map_download = self.button(buttons, 'Download selected', self.queue_selected_maps)
         self.map_download.pack(side='left', padx=(0, 8))
-        self.map_remove = self.button(buttons, 'Remove download', lambda: self.manage_map(True), False)
+        self.map_remove = self.button(buttons, 'Remove download', self.remove_map_download, False)
         self.map_remove.pack(side='left', padx=(0, 8))
         self.map_refresh = self.button(buttons, 'Refresh', self.refresh_maps, False)
         self.map_refresh.pack(side='left')
+        queue_controls = tk.Frame(panel, bg=BG)
+        queue_controls.pack(fill='x', pady=(5, 0))
+        self.map_cancel_selected = self.button(queue_controls, 'Cancel selected', self.cancel_selected_maps, False)
+        self.map_cancel_all = self.button(queue_controls, 'Cancel all', self.cancel_all_maps, False)
+        self.map_cancel_selected.pack(side='left', padx=(0,8))
+        self.map_cancel_all.pack(side='left')
+        self.map_selection_notice = tk.StringVar()
+        self.map_queue_notice = tk.StringVar()
+        for variable in (self.map_selection_notice, self.map_queue_notice):
+            tk.Label(panel, textvariable=variable, bg=BG, fg=MUTED, wraplength=530,
+                     anchor='w', justify='left').pack(fill='x', pady=(5, 0))
         self.maps_notice = tk.StringVar()
         tk.Label(panel, textvariable=self.maps_notice, bg=BG, fg=MUTED, wraplength=530,
                  anchor='w', justify='left').pack(fill='x', pady=(10, 0))
 
-    def selected_download(self):
-        selection = self.maps_table.selection()
-        return self.map_rows.get(selection[0]) if selection else None
+    def select_all_maps(self, _event=None):
+        self.maps_table.selection_set(self.maps_table.get_children())
+        return 'break'
+
+    def sort_maps(self, column):
+        previous, descending = self.map_sort or (None, False)
+        self.map_sort = column, not descending if previous == column else False
+        self.order_maps()
+
+    def order_maps(self):
+        column, descending = self.map_sort or ('name', False)
+        fields = {'name':'label', 'game':'gameTag', 'size':'bytes', 'version':'manifestHash', 'status':'state'}
+        field = fields[column]
+        def key(identity):
+            row = self.map_rows[identity]
+            return row.get(field, -1) if column == 'size' else row.get(field, '').casefold()
+        for index, identity in enumerate(sorted(self.maps_table.get_children(), key=key, reverse=descending)):
+            self.maps_table.move(identity, '', index)
+        arrow = ' \u25bc' if descending else ' \u25b2'
+        for name, label in self.map_headings.items():
+            self.maps_table.heading(name, text=label + arrow if self.map_sort and name == column else label)
+
+    def queued_map_ids(self):
+        identities = {row['id'] for row in self.map_queue}
+        if self.map_active is not None:
+            identities.add(self.map_active[0]['id'])
+        return identities
 
     def render_map_controls(self):
-        row = self.selected_download()
-        enabled = self.map_sync.session_enabled and not self.controls_busy
-        active = self.game_status not in ('idle', 'stopped', 'finished', 'failed')
-        self.map_refresh.configure(state='normal' if self.map_sync.session_enabled
-                                   and not self.map_index_busy else 'disabled')
-        self.map_download.configure(text='Update' if row and row['state'] == 'Update available' else 'Download',
-                                    state='normal' if enabled and row and row['state'] in ('Not downloaded', 'Update available')
-                                    else 'disabled')
-        self.map_remove.configure(state='normal' if enabled and row and row['removable'] and not active else 'disabled')
+        selected = self.maps_table.selection()
+        rows = [self.map_rows[identity] for identity in selected if identity in self.map_rows]
+        queued = self.queued_map_ids()
+        downloadable = [row for row in rows if row['state'] in ('Not downloaded', 'Update available')]
+        new = [row for row in downloadable if row['id'] not in queued]
+        total = sum(row['bytes'] for row in downloadable)
+        self.map_selection_notice.set(f'{len(rows)} selected · up to {total/1024**2:,.1f} MiB to download'
+                                      if rows else '')
+        enabled = self.map_sync.session_enabled
+        idle_game = self.game_status in ('idle', 'stopped', 'finished', 'failed')
+        removable = (len(rows) == 1 and rows[0]['removable'] and rows[0]['id'] not in queued)
+        self.map_refresh.configure(state='normal' if enabled and not self.map_index_busy else 'disabled')
+        self.map_download.configure(state='normal' if enabled and new else 'disabled')
+        self.map_remove.configure(state='normal' if enabled and removable and idle_game
+                                  and not self.controls_busy else 'disabled')
+        self.map_cancel_selected.configure(state='normal' if queued.intersection(selected) else 'disabled')
+        self.map_cancel_all.configure(state='normal' if queued else 'disabled')
+        self.render_map_queue_progress()
+
+    def render_map_queue_progress(self):
+        if self.map_active is not None:
+            row, cancelled = self.map_active
+            progress = self.map_sync.progress if self.map_sync.notice_target == row['id'] else None
+            detail = f' · {progress[0]:,}/{progress[1]:,} files' if progress and progress[1] else ''
+            action = 'Cancelling' if cancelled.is_set() else 'Downloading'
+            self.map_queue_notice.set(f'{action} {row["label"]}{detail} · '
+                                      f'{self.map_queue_done}/{self.map_queue_total} maps processed')
+        elif self.map_queue_total:
+            failed = len(self.map_queue_errors)
+            complete = self.map_queue_done - self.map_queue_cancelled - failed
+            summary = f'{complete} downloaded · {self.map_queue_cancelled} cancelled · {failed} failed'
+            if failed:
+                summary += '\n' + self.map_queue_errors[-1]
+            self.map_queue_notice.set(summary)
 
     def render_map_rows(self, rows):
         updated = {row['id']: row for row in rows}
         if updated == self.map_rows:
             return
         selected = self.maps_table.selection()
+        focus = self.maps_table.focus()
         scroll = self.maps_table.yview()[0]
+        # Retain prior row order for stable sorting and preserve selection on live refresh.
+        order = list(dict.fromkeys((*self.maps_table.get_children(), *updated)))
         self.maps_table.delete(*self.maps_table.get_children())
         self.map_rows = updated
-        for row in rows:
+        for identity in order:
+            row = updated.get(identity)
+            if row is None:
+                continue
             size = f"{row['bytes']/1024**2:,.1f} MiB" if 'bytes' in row else ''
-            self.maps_table.insert('', 'end', iid=row['id'],
+            self.maps_table.insert('', 'end', iid=identity,
                                    values=(row['label'], row.get('gameTag', ''), size,
                                            row.get('manifestHash', '')[:8], row['state']))
-        if selected and selected[0] in updated:
-            self.maps_table.selection_set(selected[0])
+        self.order_maps()
+        self.maps_table.selection_set(tuple(identity for identity in selected if identity in updated))
+        if focus in updated:
+            self.maps_table.focus(focus)
         self.maps_table.yview_moveto(scroll)
         self.render_map_controls()
 
@@ -1316,22 +1393,88 @@ class Desktop:
 
         self.fetch_map_rows(lambda: self.map_sync.local_maps(index), loaded)
 
-    def manage_map(self, remove):
-        row = self.selected_download()
-        if row is None or self.controls_busy:
+    def queue_selected_maps(self):
+        if not self.map_sync.session_enabled:
             return
-        if remove:
-            if not row['removable'] or self.game_status not in ('idle', 'stopped', 'finished', 'failed'):
-                return
-            operation = lambda: self.map_sync.remove_map(row['id'])
-        elif row['state'] in ('Not downloaded', 'Update available'):
-            operation = lambda: self.map_sync.sync_map(row['id'], row['contentHash'], row['manifestHash'])
-        else:
+        selected = set(self.maps_table.selection())
+        queued = self.queued_map_ids()
+        rows = [self.map_rows[identity] for identity in self.maps_table.get_children()
+                if identity in selected and identity not in queued
+                and self.map_rows[identity]['state'] in ('Not downloaded', 'Update available')]
+        if not rows:
             return
+        if not queued:
+            self.map_queue_total = self.map_queue_done = self.map_queue_cancelled = 0
+            self.map_queue_errors.clear()
+        self.map_queue.extend(rows)
+        self.map_queue_total += len(rows)
+        self.download_next_map()
+        self.render_map_controls()
 
+    def download_next_map(self):
+        if self.closing or self.map_active is not None or not self.map_queue:
+            return
+        row = self.map_queue.popleft()
+        cancelled = threading.Event()
+        self.map_active = (row, cancelled)
+
+        def check():
+            if cancelled.is_set():
+                raise CommunityError('Map download cancelled.')
+            return False
+
+        def download():
+            return self.map_sync.sync_map(row['id'], row['contentHash'], row['manifestHash'],
+                                         obsolete=check, notice_target=row['id'])
+
+        def complete(_, error):
+            self.map_active = None
+            self.map_queue_done += 1
+            if error:
+                if cancelled.is_set():
+                    self.map_queue_cancelled += 1
+                else:
+                    self.map_queue_errors.append(f'{row["label"]}: {error}')
+            else:
+                displayed = self.map_rows.get(row['id'])
+                if displayed and row['manifestHash'] == displayed.get('manifestHash'):
+                    self.render_map_rows([
+                        dict(item, state='Downloaded', removable=True) if item is displayed else item
+                        for item in self.map_rows.values()
+                    ])
+            self.map_state_version = None
+            self.refresh_map_states()
+            self.download_next_map()
+            self.render_map_controls()
+
+        self.fetch_map_rows(download, complete)
+
+    def cancel_selected_maps(self):
+        self.cancel_maps(set(self.maps_table.selection()))
+
+    def cancel_all_maps(self):
+        self.cancel_maps(self.queued_map_ids())
+
+    def cancel_maps(self, identities):
+        before = len(self.map_queue)
+        self.map_queue = deque(row for row in self.map_queue if row['id'] not in identities)
+        cancelled = before - len(self.map_queue)
+        self.map_queue_done += cancelled
+        self.map_queue_cancelled += cancelled
+        if self.map_active is not None and self.map_active[0]['id'] in identities:
+            self.map_active[1].set()
+        self.render_map_controls()
+
+    def remove_map_download(self):
+        selected = self.maps_table.selection()
+        if len(selected) != 1 or self.controls_busy or self.game_status not in ('idle','stopped','finished','failed'):
+            return
+        identity = selected[0]
+        if not self.map_rows[identity]['removable'] or identity in self.queued_map_ids():
+            return
         def work():
             try:
-                operation()
+                self.map_sync.remove_map(identity)
             except (CommunityError, OSError, ValueError) as exc:
                 return str(exc)
             return None

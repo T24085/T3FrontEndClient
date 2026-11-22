@@ -154,7 +154,7 @@ class DesktopTest(unittest.TestCase):
             return [metadata]
         sync.refresh_map_index.side_effect = fetch_index
         sync.local_maps.side_effect = lambda _: [dict(download)]
-        sync.sync_map.side_effect = lambda *_: download.update(state='Downloaded')
+        sync.sync_map.side_effect = lambda *_, **_options: download.update(state='Downloaded')
         sync.remove_map.side_effect = lambda *_: download.update(state='Not downloaded', removable=False)
         root = tk.Tk(); root.withdraw()
         lobby = FakeLobby()
@@ -183,10 +183,11 @@ class DesktopTest(unittest.TestCase):
             sync.prefetch.assert_not_called()
             app.maps_table.selection_set('Stonehenge')
             root.update()
-            self.assertEqual(app.map_download.cget('text'), 'Update')
+            self.assertEqual(app.map_download.cget('text'), 'Download selected')
             app.map_download.invoke()
             wait(lambda: not app.busy and app.map_rows['Stonehenge']['state'] == 'Downloaded')
-            sync.sync_map.assert_called_once_with('Stonehenge', 'a'*64, 'b'*64)
+            self.assertEqual(sync.sync_map.call_args.args, ('Stonehenge', 'a'*64, 'b'*64))
+            self.assertEqual(sync.sync_map.call_args.kwargs['notice_target'], 'Stonehenge')
             app.map_remove.invoke()
             wait(lambda: not app.busy and app.map_rows['Stonehenge']['state'] == 'Not downloaded')
             sync.remove_map.assert_called_once_with('Stonehenge')
@@ -219,6 +220,78 @@ class DesktopTest(unittest.TestCase):
         finally:
             app.close()
             app.close_worker.join(2)
+
+    def test_maps_queue_skips_installed_maps_sorts_and_cancels_individual_or_all_downloads(self):
+        root = tk.Tk()
+        root.withdraw()
+        catalog = [
+            {'id': 'First', 'label': 'First', 'bytes': 4},
+            {'id': 'Second', 'label': 'Second', 'bytes': 12},
+            {'id': 'Installed', 'label': 'Installed', 'bytes': 3},
+        ]
+        metadata = [dict(row, gameTag='Community', contentHash='a'*64, manifestHash='b'*64) for row in catalog]
+        sync = Mock(session_enabled=True, cancelled=Event(), status='', notice_target=None,
+                    progress=None, local_version=0)
+        sync.refresh_map_index.return_value = metadata
+        sync.local_maps.side_effect = lambda rows: [
+            dict(row, state='Downloaded' if row['id']=='Installed' else 'Not downloaded',
+                 removable=False) for row in rows]
+        lobby = FakeLobby()
+        lobby.capabilities = lambda: {'mapFileSync':2, 'mapSessionSync':3, 'matchStartEnabled':True}
+        started, finish = Event(), Event()
+        def download(identity, _content, _manifest, *, obsolete, notice_target):
+            self.assertEqual(notice_target, identity)
+            sync.notice_target, sync.progress = identity, (1, 4)
+            started.set()
+            try:
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    obsolete()
+                    if finish.wait(.015):
+                        return None
+                raise CommunityError('Test download stalled')
+            finally:
+                sync.progress = None
+        sync.sync_map.side_effect = download
+        app = Desktop(root, lobby, lambda _: FakeGame(), map_sync=sync)
+
+        def wait(predicate):
+            deadline = time.monotonic()+3
+            while not predicate() and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            self.assertTrue(predicate())
+
+        try:
+            app.show_panel('maps')
+            wait(lambda: len(app.map_rows)==3 and app.map_rows['First']['state']=='Not downloaded')
+            self.assertEqual(str(app.maps_table.cget('selectmode')), 'extended')
+            app.select_all_maps()
+            app.sort_maps('size')
+            self.assertEqual(app.maps_table.get_children(), ('Installed', 'First', 'Second'))
+            app.sort_maps('size')
+            self.assertEqual(app.maps_table.get_children(), ('Second', 'First', 'Installed'))
+            self.assertEqual(set(app.maps_table.selection()), {'First', 'Second', 'Installed'})
+            app.queue_selected_maps()
+            self.assertTrue(started.wait(2))
+            self.assertEqual(sync.sync_map.call_args.args[0], 'Second')
+            wait(lambda: '1/4 files' in app.map_queue_notice.get())
+
+            app.maps_table.selection_set('First')
+            app.cancel_selected_maps()
+            self.assertEqual(list(app.map_queue), [])
+            self.assertEqual(app.map_queue_cancelled, 1)
+            app.show_panel('lobbies')
+            app.show_panel('maps')
+            self.assertEqual(app.maps_table.get_children(), ('Second', 'First', 'Installed'))
+            self.assertEqual(app.maps_table.selection(), ('First',))
+            app.cancel_all_maps()
+            wait(lambda: app.map_active is None)
+            self.assertIn('2 cancelled', app.map_queue_notice.get())
+            self.assertEqual(sync.sync_map.call_count, 1)
+        finally:
+            finish.set()
+            app.close()
 
     @unittest.skipUnless(sys.platform == 'win32', 'Retail profile import is a Windows Starter control.')
     def test_settings_import_button_uses_saved_profile_only_after_game_exits(self):
