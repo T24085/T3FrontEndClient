@@ -1,12 +1,13 @@
 import gzip
 import hashlib
 from http.client import HTTPResponse
+from threading import Thread
 from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 from zipfile import ZipFile
 
 from map_sync import MapSync, load_overlay, overlay
@@ -130,6 +131,32 @@ class MapSyncTest(unittest.TestCase):
             for item in files[first['id']]:
                 self.assertFalse(self.sync.session_path(item['sha256'] + '.asset').exists())
             self.assertTrue(self.sync.session_path(shared[0]['sha256'] + '.asset').is_file())
+
+    def test_catalog_uses_etag_and_reuses_rows_while_a_download_holds_its_lock(self):
+        entry = {'id': 'Stonehenge', 'label': 'Stonehenge', 'gameTag': 'Community',
+                 'hasObjectives': False, 'bytes': 400, 'fileCount': 3,
+                 'contentHash': 'a'*64, 'manifestHash': 'b'*64}
+        document = {'format': 3, 'maps': [entry], 'coreHash': 'c'*64}
+        raw = encode(document)
+        initial = self.inventory_connection(raw, len(raw))
+        unchanged = MagicMock()
+        unchanged.getresponse.return_value.__enter__.return_value.status = 304
+        modified = encode(dict(document, maps=[dict(entry, label='Renamed')]))
+        changed = self.inventory_connection(modified, len(modified))
+        self.sync.lobby = Mock()
+        self.sync.lobby.request_headers.side_effect = dict
+        with patch.object(self.sync, '_connection', side_effect=[initial, unchanged, changed]):
+            first = self.sync.refresh_map_index()
+            result = []
+            with self.sync.lock:
+                worker = Thread(target=lambda: result.append(self.sync.refresh_map_index()))
+                worker.start()
+                worker.join(2)
+                self.assertFalse(worker.is_alive(), 'Catalog refresh waited for the map download.')
+            self.assertIs(result[0], first)
+            unchanged.request.assert_called_once_with(
+                'GET', SESSION_INDEX, headers={'If-None-Match': '"' + sha256_bytes(raw) + '"'})
+            self.assertEqual(self.sync.refresh_map_index()[0]['label'], 'Renamed')
 
     def test_map_manifest_with_the_wrong_hash_is_rejected(self):
         response = self.inventory_connection(b'{}', 2)

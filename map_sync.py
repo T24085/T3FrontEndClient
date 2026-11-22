@@ -24,6 +24,9 @@ from community_maps import BY_ID, declared_definitions, valid_id
 from verified_file_cache import MAX_MERGED_HOST_FILES, digest
 
 
+NOT_MODIFIED = object()
+
+
 def bounded_read(stream):
     raw = stream.read(MAX_MANIFEST + 1)
     if len(raw) > MAX_MANIFEST:
@@ -149,6 +152,8 @@ class MapSync:
         self.available = False
         self.version = None
         self.session_enabled = False
+        self.map_index_cache = (None, None)
+        self.local_version = 0
         self.core_hash = None
         self.prefetch_lock = threading.Lock()
         self.prefetch_target = None
@@ -168,7 +173,7 @@ class MapSync:
         path = CATALOG_ROUTE if self.version == CATALOG_VERSION else MANIFEST_ROUTE
         return self._document(path)
 
-    def _document(self, path, expected_hash=None):
+    def _document(self, path, expected_hash=None, *, etag=None):
         for attempt in range(3):
             self._check_cancelled()
             try:
@@ -176,8 +181,12 @@ class MapSync:
                     headers = self.lobby.request_headers()
                     if path == CATALOG_ROUTE:
                         headers[OBJECTIVES_HEADER] = '1'
+                    if etag is not None:
+                        headers['If-None-Match'] = etag
                     connection.request('GET', path, headers=headers)
                     with connection.getresponse() as response:
+                        if etag is not None and response.status == 304:
+                            return NOT_MODIFIED
                         if response.status != 200 or response.getheader('Content-Type', '').split(';')[0] != 'application/json':
                             raise CommunityError('Server map inventory is unavailable.')
                         remaining = response.length
@@ -286,6 +295,18 @@ class MapSync:
     def map_index(self):
         return session_index(self._document(SESSION_INDEX))
 
+    def refresh_map_index(self):
+        # Only the Maps catalog worker writes this cache. Downloads use their
+        # own manifest requests and can continue while the index is refreshed.
+        etag, previous = self.map_index_cache
+        document = self._document(SESSION_INDEX, etag=etag)
+        if document is NOT_MODIFIED:
+            return previous
+        rows = session_index(document)
+        current = previous if rows == previous else rows
+        self.map_index_cache = ('"' + sha256_bytes(encode(document)) + '"', current)
+        return current
+
     def session_path(self, name):
         return cache_path(self.workspace, name, session=True)
 
@@ -378,6 +399,7 @@ class MapSync:
                 self._cache_revision(rows, sources, revision, raw, session=True, obsolete=obsolete)
                 self._store(self.session_path(f'map-{map_id}.json'),
                             encode({'revision': revision, 'manifestHash': manifest_hash}))
+                self.local_version += 1
                 self.status = 'Map ready.'
                 return revision
             except (OSError, ValueError, TypeError, KeyError, EOFError, http.client.HTTPException, zlib.error) as exc:
@@ -413,35 +435,36 @@ class MapSync:
                     self.prefetch_target = None
 
     def local_maps(self, index):
-        with self.lock:
-            package = json.loads((self.package / 'package-manifest.json').read_bytes())
-            bundled_groups = None
-            result = []
-            for row in index:
-                receipt = self._receipt(row['id'])
-                state, removable = 'Not downloaded', False
-                if receipt:
-                    removable = True
-                    try:
-                        _, (rows, sources, _, _) = self._cached_session(receipt['revision'], package)
-                        for name, item in rows.items():
-                            path = (self.session_path(item['sha256'] + '.asset') if sources[name] is None
-                                    else self.package / sources[name])
-                            if not self._matches(path, item['bytes'], item['sha256']):
-                                raise ValueError('Missing cached map file.')
-                        state = ('Downloaded' if receipt['manifestHash'] == row['manifestHash']
-                                 else 'Update available')
-                    except (OSError, ValueError, TypeError, KeyError):
-                        pass
-                elif not row['hasObjectives'] and self.bundled_catalog().get(row['id']) == row['contentHash']:
-                    if bundled_groups is None:
-                        _, bundled_groups = map_groups(package)
-                    if all(self._matches(self.package / path, size, sha)
-                           for path, (size, sha) in bundled_groups[row['id']].items()
-                           if path.startswith('content/')):
-                        state = 'Downloaded'
-                result.append(dict(row, state=state, removable=removable))
-            return result
+        # Receipts and assets are written atomically. Concurrent removal is
+        # treated as a cache miss until the next local status refresh.
+        package = json.loads((self.package / 'package-manifest.json').read_bytes())
+        bundled_groups = None
+        result = []
+        for row in index:
+            receipt = self._receipt(row['id'])
+            state, removable = 'Not downloaded', False
+            if receipt:
+                removable = True
+                try:
+                    _, (rows, sources, _, _) = self._cached_session(receipt['revision'], package)
+                    for name, item in rows.items():
+                        path = (self.session_path(item['sha256'] + '.asset') if sources[name] is None
+                                else self.package / sources[name])
+                        if not self._matches(path, item['bytes'], item['sha256']):
+                            raise ValueError('Missing cached map file.')
+                    state = ('Downloaded' if receipt['manifestHash'] == row['manifestHash']
+                             else 'Update available')
+                except (OSError, ValueError, TypeError, KeyError):
+                    pass
+            elif not row['hasObjectives'] and self.bundled_catalog().get(row['id']) == row['contentHash']:
+                if bundled_groups is None:
+                    _, bundled_groups = map_groups(package)
+                if all(self._matches(self.package / path, size, sha)
+                       for path, (size, sha) in bundled_groups[row['id']].items()
+                       if path.startswith('content/')):
+                    state = 'Downloaded'
+            result.append(dict(row, state=state, removable=removable))
+        return result
 
     @staticmethod
     def _matches(path, length, sha):
@@ -478,6 +501,7 @@ class MapSync:
                 path.unlink(missing_ok=True)
             for sha in removed - retained:
                 self.session_path(sha + '.asset').unlink(missing_ok=True)
+            self.local_version += 1
 
     def refresh(self, *, required=None, recheck=False):
         with self.lock:

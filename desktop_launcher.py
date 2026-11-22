@@ -652,6 +652,7 @@ class Desktop:
         self.maybe_auto_join()
         self.render_live_controls()
         if self.current_panel == 'maps':
+            self.refresh_map_states()
             self.render_map_controls()
         if not self.closing: self.poll_handle=self.root.after(150,self.poll)
 
@@ -660,15 +661,17 @@ class Desktop:
         self.capabilities_loaded = True
         if self.map_sync is not None:
             self.map_sync.start(caps.get('mapFileSync'), session_version=caps.get('mapSessionSync'))
+            if self.map_sync.session_enabled and self.maps_panel is not None:
+                if self.map_index_rows is None and caps.get('maps'):
+                    self.render_map_rows([
+                        dict(row, state='Checking…', removable=False) for row in caps['maps']
+                    ])
+                self.refresh_maps()
         self.status.set('Community service connected.')
         self.render(self.room)
         self.render_live_controls()
         if self.room is None and caps.get('lobbyResumeEnabled') is True:
-            def resumed(room):
-                self.render(room)
-                if self.current_panel == 'maps':
-                    self.refresh_maps()
-            self.run_async(self.lobby.resume, resumed)
+            self.run_async(self.lobby.resume, self.render)
         elif self.current_panel=='live':
             self.refresh_live_matches()
         elif self.current_panel == 'maps':
@@ -1086,6 +1089,10 @@ class Desktop:
         self.maps_table.pack(side='left', fill='both', expand=True)
         self.maps_table.bind('<<TreeviewSelect>>', lambda _event: self.render_map_controls())
         self.map_rows = {}
+        self.map_index_rows = None
+        self.map_index_busy = False
+        self.map_state_busy = False
+        self.map_state_version = None
         buttons = tk.Frame(panel, bg=BG)
         buttons.pack(fill='x')
         self.map_download = self.button(buttons, 'Download', lambda: self.manage_map(False))
@@ -1106,49 +1113,95 @@ class Desktop:
         row = self.selected_download()
         enabled = self.map_sync.session_enabled and not self.controls_busy
         active = self.game_status not in ('idle', 'stopped', 'finished', 'failed')
-        self.map_refresh.configure(state='normal' if enabled else 'disabled')
+        self.map_refresh.configure(state='normal' if self.map_sync.session_enabled
+                                   and not self.map_index_busy else 'disabled')
         self.map_download.configure(text='Update' if row and row['state'] == 'Update available' else 'Download',
-                                    state='normal' if enabled and row and row['state'] != 'Downloaded' else 'disabled')
+                                    state='normal' if enabled and row and row['state'] in ('Not downloaded', 'Update available')
+                                    else 'disabled')
         self.map_remove.configure(state='normal' if enabled and row and row['removable'] and not active else 'disabled')
 
-    def load_map_rows(self, operation=None):
+    def render_map_rows(self, rows):
+        updated = {row['id']: row for row in rows}
+        if updated == self.map_rows:
+            return
+        selected = self.maps_table.selection()
+        scroll = self.maps_table.yview()[0]
+        self.maps_table.delete(*self.maps_table.get_children())
+        self.map_rows = updated
+        for row in rows:
+            size = f"{row['bytes']/1024**2:,.1f} MiB" if 'bytes' in row else ''
+            self.maps_table.insert('', 'end', iid=row['id'],
+                                   values=(row['label'], row.get('gameTag', ''), size,
+                                           row.get('manifestHash', '')[:8], row['state']))
+        if selected and selected[0] in updated:
+            self.maps_table.selection_set(selected[0])
+        self.maps_table.yview_moveto(scroll)
+        self.render_map_controls()
+
+    def fetch_map_rows(self, work, finished):
+        results = self.access_messages
+
+        def worker():
+            try:
+                rows, error = work(), None
+            except (CommunityError, OSError, ValueError, TypeError, RecursionError) as exc:
+                rows, error = None, str(exc)
+            results.put(lambda: finished(rows, error))
+
+        threading.Thread(target=worker, name='maps-catalog', daemon=True).start()
+
+    def refresh_maps(self):
+        if not self.capabilities_loaded or self.map_index_busy:
+            return
         if not self.map_sync.session_enabled:
             self.maps_notice.set('Per-map downloads are unavailable on this server.')
             self.render_map_controls()
             return
-        self.maps_notice.set('Checking map downloads…')
+        self.map_index_busy = True
+        if not self.map_rows:
+            self.maps_notice.set('Checking map catalog…')
 
-        def work():
-            try:
-                if operation is not None:
-                    operation()
-                return self.map_sync.local_maps(self.map_sync.map_index()), None
-            except (CommunityError, ValueError, OSError) as exc:
-                return None, str(exc)
-
-        def loaded(result):
-            rows, error = result
+        def loaded(rows, error):
+            self.map_index_busy = False
             if error is not None:
-                self.maps_notice.set(error)
-                self.render_map_controls()
-                return
-            selected = self.maps_table.selection()
-            self.map_rows = {row['id']: row for row in rows}
-            self.maps_table.delete(*self.maps_table.get_children())
-            for row in rows:
-                self.maps_table.insert('', 'end', iid=row['id'],
-                                       values=(row['label'], row['gameTag'], f"{row['bytes']/1024**2:,.1f} MiB",
-                                               row['manifestHash'][:8], row['state']))
-            if selected and selected[0] in self.map_rows:
-                self.maps_table.selection_set(selected[0])
-            self.maps_notice.set('')
+                self.maps_notice.set('Map list may be out of date. ' + error if self.map_rows else error)
+            else:
+                self.maps_notice.set('')
+                if rows is not self.map_index_rows:
+                    self.map_index_rows = rows
+                    self.map_state_version = None
+                    self.render_map_rows([
+                        dict(row, state=previous['state'], removable=previous['removable'])
+                        if (previous := self.map_rows.get(row['id'])) is not None
+                        and previous.get('manifestHash') == row['manifestHash']
+                        else dict(row, state='Checking…', removable=False) for row in rows
+                    ])
+                self.refresh_map_states()
             self.render_map_controls()
 
-        self.run_async(work, loaded)
+        self.fetch_map_rows(self.map_sync.refresh_map_index, loaded)
         self.render_map_controls()
 
-    def refresh_maps(self):
-        self.load_map_rows()
+    def refresh_map_states(self):
+        index = self.map_index_rows
+        version = self.map_sync.local_version
+        if index is None or self.map_state_busy or self.map_state_version == version:
+            return
+        self.map_state_busy = True
+
+        def loaded(rows, error):
+            self.map_state_busy = False
+            if index is not self.map_index_rows or version != self.map_sync.local_version:
+                self.refresh_map_states()
+                return
+            self.map_state_version = version
+            if error is not None:
+                if not self.maps_notice.get():
+                    self.maps_notice.set('Could not check downloaded maps. ' + error)
+                return
+            self.render_map_rows(rows)
+
+        self.fetch_map_rows(lambda: self.map_sync.local_maps(index), loaded)
 
     def manage_map(self, remove):
         row = self.selected_download()
@@ -1157,9 +1210,26 @@ class Desktop:
         if remove:
             if not row['removable'] or self.game_status not in ('idle', 'stopped', 'finished', 'failed'):
                 return
-            self.load_map_rows(lambda: self.map_sync.remove_map(row['id']))
-        elif row['state'] != 'Downloaded':
-            self.load_map_rows(lambda: self.map_sync.sync_map(row['id'], row['contentHash'], row['manifestHash']))
+            operation = lambda: self.map_sync.remove_map(row['id'])
+        elif row['state'] in ('Not downloaded', 'Update available'):
+            operation = lambda: self.map_sync.sync_map(row['id'], row['contentHash'], row['manifestHash'])
+        else:
+            return
+
+        def work():
+            try:
+                operation()
+            except (CommunityError, OSError, ValueError) as exc:
+                return str(exc)
+            return None
+
+        def complete(error):
+            if error:
+                self.maps_notice.set(error)
+            self.map_state_version = None
+            self.refresh_map_states()
+
+        self.run_async(work, complete)
 
     def show_settings(self):
         if self.settings_window is not None and self.settings_window.winfo_exists():

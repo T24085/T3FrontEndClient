@@ -73,17 +73,22 @@ class DesktopTest(unittest.TestCase):
             app.close()
 
     def test_maps_browser_manages_downloads_and_lobby_changes_prefetch_only_the_selection(self):
-        sync = Mock(session_enabled=True, cancelled=Event(), status='', progress=None)
+        sync = Mock(session_enabled=True, cancelled=Event(), status='', progress=None, local_version=0)
         metadata = {'id':'Stonehenge', 'label':'Stonehenge', 'gameTag':'Community', 'bytes':1048576,
                     'contentHash':'a'*64, 'manifestHash':'b'*64}
         download = dict(metadata, state='Update available', removable=True)
-        sync.map_index.return_value = [metadata]
+        release_catalog = Event()
+        def fetch_index():
+            release_catalog.wait(3)
+            return [metadata]
+        sync.refresh_map_index.side_effect = fetch_index
         sync.local_maps.side_effect = lambda _: [dict(download)]
         sync.sync_map.side_effect = lambda *_: download.update(state='Downloaded')
         sync.remove_map.side_effect = lambda *_: download.update(state='Not downloaded', removable=False)
         root = tk.Tk(); root.withdraw()
         lobby = FakeLobby()
-        lobby.capabilities = lambda: {'mapFileSync':2, 'mapSessionSync':3, 'matchStartEnabled':True}
+        lobby.capabilities = lambda: {'mapFileSync':2, 'mapSessionSync':3, 'matchStartEnabled':True,
+                                      'maps':[{'id':'Stonehenge', 'label':'Stonehenge'}]}
         app = Desktop(root, lobby, lambda _: FakeGame(), map_sync=sync)
 
         def wait(predicate):
@@ -98,10 +103,13 @@ class DesktopTest(unittest.TestCase):
         try:
             wait(lambda: not app.busy)
             sync.start.assert_called_once_with(2, session_version=3)
-            sync.map_index.assert_not_called()
-            sync.prefetch.assert_not_called()
             app.show_panel('maps')
-            wait(lambda: not app.busy and 'Stonehenge' in app.map_rows)
+            self.assertEqual(app.maps_table.get_children(), ('Stonehenge',))
+            self.assertTrue(app.map_index_busy)
+            release_catalog.set()
+            wait(lambda: app.map_rows.get('Stonehenge', {}).get('state') == 'Update available')
+            sync.refresh_map_index.assert_called_once()
+            sync.prefetch.assert_not_called()
             app.maps_table.selection_set('Stonehenge')
             root.update()
             self.assertEqual(app.map_download.cget('text'), 'Update')
@@ -111,6 +119,25 @@ class DesktopTest(unittest.TestCase):
             app.map_remove.invoke()
             wait(lambda: not app.busy and app.map_rows['Stonehenge']['state'] == 'Not downloaded')
             sync.remove_map.assert_called_once_with('Stonehenge')
+            joining, release = Event(), Event()
+
+            def join():
+                joining.set()
+                release.wait(2)
+
+            try:
+                self.assertTrue(app.run_async(join, lambda _: None))
+                self.assertTrue(joining.wait(1))
+                sync.refresh_map_index.side_effect = CommunityError('Temporary network problem')
+                app.show_panel('lobbies')
+                app.show_panel('maps')
+                self.assertEqual(app.maps_table.get_children(), ('Stonehenge',))
+                wait(lambda: 'may be out of date' in app.maps_notice.get())
+                self.assertTrue(app.busy)
+                self.assertEqual(app.maps_table.selection(), ('Stonehenge',))
+            finally:
+                release.set()
+                wait(lambda: not app.busy)
             original = dict(lobby.room, contentHash='a'*64, manifestHash='b'*64)
             app.render(original)
             app.render(original)
