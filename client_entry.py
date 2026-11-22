@@ -206,6 +206,20 @@ end
 """
 
 
+def renderer_arguments(*, headless, fullscreen, test_render_profile):
+    if headless:
+        return ['-nullrhi', '-nosound', '-unattended']
+    if test_render_profile:
+        # Keep UMG and the native renderer active for the two-client HUD replay.
+        return ['-d3d11', '-windowed', '-resx=960', '-resy=540', '-forceres', '-nosound',
+                '-ini:Engine:[SystemSettings]:t.MaxFPS=30',
+                '-ini:Engine:[SystemSettings]:r.Streaming.PoolSize=128',
+                '-ini:Engine:[SystemSettings]:r.Streaming.MaxTempMemoryAllowed=32',
+                '-ini:Engine:[SystemSettings]:r.ShadowQuality=0',
+                '-ini:Engine:[SystemSettings]:r.VolumetricCloud=0']
+    return ['-d3d11', *(['-fullscreen'] if fullscreen else [])]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--endpoint')
@@ -226,8 +240,11 @@ def main():
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--rehash', action='store_true')
     parser.add_argument('--headless', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--test-render-profile', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--seconds', type=float, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.test_render_profile and (not args.test_source or args.headless or args.prepare_only or args.check):
+        raise ValueError('The test render profile requires a rendered isolated match join.')
     if args.public_session and (args.spectate or args.prepare_only or args.check or not args.expected_map):
         raise ValueError('Public CTF requires an admitted match and its verified map.')
     if args.spectate:
@@ -354,7 +371,8 @@ def main():
                 '-noSteamV2', '-noeos', '-Port=0', '-REAResearchScope=' + uuid.uuid4().hex]
         if args.test_source:
             argv.append('-MULTIHOME=' + args.test_source)
-        argv += ['-nullrhi', '-nosound', '-unattended'] if args.headless else ['-d3d11'] + (['-fullscreen'] if player_profile.fullscreen_default else [])
+        argv += renderer_arguments(headless=args.headless, fullscreen=player_profile.fullscreen_default,
+                                   test_render_profile=args.test_render_profile)
         cloud_map = args.expected_map if not args.headless and args.expected_map in STOCK_CLOUD_MAPS else ''
         if args.spectate and (any(not (ROOT/name).is_file()for name in ('lua/spectator_client.lua','lua/spectator_materials.lua'))
                 or any('@@' + tag + '@@' not in template for tag in
@@ -376,7 +394,8 @@ def main():
                 from map_soundtracks import soundtrack_player
             if soundtrack_player is not None:
                 routes = audio.enter_context(soundtrack_player(
-                    ROOT, run, package, enabled=not args.headless and not args.spectate, workspace=workspace))
+                    ROOT, run, package, enabled=not (args.headless or args.spectate or args.test_render_profile),
+                    workspace=workspace))
                 if routes:
                     keys = ','.join(f'[{json.dumps(name)}]=true' for name in routes)
                     session = json.dumps(run.as_posix(), ensure_ascii=False)

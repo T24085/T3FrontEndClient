@@ -195,6 +195,21 @@ class ClientPreparationTest(unittest.TestCase):
   descriptor=self.prepare();other=self.root/'other';other.mkdir()
   with self.assertRaisesRegex(ValueError,'different installation'):
    consume(self.package,other,self.workspace,descriptor['path'],descriptor['sha256'])
+ def test_hud_replay_keeps_rendering_and_leaves_normal_rendering_flags_alone(self):
+  from client_entry import renderer_arguments
+  self.assertEqual(renderer_arguments(headless=False, fullscreen=True, test_render_profile=False),
+                   ['-d3d11', '-fullscreen'])
+  self.assertEqual(renderer_arguments(headless=True, fullscreen=False, test_render_profile=False),
+                   ['-nullrhi', '-nosound', '-unattended'])
+  flags=renderer_arguments(headless=False, fullscreen=True, test_render_profile=True)
+  self.assertTrue({'-d3d11', '-windowed', '-resx=960', '-resy=540'} <= set(flags))
+  self.assertFalse({'-nullrhi', '-fullscreen'} & set(flags))
+ def test_hud_replay_profile_is_rejected_on_nonisolated_and_headless_joins(self):
+  from client_entry import main
+  for context in ([], ['--test-source', '127.0.0.2', '--headless']):
+   with self.subTest(context=context), patch.object(sys, 'argv', ['client.py', '--test-render-profile', *context]):
+    with self.assertRaisesRegex(ValueError, 'rendered isolated match join'):
+     main()
  def test_actual_parent_verify_game_identity_contract_can_prepare_and_consume(self):
   parent=Path(__file__).resolve().parent/'lib/client_support.py'
   spec=importlib.util.spec_from_file_location('pinned_client_identity_owner',parent)
