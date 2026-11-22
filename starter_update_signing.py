@@ -2,7 +2,11 @@
 import base64
 import ctypes
 import hashlib
+import os
+from pathlib import Path
 import struct
+import subprocess
+from tempfile import TemporaryDirectory
 
 
 PUBLIC_MODULUS = base64.b64decode(
@@ -23,6 +27,8 @@ class PKCS1PaddingInfo(ctypes.Structure):
 def verify(payload, signature, *, modulus=PUBLIC_MODULUS):
     if len(signature) != len(modulus):
         return False
+    if os.name != 'nt':
+        return verify_openssl(payload, signature)
     cng = ctypes.WinDLL('bcrypt.dll', use_last_error=True, winmode=0x800)
     handle = ctypes.c_void_p
     dword = ctypes.c_uint32
@@ -48,3 +54,20 @@ def verify(payload, signature, *, modulus=PUBLIC_MODULUS):
             cng.BCryptDestroyKey(key)
     finally:
         cng.BCryptCloseAlgorithmProvider(provider, 0)
+
+
+def verify_openssl(payload, signature):
+    # Encode the same pinned RSA key as a PKCS#1 public-key DER sequence.
+    modulus = b'\0' + PUBLIC_MODULUS
+    body = b'\x02\x82' + len(modulus).to_bytes(2, 'big') + modulus + b'\x02\x03' + PUBLIC_EXPONENT
+    key = b'\x30\x82' + len(body).to_bytes(2, 'big') + body
+    with TemporaryDirectory(prefix='clan-wars-signature-') as directory:
+        root = Path(directory)
+        public_key, signed = root/'key.der', root/'signature.bin'
+        public_key.write_bytes(key)
+        signed.write_bytes(signature)
+        result = subprocess.run(
+            ['openssl', 'dgst', '-sha256', '-keyform', 'DER', '-verify', str(public_key), '-signature', str(signed)],
+            input=payload, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False,
+        )
+    return result.returncode == 0

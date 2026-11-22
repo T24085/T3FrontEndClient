@@ -53,6 +53,31 @@ class ClientPreparationTest(unittest.TestCase):
   self.assertEqual((game/'Topaz/Content/Maps/map.uasset').read_bytes(),b'cooked-map')
   self.assertEqual((game/EXECUTABLE.parent/'ue4ss/runtime.dll').read_bytes(),b'runtime')
   self.assertFalse((run/'profile').exists());self.assertFalse(record['native_started']);self.assertFalse(record['profile_created'])
+ @unittest.skipUnless(sys.platform == 'win32', 'Uses Win32 volume probes')
+ def test_non_root_volume_probe_falls_back_to_verified_private_copy(self):
+  import bulk_asset_cache as bulk
+  from types import SimpleNamespace
+  from unittest.mock import Mock
+  for fail in ('GetVolumePathNameW','GetVolumeInformationW'):
+   with self.subTest(fail=fail):
+    def volume_path(_, buf, __):
+     buf.value=self.workspace.anchor
+     return True
+    kernel=SimpleNamespace(GetVolumePathNameW=Mock(side_effect=volume_path),
+                           GetDriveTypeW=Mock(return_value=3),GetVolumeInformationW=Mock(return_value=False))
+    if fail=='GetVolumePathNameW':kernel.GetVolumePathNameW.side_effect=lambda *_:False
+    with patch.object(bulk.ctypes,'WinDLL',return_value=kernel),patch.object(bulk.ctypes,'get_last_error',return_value=144):
+     path=self.workspace/fail
+     cache=BulkStageCache(path/'cache',emit=lambda _:None)
+     self.assertFalse(cache.enabled)
+     self.assertFalse(cache.root.exists())
+     source=self.source/'Topaz/Content/Paks/original.pak'; target=path/'session/original.pak'
+     self.assertEqual(cache.stage(source,target,expected_sha256=digest(source),expected_bytes=source.stat().st_size),'copy')
+     self.assertEqual(target.read_bytes(),source.read_bytes())
+     self.assertFalse(target.samefile(source))
+    with patch.object(bulk.ctypes,'WinDLL',return_value=kernel),patch.object(bulk.ctypes,'get_last_error',return_value=5):
+     with self.assertRaises(OSError) as error:bulk.local_filesystem(self.workspace)
+     self.assertEqual(error.exception.winerror,5)
  def test_private_copy_is_exclusive_and_never_a_hardlink(self):
   source=self.source/EXECUTABLE;target=self.root/'private.exe'
   client_preparation._copy_private(source,target)

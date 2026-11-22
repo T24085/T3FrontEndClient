@@ -1,0 +1,33 @@
+CLAN WARS FOR LINUX AND STEAM DECK
+
+1. Install TRIBES 3: Rivals in Steam. On Steam Deck, switch to Desktop Mode.
+2. Extract this whole ZIP to a permanent folder such as Home/Games.
+   Open that folder and run "Install Clan Wars.sh". If your file manager
+   opens it as text, open a terminal in the same folder and run:
+
+       sh "Install Clan Wars.sh"
+
+   The installer unpacks the included Linux Python on its first run.
+3. In Steam, open TRIBES 3: Rivals > Properties > Compatibility and force
+   Proton. Use Proton 10.0-4 as a starting point if it is available.
+4. In General > Launch Options, paste the entire line from Steam setup,
+   including %command%. Click Play. Later, use Play to start Clan Wars.
+
+The ZIP includes the Linux installer, both Python runtimes, the signed Starter,
+and the packaged maps. Steam installs the original game and Proton. The Starter
+requires a live connection to the Clan Wars server for multiplayer and updates.
+
+If Play returns immediately, reopen the installer and choose Launch diagnostics.
+You can also run this from the extracted folder:
+
+    sh "Install Clan Wars.sh" --diagnostics
+
+Check the exact option with:
+
+    sh "Install Clan Wars.sh" --print-launch-option
+
+If you move the extracted folder, reopen the installer and paste its new line.
+To launch regular TRIBES 3 again, clear the Clan Wars launch option in Steam.
+
+This client targets Linux x86-64 and Steam Deck Desktop Mode with native Steam.
+Full gameplay on Proton, Flatpak Steam, and Gaming Mode require player testing.

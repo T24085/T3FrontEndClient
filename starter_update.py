@@ -1,5 +1,6 @@
 """Install signed Community Starter changes before importing the desktop launcher."""
 from base64 import b64decode
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
 import json
@@ -17,6 +18,7 @@ from starter_update_signing import verify
 
 CHANNEL = 'windows-r12-v1'
 DIRECT_CHANNEL = 'windows-direct-r12-v1'
+LINUX_CHANNEL = 'linux-direct-v1'
 BASE_URL = 'https://github.com/T24085/T3FrontEndClient/releases/download/starter-updates-v1/'
 INDEX = 'starter-update.json'
 ALLOWED = frozenset({
@@ -30,11 +32,15 @@ ALLOWED = frozenset({
 UPDATE_CHANNELS = {
     CHANNEL: (BASE_URL, ALLOWED),
     DIRECT_CHANNEL: (None, ALLOWED | {'direct_client.py', 'direct_network.py'}),
+    LINUX_CHANNEL: (None, ALLOWED | {'direct_client.py', 'direct_network.py',
+                                    'linux_bootstrap.pyw', 'linux_launcher.py',
+                                    'ubuntu_join_worker.py', 'ubuntu_starter.py'}),
 }
 MAX_INDEX = 32768
 MAX_FILE = 1024 * 1024
 MAX_TOTAL = 8 * MAX_FILE
 MAX_LIFETIME = 180 * 86400
+LINUX_CHUNK_BYTES = 32 * 1024
 INVENTORY = 'package-manifest.json'
 STATE_DIRECTORY = '.starter-update'
 
@@ -71,11 +77,19 @@ def decode_index(raw, *, channel=CHANNEL, verifier=verify, now=None):
     files = index['files']
     if not isinstance(files, dict) or not files.keys() <= UPDATE_CHANNELS[channel][1]:
         raise ValueError('Update contains an unsupported file path.')
+    required = {'bytes', 'sha256'}
+    allowed = required | {'chunks'} if channel == LINUX_CHANNEL else required
     for row in files.values():
-        if (not isinstance(row, dict) or row.keys() != {'bytes', 'sha256'}
+        if (not isinstance(row, dict) or not required <= row.keys() <= allowed
                 or type(row['bytes']) is not int or not 0 < row['bytes'] <= MAX_FILE
                 or not isinstance(row['sha256'], str) or re.fullmatch('[a-f0-9]{64}', row['sha256']) is None):
             raise ValueError('Invalid update file inventory.')
+        if 'chunks' in row:
+            chunks = row['chunks']
+            count = (row['bytes'] + LINUX_CHUNK_BYTES - 1) // LINUX_CHUNK_BYTES
+            if (not isinstance(chunks, list) or count < 2 or len(chunks) != count
+                    or any(not isinstance(part, str) or re.fullmatch('[a-f0-9]{64}', part) is None for part in chunks)):
+                raise ValueError('Invalid Linux update chunks.')
     if sum(row['bytes'] for row in files.values()) > MAX_TOTAL:
         raise ValueError('Update exceeds its total size limit.')
     return index
@@ -114,7 +128,7 @@ def direct_update_authority(root):
 
 def fetcher(*, channel=CHANNEL, ssl_context=None, root=None):
     headers = {'User-Agent': 'TRIBES3-Community-Starter-r12', 'Cache-Control': 'no-cache'}
-    if channel == DIRECT_CHANNEL:
+    if channel in (DIRECT_CHANNEL, LINUX_CHANNEL):
         from direct_update_contract import ROUTE
         authority = direct_update_authority(root)
         base_url = 'https://' + authority + ROUTE
@@ -124,14 +138,15 @@ def fetcher(*, channel=CHANNEL, ssl_context=None, root=None):
         base_url = UPDATE_CHANNELS[channel][0]
         redirect = GitHubRedirect()
     opener = build_opener(redirect, HTTPSHandler(context=ssl_context))
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + (180 if channel == LINUX_CHANNEL else 20)
 
     def fetch(name, bound):
         left = deadline - time.monotonic()
         if left <= 0:
             raise TimeoutError('The Community Starter update check timed out.')
         request = Request(base_url + name, headers=headers)
-        with opener.open(request, timeout=min(4, left)) as response:
+        timeout = 10 if channel == LINUX_CHANNEL else 4
+        with opener.open(request, timeout=min(timeout, left)) as response:
             if response.status != 200:
                 raise OSError('Update download did not complete.')
             raw = bytearray()
@@ -215,17 +230,41 @@ def accept(state):
     os.replace(pending, previous)
 
 
+def download_update_file(row, fetch):
+    if 'chunks' not in row:
+        return fetch(f"starter-file-{row['sha256']}.bin", row['bytes'])
+
+    def download(pinned, length):
+        raw = fetch(f'starter-file-{pinned}.bin', length)
+        if (len(raw), sha(raw)) != (length, pinned):
+            raise ValueError('Starter update file failed verification.')
+        return raw
+
+    sizes = [min(LINUX_CHUNK_BYTES, row['bytes'] - i * LINUX_CHUNK_BYTES)
+             for i in range(len(row['chunks']))]
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        return b''.join(workers.map(download, row['chunks'], sizes))
+
+
 def prepare(root, state, *, channel=CHANNEL, fetch=None, verifier=verify):
     fetch = fetch or fetcher(channel=channel, root=root)
     inventory = inside(root, INVENTORY)
     original = inventory.read_bytes()
     manifest = json.loads(original)
-    if ('direct_host_contract' in manifest) != (channel == DIRECT_CHANNEL):
+    linux = channel == LINUX_CHANNEL
+    if (('direct_host_contract' in manifest) != (channel in (DIRECT_CHANNEL, LINUX_CHANNEL))
+            or linux and manifest.get('linux_starter_update_channel') != LINUX_CHANNEL):
         raise ValueError('Update channel does not match this Starter package.')
-    revision = manifest.get('starter_update_revision', 0)
+    revision_key = 'linux_starter_update_revision' if linux else 'starter_update_revision'
+    files_key = 'linux_starter_update_files' if linux else 'starter_update_files'
+    revision = manifest.get(revision_key, 0)
     rejected = inside(state, 'rejected.json')
     rejected_revision = json.loads(rejected.read_bytes()) if rejected.exists() else 0
-    index = decode_index(fetch(INDEX, MAX_INDEX), channel=channel, verifier=verifier)
+    index_name = INDEX
+    if linux:
+        from direct_update_contract import LINUX_INDEX
+        index_name = LINUX_INDEX
+    index = decode_index(fetch(index_name, MAX_INDEX), channel=channel, verifier=verifier)
     if index['revision'] <= max(revision, rejected_revision):
         return False
     rows = {row['path']: row for row in manifest['files']}
@@ -233,7 +272,7 @@ def prepare(root, state, *, channel=CHANNEL, fetch=None, verifier=verify):
     files = index['files']
     if not files.keys() <= rows.keys() or files.keys() & frozen:
         raise ValueError('Update does not match this Starter package.')
-    if not set(manifest.get('starter_update_files', [])) <= files.keys():
+    if not set(manifest.get(files_key, [])) <= files.keys():
         raise ValueError('Update is missing files managed by a previous revision.')
     changes, originals = {}, {}
     for name, row in files.items():
@@ -243,14 +282,14 @@ def prepare(root, state, *, channel=CHANNEL, fetch=None, verifier=verify):
             raise ValueError('Starter file differs from its inventory: ' + name)
         if (len(previous), sha(previous)) == (row['bytes'], row['sha256']):
             continue
-        raw = fetch('starter-file-' + row['sha256'] + '.bin', row['bytes'])
+        raw = download_update_file(row, fetch)
         if (len(raw), sha(raw)) != (row['bytes'], row['sha256']):
             raise ValueError('Starter update file failed verification: ' + name)
-        if name.endswith('.py'):
+        if name.endswith(('.py', '.pyw')):
             compile(raw, name, 'exec')
         changes[name], originals[name] = raw, previous
-        rows[name].update(row)
-    manifest.update(starter_update_revision=index['revision'], starter_update_files=sorted(files))
+        rows[name].update(bytes=row['bytes'], sha256=row['sha256'])
+    manifest.update({revision_key: index['revision'], files_key: sorted(files)})
     changes[INVENTORY], originals[INVENTORY] = encoded(manifest), original
     stage = inside(state, 'staging-' + uuid.uuid4().hex)
     stage.mkdir()
@@ -281,21 +320,27 @@ def prepare(root, state, *, channel=CHANNEL, fetch=None, verifier=verify):
 def run_startup(root, launch, *, channel=CHANNEL, ssl_context=None):
     """Update and launch under the same per-package lock."""
     with startup_lock(root) as state:
-        if recover(root, state, channel=channel):
-            print('Restored the previous Starter after an interrupted update.')
-        applied = False
-        try:
-            fetch = fetcher(channel=channel, ssl_context=ssl_context, root=root)
-            applied = prepare(root, state, channel=channel, fetch=fetch)
-        except Exception as exc:
-            print('Starter update skipped:', exc)
-            recover(root, state, channel=channel)
+        return launch_updated(root, state, launch, channel=channel, ssl_context=ssl_context)
 
-        try:
-            launch(on_ready=(lambda: accept(state)) if applied else None)
-        except BaseException as exc:
-            if applied and recover(root, state, channel=channel):
-                raise RuntimeError('The previous Starter was restored. Reopen Starter to continue.') from exc
-            raise
-        if applied:
-            recover(root, state, channel=channel)
+
+def launch_updated(root, state, launch, *, channel, ssl_context=None):
+    """Run the update transaction while the caller holds its startup lock."""
+    if recover(root, state, channel=channel):
+        print('Restored the previous Starter after an interrupted update.')
+    applied = False
+    try:
+        fetch = fetcher(channel=channel, ssl_context=ssl_context, root=root)
+        applied = prepare(root, state, channel=channel, fetch=fetch)
+    except Exception as exc:
+        print('Starter update skipped:', exc)
+        recover(root, state, channel=channel)
+
+    try:
+        result = launch(on_ready=(lambda: accept(state)) if applied else None)
+    except BaseException as exc:
+        if applied and recover(root, state, channel=channel):
+            raise RuntimeError('The previous Starter was restored. Reopen Starter to continue.') from exc
+        raise
+    if applied:
+        recover(root, state, channel=channel)
+    return result

@@ -220,6 +220,134 @@ Katabatic T2 descriptor in the owned session directory. A signed runtime
 takes precedence over the archive's runtime. Verified packaged map descriptors
 take precedence over fallback descriptors, including an explicit opt-out.
 
+# Native Ubuntu Public CTF and Maps
+
+The Linux update inherits the live team rosters, join choices and cached Maps
+browser from the paired signed Direct Starter build. The native launcher
+carries the requested team through Steam to the owned Proton join worker.
+Auto Balance and Rejoin use the default seat request, including for saved
+handoffs from older builds. The Linux feed must ship the shared fixes and the
+native handoff changes together.
+
+# Native Ubuntu spectating and armor
+
+Ubuntu enables the Direct Lobby Browser spectator controls and starts an
+owned Proton observer process using the reservation from the launcher. The
+Armor panel uses the same server catalog, saved choices and verified
+models as Windows, with an EGL preview on Ubuntu.
+
+# Native Ubuntu Settings and Tool Tips
+
+The Ubuntu sidebar shows the same host-delivered Tool Tips and announcements
+as the Direct Windows launcher. Settings saves a Warrior Name, stores
+proximity-voice preferences for the Proton game worker, and queues retail
+key bindings and game options for import before the next match. The import
+uses the same profile merge and backups as the Windows release.
+
+# Native Ubuntu join paths
+
+The Proton bridge converts the game and workspace arguments to paths before
+passing them to the Ubuntu join worker, which uses the workspace to locate
+its desktop process-control directory.
+
+# Native Ubuntu auto-join and startup diagnostics
+
+Linux uses the same once-per-match auto-join as the Windows Starter for
+assigned players. The name lookup recognizes Steam Snap's common and
+current config paths and retries while the name field is empty. Proton
+startup exceptions now reach the launcher status, and early exits show
+the exit code and the most specific available log.
+
+# Native Ubuntu Proton path translation
+
+The Steam wrapper resolves each launch path using the selected Proton
+prefix. It can use existing drive mappings if Proton emits extra runtime
+output or does not return a usable path for the initial probe. The join
+directory can use a different Wine drive from the install. The preflight
+log is saved with the join attempt. The Linux feed embeds the verified
+Starter source revision so the sidebar shows the running build.
+
+# Native Ubuntu Steam Snap handoff
+
+The Ubuntu launcher uses Steam Snap's common data directory for the handoff,
+Proton prefix, and game workspace when it launches the Snap. The native
+launcher and Snap wrapper share the game-session lock. Startup waits up to
+ten minutes for Steam to invoke the wrapper, and the Proton worker measures
+its own startup window from the claim. The player name defaults to Steam's
+last-used persona and can still be edited.
+
+# Native Ubuntu Starter Preview 6 r74
+
+Preview 6 packages the verified Linux base with the current signed Direct
+Starter r74 update. It includes per-match map sync, a shared Direct admission
+for each Steam handoff, Wine's supported player-settings lookup, and the
+workspace path required for the owned desktop Job receipt. The r74 profile
+module retains its Ubuntu-specific Wine compatibility change. The launcher
+uses the r74 Phoenix branding and corrected Steam Setup instructions.
+
+The default install folder is `~/Games/Clan Wars Ubuntu Preview 6 r74`.
+Use Steam Setup to copy the launch option for this folder into Steam.
+
+Ubuntu WSL verified the complete installer archive and opened the packaged
+launcher with its bundled Python. The lobby advertised 26 maps. A full
+Steam/Proton match join is pending.
+
+# Native Ubuntu Starter Preview 5 r70
+
+The Ubuntu installer combines the verified r59 Linux base and its 24 bundled
+maps with the 17 exact files from the signed Direct Starter r70 feed. The build
+checks the signed index, the file inventory, and every overlay digest. It keeps
+the verified-copy fallback for Proton volume root errors and uses the r70
+package and preparation readers. Preview 5 r70 has its own install folder.
+After installing, replace the Steam launch option using its Steam Setup panel.
+
+Ubuntu WSL verified the installer archive and ran the packaged launcher with
+its bundled Python. The launcher produced the Preview 5 Steam option and
+connected to the live lobby, which advertised 25 maps. A full Steam/Proton
+match join is pending.
+
+The original Preview 5 Steam worker negotiated only the legacy map catalog,
+even when its launcher prefetched the match map through the per-session API.
+The corrected worker honors `mapSessionSync` during Join Game. Generate a
+small in-place repair for existing installations with
+`tools/build_ubuntu_manifest_repair.py --preview5-map-sync` and the original
+Preview 5 `.run` as input. The repair verifies the old worker digest, updates
+the inventory, and leaves the Steam launch option in place.
+
+The Join repair also gives the Starter window and Steam worker the same
+Direct session ID for each attempt. Before the repair, a background lobby
+refresh could replace the worker's UDP grant during preparation. The next
+target read then contained a different loopback port for the same match and
+raised the changed-match error. The r70 client and host grant code reproduced
+the race in a local fixture. The Ubuntu repair accepts both the original
+Preview 5 files and the earlier map-sync repair.
+
+The player-settings repair also uses Wine's supported LocalAppData lookup.
+Wine rejects the Windows package-redirection flag with `0x80070057` before
+the native game starts. The Ubuntu inventory keeps the r70 profile module
+with this compatibility change, including its existing profile path and
+settings handling. The repair applies to all three distributed Preview 5
+variants. The bundled Windows Python reproduced the error under Wine and
+then wrote and reopened the same test preferences across separate processes
+with the repaired module.
+
+The game-launch repair writes the desktop Job receipt under the same
+`game-files/direct-desktop-control` directory Windows Starter uses. Proton
+previously wrote it under the individual join request, which failed the stable
+game's receipt location check before native launch. The repair retains the
+existing path, PID, and process-cleanup checks for Job ownership.
+The packaged Windows Python reproduced the old rejection under Wine. The
+repaired worker then launched a harmless child in a nested Job, confirmed both
+Jobs were empty, and cleared the stable reservation from the terminal receipt.
+
+# Native Ubuntu Starter Preview 4
+
+Join Game stages verified files by private copy when its Windows compatibility
+layer rejects a nested Linux mount with WinError 144. Confirmed NTFS retains its
+existing hardlink path. The Ubuntu installer keeps the r59 payload and all 24
+maps, plus the Preview 3 inventory fixes. Preview 4 uses a separate install
+folder, so refresh Steam's launch options through Steam Setup after installing.
+
 # Native flag widget callback
 
 Both original flag widgets require the flag actor, current holder info and

@@ -21,6 +21,7 @@ class BulkCacheError(ValueError):
 
 
 DISK_RESERVE_BYTES = 2 * 1024 * 1024 * 1024
+ERROR_DIR_NOT_ROOT = 144
 
 
 def local_filesystem(path):
@@ -33,7 +34,10 @@ def local_filesystem(path):
     get_path.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32)
     get_path.restype = ctypes.c_int
     if not get_path(str(Path(path).resolve(strict=True)), volume, len(volume)):
-        raise ctypes.WinError(ctypes.get_last_error())
+        error = ctypes.get_last_error()
+        if error == ERROR_DIR_NOT_ROOT:
+            return None
+        raise ctypes.WinError(error)
     drive_type = kernel.GetDriveTypeW
     drive_type.argtypes, drive_type.restype = (ctypes.c_wchar_p,), ctypes.c_uint32
     if drive_type(volume.value) != 3:  # DRIVE_FIXED
@@ -45,7 +49,12 @@ def local_filesystem(path):
                      ctypes.c_wchar_p, ctypes.c_uint32)
     info.restype = ctypes.c_int
     if not info(volume.value, None, 0, None, None, None, filesystem, len(filesystem)):
-        raise ctypes.WinError(ctypes.get_last_error())
+        error = ctypes.get_last_error()
+        if error == ERROR_DIR_NOT_ROOT:
+            # Wine can report a nested Unix mount as the volume path but
+            # reject it here. Treat it as unknown, never as a hardlink volume.
+            return None
+        raise ctypes.WinError(error)
     return filesystem.value
 
 

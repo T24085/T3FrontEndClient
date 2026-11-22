@@ -15,3 +15,22 @@ The Direct package builder installs the signed updater. Players switch once to a
 Build Direct updates with `--channel windows-direct-r12-v1`. When supplying `--previous`, use the last signed Direct index. The Direct channel also accepts `direct_client.py` and `direct_network.py` from `experimental/direct-hosting/src`. Coordinate any direct protocol changes with the host release.
 
 Publish the signed artifacts to `operator/direct-local/starter-updates` on the friend host. Upload and verify the content files first, then replace `starter-update.json` atomically using a temporary file in that directory. Keep the previous index and its content files available during the change. The running host serves the new index on the next request. Keep the private signing key on the release operator's machine.
+
+## Linux Direct Starter
+
+Preview 6 r74 can enable automatic updates with the one-time shell script.
+Create it with `python tools/build_ubuntu_update.py enable <preview6.run> <output.sh>`.
+Linux installers from Preview 7 onward include the bootstrap. Normal desktop
+startup checks the Linux feed, defers updates during a game session, and keeps
+the existing Steam launch option. It verifies the same release signing key
+through Ubuntu's OpenSSL and restores the previous runtime if startup fails.
+
+To prepare a release, run `python tools/build_ubuntu_update.py feed <preview6.run> <output-directory> --signed-snapshot <verified-windows-snapshot> --revision <linux-revision> --certificate <thumbprint>`.
+Increment the Linux revision independently. The build carries forward the
+signed Windows Direct runtime, retains the Proton compatibility overlay, and
+adds the native Ubuntu modules. Upload and verify the content files in the
+same host directory before replacing `starter-linux-update.json` atomically.
+The Linux build splits larger files into individually signed-index-verified
+32 KiB downloads. The launcher verifies the reconstructed files before
+installing them. Renew the Linux index before its 120-day expiration. Use a
+full installer or a separate bootstrap repair for changes to the updater.
