@@ -391,3 +391,66 @@ class UdpClient:
         self.rebind_until = time.monotonic() + 180
 
     def close(self):self.stop.set();self.thread.join(3);self.local.close();self.wire.close()
+
+
+TOOL_TIPS_ROUTE = '/api/client-tool-tips'
+TOOL_TIPS_LIMIT = 16384
+TOOL_TIPS_TABS = frozenset({'all', 'create_lobby', 'lobby_browser', 'maps',
+                           'public_ctf', 'armor', 'settings'})
+
+
+def decode_tool_tips(data):
+    """Validate the optional text-only host document for both ends of the connection."""
+    from datetime import datetime
+
+    if not isinstance(data, dict) or set(data) != {'version', 'admin_messages', 'tips'} or data['version'] != 1:
+        raise ValueError('Expected a version 1 Tool Tips document.')
+    seen = set()
+    for section in ('admin_messages', 'tips'):
+        rows = data[section]
+        if not isinstance(rows, list) or len(rows) > 24:
+            raise ValueError('Each Tool Tips section supports up to 24 entries.')
+        for row in rows:
+            common = {'id', 'text', 'color', 'starts', 'expires', 'ack'}
+            allowed = common | ({'tab', 'sticky', 'ack_target', 'priority'} if section == 'tips' else set())
+            if not isinstance(row, dict) or row.keys() - allowed:
+                raise ValueError('Unexpected Tool Tips fields.')
+            key, text = row.get('id'), row.get('text')
+            if (not isinstance(key, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', key)
+                    or key in seen or not isinstance(text, str) or not 1 <= len(text.strip()) <= 240
+                    or any(ord(char) < 32 and char != '\n' for char in text)):
+                raise ValueError('Tool Tips entries need unique IDs and 1 to 240 characters.')
+            seen.add(key)
+            color = row.get('color', '#eaf1f8')
+            if not isinstance(color, str) or not re.fullmatch(r'#[0-9A-Fa-f]{6}', color):
+                raise ValueError('Use a six-digit hex color.')
+            times = []
+            for field in ('starts', 'expires'):
+                timestamp = row.get(field)
+                if timestamp is None:
+                    times.append(None)
+                    continue
+                if not isinstance(timestamp, str) or not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ', timestamp):
+                    raise ValueError('Use UTC timestamps such as 2026-11-22T01:00:00Z.')
+                times.append(datetime.fromisoformat(timestamp.replace('Z', '+00:00')))
+            if all(times) and times[0] >= times[1]:
+                raise ValueError('Expiry must follow the start.')
+            ack = row.get('ack', 'none')
+            if section == 'admin_messages':
+                if ack not in ('none', 'click'):
+                    raise ValueError('Choose click acknowledgement or none.')
+                continue
+            if (row.get('tab', 'all') not in tuple(TOOL_TIPS_TABS)
+                    or type(row.get('sticky', False)) is not bool
+                    or type(row.get('priority', 0)) is not int
+                    or not -1000 <= row.get('priority', 0) <= 1000
+                    or ack not in ('none', 'click', 'open_tab', 'setting_changed')):
+                raise ValueError('Invalid Tool Tips targeting.')
+            target = row.get('ack_target')
+            if ((ack == 'open_tab' and target not in tuple(TOOL_TIPS_TABS - {'all'}))
+                    or (ack == 'setting_changed' and target != 'proximity_voice')
+                    or (ack in ('none', 'click') and target is not None)):
+                raise ValueError('Invalid Tool Tips acknowledgement target.')
+    if len(json.dumps(data, ensure_ascii=True).encode()) > TOOL_TIPS_LIMIT:
+        raise ValueError('The Tool Tips document is too large.')
+    return data

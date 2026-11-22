@@ -20,6 +20,7 @@ from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLO
                             VoiceFrames, VOICE_AUDIO, VOICE_FRAME_BYTES, VOICE_KEEPALIVE, VOICE_PROTOCOL,
                             VOICE_RELEASE, VOICE_ROUTE, VOICE_SAMPLE_RATE,
                             locked_state, read_json, valid_public_address, validate_endpoint, validate_group, write_json)
+from direct_network import TOOL_TIPS_ROUTE, TOOL_TIPS_LIMIT, decode_tool_tips
 from community_transport import CommunityClient, CommunityError, PinnedHTTPSConnection
 from community_game import CommunityGame
 from dynamic_destination import DIRECT_BRIDGE_POLICY
@@ -1207,6 +1208,151 @@ class PublicCTFPanel:
             self.submit('poll', lambda: self.lobby.public_state(renew=public))
         self.root.after(150, self.tick)
 
+class LauncherTips:
+    """Present optional host messages without blocking the launcher event loop."""
+
+    def __init__(self, tk, desktop, lobby, local, frame):
+        from datetime import datetime, timezone
+        from desktop_launcher import MUTED
+
+        self.tk, self.desktop, self.lobby, self.frame = tk, desktop, lobby, frame
+        self.clock = lambda: datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        self.messages = queue.Queue(maxsize=1)
+        self.closed = threading.Event()
+        self.document = {'version': 1, 'admin_messages': [], 'tips': []}
+        self.render_key = None
+        self.local_events = set()
+        scope = hashlib.sha256(lobby.authority.encode()).hexdigest()[:24]
+        self.path = local / ('tool-tips-seen-' + scope + '.json')
+        try:
+            stored = read_json(self.path, TOOL_TIPS_LIMIT)
+            self.seen = dict.fromkeys(k for k in stored[-200:] if isinstance(k, str)) if isinstance(stored, list) else {}
+        except (OSError, ValueError):
+            self.seen = {}
+        self.bg = frame.cget('bg')
+        self.admin_region, self.admin = self.region()
+        self.admin_region.pack(fill='x')
+        self.tip_region, self.body = self.region()
+        self.muted = MUTED
+        threading.Thread(target=self.fetch, name='launcher-tool-tips', daemon=True).start()
+        self.tick()
+
+    def region(self):
+        window = self.tk.Frame(self.frame, bg=self.bg)
+        canvas = self.tk.Canvas(window, bg=self.bg, height=1, highlightthickness=0,
+                                borderwidth=0)
+        scrollbar = self.tk.Scrollbar(window, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side='left', fill='x', expand=True)
+        content = self.tk.Frame(canvas, bg=self.bg)
+        item = canvas.create_window(0, 0, window=content, anchor='nw')
+
+        def resize(_event):
+            height = content.winfo_reqheight()
+            if height > 92:
+                if not scrollbar.winfo_manager():
+                    scrollbar.pack(side='right', fill='y')
+            else:
+                scrollbar.pack_forget()
+                canvas.yview_moveto(0)
+            if canvas.cget('height') != min(height, 92):
+                canvas.configure(height=min(height, 92))
+            canvas.configure(scrollregion=(0, 0, canvas.winfo_width(), height))
+
+        content.bind('<Configure>', resize)
+        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(item, width=event.width))
+        return window, content
+
+    def fetch(self):
+        while not self.closed.is_set():
+            try:
+                document = decode_tool_tips(self.lobby._request(TOOL_TIPS_ROUTE.removeprefix('/api/')))
+            except (CommunityError, ValueError, OSError):
+                document = {'version': 1, 'admin_messages': [], 'tips': []}
+            try:
+                self.messages.put_nowait(document)
+            except queue.Full:
+                pass
+            self.closed.wait(30)
+
+    def acknowledge(self, key):
+        if key in self.seen:
+            return
+        self.seen[key] = None
+        while len(self.seen) > 200:
+            del self.seen[next(iter(self.seen))]
+        try:
+            write_json(self.path, list(self.seen))
+        except OSError:
+            pass
+
+    def event(self, kind, target):
+        if kind == 'open_tab' and target == 'settings':
+            self.acknowledge('builtin-voice-settings')
+        self.local_events.add((kind, target))
+        for row in self.document['tips']:
+            if row.get('ack') == kind and row.get('ack_target') == target:
+                self.acknowledge(row['id'])
+
+    def populate(self, frame, rows):
+        for child in frame.winfo_children():
+            child.destroy()
+        for row in rows:
+            color = row.get('color', self.muted)
+            props = dict(text=row['text'], bg=self.bg, fg=color, justify='left',
+                         anchor='w', wraplength=155, font=('Segoe UI', 9))
+            if row.get('ack') == 'click':
+                widget = self.tk.Button(frame, relief='flat', bd=0, cursor='hand2',
+                                        padx=0, pady=0, activebackground=self.bg,
+                                        activeforeground=color, command=lambda key=row['id']: self.acknowledge(key),
+                                        **props)
+            else:
+                widget = self.tk.Label(frame, padx=0, pady=0, **props)
+            widget.pack(fill='x', pady=(3, 1))
+
+    def tick(self):
+        if self.desktop.closing:
+            self.closed.set()
+            return
+        try:
+            self.document = self.messages.get_nowait()
+        except queue.Empty:
+            pass
+        panel = {'lobbies': 'create_lobby', 'live': 'lobby_browser', 'public': 'public_ctf'}.get(
+            self.desktop.current_panel, self.desktop.current_panel)
+        settings = self.desktop.settings_window
+        if settings is not None and settings.winfo_exists():
+            panel = 'settings'
+        self.event('open_tab', panel)
+        for row in self.document['tips']:
+            if row.get('ack') in ('open_tab', 'setting_changed') and (row['ack'], row['ack_target']) in self.local_events:
+                self.acknowledge(row['id'])
+        now = self.clock()
+
+        def visible(row):
+            return (row['id'] not in self.seen and (not row.get('starts') or row['starts'] <= now)
+                    and (not row.get('expires') or now < row['expires']))
+
+        admin = [row for row in self.document['admin_messages'] if visible(row)]
+        tips = [row for row in self.document['tips'] if row.get('tab', 'all') in ('all', panel) and visible(row)]
+        known = {row['id'] for row in self.document['tips']}
+        if (self.lobby.proximity_supported and 'prox-voice-settings' not in known
+                and 'builtin-voice-settings' not in self.seen):
+            if panel == 'settings':
+                self.acknowledge('builtin-voice-settings')
+            else:
+                tips.append({'id': 'builtin-voice-settings', 'text': 'Proximity voice controls are in Settings.',
+                             'sticky': True, 'priority': 100})
+        tips.sort(key=lambda row: (not row.get('sticky', False), row.get('tab', 'all') != 'all',
+                                   -row.get('priority', 0)))
+        key = (admin, tips)
+        if key != self.render_key:
+            self.render_key = key
+            self.populate(self.admin, admin)
+            self.populate(self.body, tips)
+        self.desktop.root.after(600, self.tick)
+
+
 def main(root=ROOT, *, on_ready=None, weapon_directory=None):
     import tkinter as tk
     from tkinter import filedialog,messagebox
@@ -1258,6 +1404,9 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
         def show_panel(self, name):
             if self.closing:
                 return
+            if hasattr(self, 'tool_tips'):
+                tab = {'lobbies': 'create_lobby', 'live': 'lobby_browser', 'public': 'public_ctf'}.get(name, name)
+                self.tool_tips.event('open_tab', tab)
             if self.armor_panel is not None:
                 self.armor_panel.panel.pack_forget()
             if self.public_panel is not None:
@@ -1286,6 +1435,8 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
                                         fg='#80e6bd' if enabled else '#ffaaaa')
 
         def show_settings(self):
+            if hasattr(self, 'tool_tips'):
+                self.tool_tips.event('open_tab', 'settings')
             previous = self.settings_window
             super().show_settings()
             window = self.settings_window
@@ -1301,6 +1452,8 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
             def toggle():
                 lobby.set_proximity_voice(enabled.get())
                 self.refresh_voice_notice()
+                if hasattr(self, 'tool_tips'):
+                    self.tool_tips.event('setting_changed', 'proximity_voice')
 
             def save_key(value):
                 lobby.bind_proximity_key(value)
@@ -1326,6 +1479,8 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
             refresh_detail()
 
         def close(self):
+            if hasattr(self, 'tool_tips'):
+                self.tool_tips.closed.set()
             try:super().close()
             finally:lobby.close()
 
@@ -1345,23 +1500,24 @@ def main(root=ROOT, *, on_ready=None, weapon_directory=None):
         if gui.settings_nav is not None:
             gui.settings_nav.pack_forget()
             gui.settings_nav.pack(fill='x', padx=18, pady=(6, 0))
-        if lobby.proximity_supported or gui.settings_nav is not None:
-            sidebar_bg = '#0d1927'
-            tips = tk.Frame(gui.sidebar, bg=sidebar_bg)
-            tips.pack(fill='x', padx=20, pady=(16, 0))
-            gui.label(tips, 'Tool Tips', 10, True, bg=sidebar_bg).pack(anchor='w')
-            if lobby.proximity_supported:
-                voice = tk.Frame(tips, bg=sidebar_bg)
-                voice.pack(anchor='w', pady=(5, 0))
-                gui.label(voice, 'Proximity voice', 9, bg=sidebar_bg).pack(side='left')
-                gui.voice_notice = gui.label(voice, '', 9, True, bg=sidebar_bg)
-                gui.voice_notice.pack(side='left', padx=(5, 0))
-                gui.refresh_voice_notice()
-            if gui.settings_nav is not None:
-                tk.Button(tips, text='Key Bindings Import in Settings', command=gui.show_settings,
-                          bg=sidebar_bg, fg='#9fb3c6', activebackground=sidebar_bg, activeforeground='#eff7ff',
-                          relief='flat', bd=0, padx=0, pady=2, anchor='w', cursor='hand2',
-                          font=('Segoe UI', 9)).pack(anchor='w')
+        sidebar_bg = '#0d1927'
+        tips = tk.Frame(gui.sidebar, bg=sidebar_bg)
+        tips.pack(fill='x', padx=20, pady=(16, 0))
+        gui.label(tips, 'Tool Tips', 10, True, bg=sidebar_bg).pack(anchor='w')
+        gui.tool_tips = LauncherTips(tk, gui, lobby, local, tips)
+        if lobby.proximity_supported:
+            voice = tk.Frame(tips, bg=sidebar_bg)
+            voice.pack(anchor='w', pady=(5, 0))
+            gui.label(voice, 'Proximity voice', 9, bg=sidebar_bg).pack(side='left')
+            gui.voice_notice = gui.label(voice, '', 9, True, bg=sidebar_bg)
+            gui.voice_notice.pack(side='left', padx=(5, 0))
+            gui.refresh_voice_notice()
+        gui.tool_tips.tip_region.pack(fill='x')
+        if gui.settings_nav is not None:
+            tk.Button(tips, text='Key Bindings Import in Settings', command=gui.show_settings,
+                      bg=sidebar_bg, fg='#9fb3c6', activebackground=sidebar_bg, activeforeground='#eff7ff',
+                      relief='flat', bd=0, padx=0, pady=2, anchor='w', cursor='hand2',
+                      font=('Segoe UI', 9)).pack(anchor='w')
         window.protocol('WM_DELETE_WINDOW',gui.close)
         if on_ready is not None:
             window.update_idletasks()

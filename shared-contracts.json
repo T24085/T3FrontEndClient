@@ -11,7 +11,7 @@
     "verified_file_cache.py": "6161be82a4f5552d05d228b113c51e03019dbda258a3505c64424c93cb433e8f",
     "bulk_verification_receipts.py": "02caca4f3252688e2abf1097bd6dcf4a27e05f53b75d71c50a6563e694a02bc8",
     "dynamic_destination.py": "e3a94c755b1f3b6d9650752714c37e70874443a606533e670b1095c90cc58cba",
-    "experimental/direct-hosting/src/direct_network.py": "2ebb0fd57616a1c752adb6291730eb2a7d3a37b18636aae61b91296acf6e9ae9",
+    "experimental/direct-hosting/src/direct_network.py": "161b42b9706445cd0d421c772596ca524656d99bf366d6b7ea4a65f494cb11b5",
     "tools/apply_lobby_recovery_update.py": "7b1acd94cc25c80948b66789befc289df3ff880c69dcb7abfcdcb08b1fe76068",
     "server_access_contract.py": "62155a3c7e5d8a314c4e7928e0ddee92cb0d6417d72253d305dd996deec84e1a",
     "map_sync_contract.py": "92ae4bf9c48f23cc9708db1d3b7a3ed66346e511e322d2857218051076d42871",
