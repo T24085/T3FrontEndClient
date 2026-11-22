@@ -37,6 +37,9 @@ function f.setScores(one,two,duplicate)
     if duplicate then rows[#rows+1]=rows[1] end
     f.gs.r_CurrentTeamScores=array(rows)
 end
+function f.setPartialScore(team,score)
+    f.gs.r_CurrentTeamScores=array({{TeamNum=team,Score=score}})
+end
 f.setScores(0,0)
 local class='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_ScoreBar_CTF.WBP_Game_ScoreBar_CTF_C'
 function f.addWidget(world,controller)
@@ -133,6 +136,24 @@ class DirectPlaytestPresentationTests(unittest.TestCase):
         f.refresh()
         self.assertEqual(bar.UI_Game_Scorebar_ScoreCount_1.ScoreText.value, '2')
         self.assertEqual(bar.calls, 1)
+
+    def test_reconnect_waits_for_both_scores_from_the_same_native_state(self):
+        f = self.fixture()
+        bar = f.addWidget(f.world, f.pc)
+        f.setScores(8, 4)
+        f.refresh()
+
+        f.setPartialScore(1, 0)
+        f.refresh()
+        self.assertEqual((bar.UI_Game_Scorebar_ScoreCount.CachedScore,
+                          bar.UI_Game_Scorebar_ScoreCount_1.CachedScore), (8, 4))
+        self.assertEqual(bar.calls, 2)
+
+        f.setScores(0, 1)
+        f.ps.r_TeamId = 2
+        f.refresh()
+        self.assertEqual((bar.UI_Game_Scorebar_ScoreCount.CachedScore,
+                          bar.UI_Game_Scorebar_ScoreCount_1.CachedScore), (1, 0))
 
     def test_late_and_hidden_local_bars_refresh_without_touching_foreign_bars(self):
         f = self.fixture()

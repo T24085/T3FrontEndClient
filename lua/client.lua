@@ -429,7 +429,7 @@ end
 
 local scoreBarClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_ScoreBar_CTF.WBP_Game_ScoreBar_CTF_C'
 local scoreBars={}
-local scoreBarWorld,scoreBarController,scoreBarReported
+local scoreBarWorld,scoreBarController,scoreBarState,scoreBarReported
 local scoreBarScanDelay=0
 local function same_object(a,b)
     return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
@@ -575,7 +575,7 @@ local ctfFlagHud=(function()
         for _,flag in ipairs(FindAllOf('TopPickup_Flag') or {}) do
             if valid(flag) and same_object(flag:GetWorld(),world) then
                 local team=flag.r_TeamId
-                if team~=1 and team~=2 then return end
+                if (team~=1 and team~=2) or teams[team] then return end
                 local info=flag:GetHeldBy()
                 if type(info.bReturned)~='boolean' then return end
                 local key=flag:GetAddress()
@@ -668,7 +668,13 @@ local ctfFlagHud=(function()
             name=''
         end
         local label=icon.Text
-        local wrongText=name~=nil and valid(label) and label:GetText():ToString()~=name
+        local wrongText=false
+        if valid(label) then
+            local currentText=label:GetText():ToString()
+            -- Reapply the native localized dropped text when its widget was rebuilt
+            -- from current holder data but has not filled in the label yet.
+            wrongText=(name~=nil and currentText~=name) or (name==nil and currentText=='')
+        end
         if changed or wrongText then
             icon:OnFlagHeldChanged(row.flag,row.info,row.info)
             if name=='' and valid(label) and label:GetText():ToString()~='' then
@@ -759,8 +765,9 @@ local function refresh_ctf_score_bar(pc,ps,gs)
     if team~=1 and team~=2 then return end
     local world=pc:GetWorld()
     if not same_object(world,gs:GetWorld()) then return end
-    if not same_object(scoreBarWorld,world) or not same_object(scoreBarController,pc) then
-        scoreBarWorld,scoreBarController=world,pc
+    if not same_object(scoreBarWorld,world) or not same_object(scoreBarController,pc)
+        or not same_object(scoreBarState,gs) then
+        scoreBarWorld,scoreBarController,scoreBarState=world,pc,gs
         scoreBarScanDelay=0
         scoreBarReported=false
         generatorIconRepairs={}
@@ -786,12 +793,12 @@ local function refresh_ctf_score_bar(pc,ps,gs)
     end
     if #scoreBars==0 then return end
 
-    local rows=gs.r_CurrentTeamScores
     local scores,malformed={},false
     reconcile_score_bar('replication',function()
+        local rows=gs.r_CurrentTeamScores
         if not rows then return end
         local count=rows:GetArrayNum()
-        if count>4 then malformed=true;return end
+        if count<2 or count>4 then return end
         rows:ForEach(function(_,param)
             local row=param:get()
             local id,score=row.TeamNum,row.Score
@@ -800,8 +807,11 @@ local function refresh_ctf_score_bar(pc,ps,gs)
             scores[id]=score
         end)
     end)
-    if malformed or scoreBarErrors.replication then scores={} end
-    local friendly,enemy=scores[team],scores[3-team]
+    -- A late join can deliver only one valid row initially. Keep the existing
+    -- score display until both values come from the same native snapshot.
+    local havePair=not malformed and not scoreBarErrors.replication and scores[1]~=nil and scores[2]~=nil
+    local friendly,enemy
+    if havePair then friendly,enemy=scores[team],scores[3-team] end
     for _,widget in ipairs(scoreBars) do
         if valid(widget) then
             reconcile_score_bar('generators',function()

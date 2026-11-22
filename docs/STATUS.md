@@ -108,6 +108,10 @@ accepts a newly replicated carrier while the attachment loads. Once it has
 seen that carrier attached, detachment clears stale holder data in the HUD
 while the actor's replication catches up.
 
+Score refresh waits for both teams' replicated rows before changing either
+counter. The flag refresh waits for one current actor per team and restores a
+missing dropped label through the original localized widget update.
+
 The score bar waits for all generator actors and teams before repairing the
 panels. It uses the native generator-ready callback to restore missing icons.
 The same repair pass removes duplicates and icons whose actors were retired

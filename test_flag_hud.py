@@ -215,6 +215,9 @@ enemy:drop(500,true)
 update(4)
 assert(blueAway.Text.value=='DROPPED' and redAway.Text.value=='DROPPED')
 assert(enemy.info.Holder==runner)
+blueAway.Text.value=''
+update(4.5)
+assert(blueAway.Text.value=='DROPPED')
 enemy:take(hunter)
 update(5)
 assert(blueAway.Text.value=='Hunter' and redAway.Text.value=='Hunter')
@@ -259,6 +262,17 @@ map.Flags:add(unknown)
 update(10)
 assert(map.binds==2 and map.Flags:GetChildAt(1)==unknown)
 for _,skip in ipairs({foreign,otherPlayer,hidden}) do assert(skip.binds==0 and skip.updates==0) end
+return true
+''')
+
+    def test_defers_score_and_minimap_refresh_when_a_team_has_two_live_flag_actors(self):
+        self.run_lua(r'''
+local friendly,enemy=f.flag(1),f.flag(2)
+local expired=f.flag(2)
+assert(hud.prepare(f.pc,f.world)==nil)
+expired.invalid=true
+local flags=assert(hud.prepare(f.pc,f.world))
+assert(flags[friendly] and flags[enemy] and not flags[expired])
 return true
 ''')
 
