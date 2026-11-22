@@ -7,7 +7,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from starter_update import (CHANNEL, DIRECT_CHANNEL, INDEX, INVENTORY, accept, decode_index,
+from direct_update_contract import LINUX_INDEX
+from starter_update import (CHANNEL, DIRECT_CHANNEL, LINUX_CHANNEL, INDEX, INVENTORY, accept, decode_index,
                             encoded, prepare, recover, run_startup, sha)
 
 
@@ -134,6 +135,31 @@ class StarterUpdateTest(unittest.TestCase):
         self.configure_direct()
         with self.assertRaisesRegex(ValueError, 'does not match this Starter package'):
             self.stage({'lua/client.lua': raw})
+
+    def test_linux_update_uses_its_own_index_and_revision(self):
+        self.configure_direct()
+        files = {'desktop_launcher.py': b'print("Linux update")\n'}
+        direct = envelope(files, channel=DIRECT_CHANNEL)
+        with self.assertRaisesRegex(ValueError, 'update channel'):
+            decode_index(direct, channel=LINUX_CHANNEL, verifier=verify_fixture)
+
+        self.manifest.update(linux_starter_update_channel=LINUX_CHANNEL, starter_update_revision=74)
+        self.inventory.write_bytes(encoded(self.manifest))
+        linux = envelope(files, channel=LINUX_CHANNEL)
+
+        def fetch(name, limit):
+            self.requests.append(name)
+            return linux if name == LINUX_INDEX else files['desktop_launcher.py']
+
+        args = {'channel': LINUX_CHANNEL, 'fetch': fetch, 'verifier': verify_fixture}
+        self.assertTrue(prepare(self.root, self.state, **args))
+        after = json.loads(self.inventory.read_bytes())
+        self.assertEqual(after['starter_update_revision'], 74)
+        self.assertEqual(after['linux_starter_update_revision'], 1)
+        self.assertEqual(self.requests, [LINUX_INDEX, 'starter-file-' + sha(files['desktop_launcher.py']) + '.bin'])
+        self.assertTrue(recover(self.root, self.state, channel=LINUX_CHANNEL))
+        self.assertEqual(json.loads(self.inventory.read_bytes()), self.manifest)
+        self.assertFalse(prepare(self.root, self.state, **args))
 
     @unittest.skipUnless(os.name == 'nt', 'Windows package lock required')
     def test_direct_launch_applies_before_import_and_recovers_a_failed_start(self):

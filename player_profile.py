@@ -46,16 +46,19 @@ def user_profile_root():
                                          ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p))
     shell.SHGetKnownFolderPath.restype = ctypes.c_long
     value = ctypes.c_wchar_p()
-    result = shell.SHGetKnownFolderPath(ctypes.byref(folder), 0x10000, None, ctypes.byref(value))
-    if result != 0:
-        raise ProfileError('Windows could not locate durable player settings: ' + hex(result & 0xffffffff))
+    # Wine's shell32 rejects the Windows AppContainer redirection flag.
+    flags = 0 if hasattr(ctypes.WinDLL('ntdll'), 'wine_get_version') else 0x10000
     try:
+        result = shell.SHGetKnownFolderPath(ctypes.byref(folder), flags, None, ctypes.byref(value))
+        if result != 0:
+            raise ProfileError('Windows could not locate durable player settings: ' + hex(result & 0xffffffff))
         return Path(value.value)/'Tribes3CommunityStarter/player-settings'
     finally:
-        free = ctypes.WinDLL('ole32').CoTaskMemFree
-        free.argtypes = (ctypes.c_void_p,)
-        free.restype = None
-        free(ctypes.cast(value, ctypes.c_void_p))
+        if value:
+            free = ctypes.WinDLL('ole32').CoTaskMemFree
+            free.argtypes = (ctypes.c_void_p,)
+            free.restype = None
+            free(ctypes.cast(value, ctypes.c_void_p))
 
 
 def _identity(path):

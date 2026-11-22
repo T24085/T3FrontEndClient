@@ -11,14 +11,25 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from starter_update import CHANNEL, INDEX, MAX_FILE, UPDATE_CHANNELS, decode_index, encoded, sha
+from starter_update import CHANNEL, INDEX, LINUX_CHANNEL, MAX_FILE, UPDATE_CHANNELS, decode_index, encoded, sha
+
+
+def sign_index(payload, thumbprint):
+    with tempfile.TemporaryDirectory() as directory:
+        unsigned = Path(directory) / 'payload.json'
+        signature = Path(directory) / 'signature.bin'
+        unsigned.write_bytes(payload)
+        subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File',
+                        str(ROOT / 'tools/sign_starter_update.ps1'), '-Thumbprint', thumbprint,
+                        '-Payload', str(unsigned), '-Signature', str(signature)], check=True)
+        return encoded({'payload': b64encode(payload).decode(), 'signature': b64encode(signature.read_bytes()).decode()})
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--certificate', required=True, help='Current user signing certificate thumbprint')
-    parser.add_argument('--channel', choices=UPDATE_CHANNELS, default=CHANNEL)
+    parser.add_argument('--channel', choices=sorted(UPDATE_CHANNELS.keys() - {LINUX_CHANNEL}), default=CHANNEL)
     parser.add_argument('--previous', type=Path, help='Last published signed index')
     parser.add_argument('files', nargs='*', help='Client package paths to add to the managed inventory')
     args = parser.parse_args()
@@ -59,14 +70,7 @@ def main():
     now = int(time.time())
     payload = encoded({'channel': args.channel, 'revision': revision, 'issued': now, 'expires': now + 90 * 86400,
                        'files': files})
-    with tempfile.TemporaryDirectory() as directory:
-        unsigned = Path(directory) / 'payload.json'
-        signature = Path(directory) / 'signature.bin'
-        unsigned.write_bytes(payload)
-        subprocess.run(['pwsh', '-NoProfile', '-NonInteractive', '-File',
-                        str(ROOT / 'tools/sign_starter_update.ps1'), '-Thumbprint', args.certificate,
-                        '-Payload', str(unsigned), '-Signature', str(signature)], check=True)
-        index = encoded({'payload': b64encode(payload).decode(), 'signature': b64encode(signature.read_bytes()).decode()})
+    index = sign_index(payload, args.certificate)
     assert decode_index(index, channel=args.channel)['revision'] == revision
     output.mkdir(parents=True, exist_ok=False)
     for name, raw in payloads.items():

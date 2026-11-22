@@ -1,13 +1,25 @@
 """Adapt the released Ubuntu preview readers to its full local inventory."""
 from hashlib import sha256
+import re
 
 MAX_PACKAGE_BYTES = 4 * 1024 * 1024
 MAX_PACKAGE_FILES = 16384
 MAX_PREPARED_FILES = MAX_PACKAGE_FILES + 1
 
 
+def proton_profile_overlay(released, source):
+    """Keep the signed profile implementation around the Wine-aware folder lookup."""
+    lookup = re.compile(rb'(?ms)^def user_profile_root\(\):\n.*?(?=^def _identity\(path\):)')
+    old, = lookup.findall(released)
+    updated, = lookup.findall(source)
+    if old != updated and sha256(old).hexdigest() != '8761965494c97c2576dc212b9661341512a7a14807b2c8c94353a0187f80bc34':
+        raise ValueError('Review the changed player profile folder lookup before overlaying it.')
+    result = released.replace(old, updated, 1)
+    compile(result, 'player_profile.py', 'exec')
+    return result
 
-def inventory_overlay(client):
+
+def inventory_overlay(client, *, signed_inventory=False):
     """Patch the exact packaged modules while keeping other client editions intact."""
     compare = (
         ('2*1024*1024', str(MAX_PACKAGE_BYTES), 2),
@@ -33,6 +45,9 @@ def inventory_overlay(client):
             ('done<=total<=10000', 'done<=total<=MAX_PREPARED_FILES', 1),
         ),
     }
+    if signed_inventory:
+        # The Direct feed supplies its own verified cache and preparation readers.
+        readers = {name: readers[name] for name in ('compare_map_packages.py', 'lib/compare_map_packages.py')}
     overlay = {}
     for name, replacements in readers.items():
         original = client.read(name)

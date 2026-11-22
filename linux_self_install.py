@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
 PREVIEW = None
+PREVIEW_RELEASE = None
 
 
 def verify_payload(launcher, offset, expected):
@@ -96,8 +97,15 @@ def install_preview(root):
         if name.endswith('.sh'):
             target.chmod(0o755)
         rows[name] = {'path':name,'bytes':len(raw),'sha256':sha256(raw).hexdigest()}
-    manifest.update(files=list(rows.values()), build_id='ClanWarsUbuntuNativePreview4',
-                    revision_id='ClanWarsUbuntuNativePreview4')
+    build = 'ClanWarsUbuntuNativePreview4'
+    if PREVIEW_RELEASE is not None:
+        revision = PREVIEW_RELEASE['revision']
+        build = f'ClanWarsUbuntuNativePreview{PREVIEW_RELEASE["preview"]}R{revision}'
+        manifest.update(starter_update_revision=revision, starter_update_files=PREVIEW_RELEASE['files'])
+        if 'linux_update_channel' in PREVIEW_RELEASE:
+            manifest.update(linux_starter_update_channel=PREVIEW_RELEASE['linux_update_channel'],
+                            linux_starter_update_revision=0)
+    manifest.update(files=list(rows.values()), build_id=build, revision_id=build)
     compact = json.dumps(manifest,separators=(',',':'),ensure_ascii=True)+'\n'
     if len(compact.encode())>4*1024*1024 or len(rows)>16384:
         raise ValueError('Ubuntu preview exceeds the local package verifier limits.')
@@ -117,11 +125,14 @@ def main():
     installer_id = digest if PREVIEW is None else sha256((digest+json.dumps(PREVIEW,sort_keys=True)).encode()).hexdigest()
     with ZipFile(launcher) as archive:
         entries, manifest = members(archive)
-        revision = manifest['starter_update_revision']
+        revision = PREVIEW_RELEASE['revision'] if PREVIEW_RELEASE is not None else manifest['starter_update_revision']
         if options.verify:
             print(f'Clan Wars r{revision} verified with {len(manifest["community_maps"])} maps.')
             return 0
-        title = 'Clan Wars Ubuntu Preview 4' if PREVIEW is not None else f'Clan Wars Linux r{revision}'
+        if PREVIEW_RELEASE is not None:
+            title = f'Clan Wars Ubuntu Preview {PREVIEW_RELEASE["preview"]} r{revision}'
+        else:
+            title = 'Clan Wars Ubuntu Preview 4' if PREVIEW is not None else f'Clan Wars Linux r{revision}'
         destination = options.destination or Path.home()/'Games'/title
         destination = destination.expanduser().absolute()
         install(archive, entries, destination, installer_id)

@@ -5,8 +5,8 @@ TRIBES 3: Rivals installed. This preview uses separate application
 files, lobby identity, game staging and Proton prefix.
 
 1. Run the .run installer from a terminal. It opens the native Starter.
-   To reopen it later, run "Start Clan Wars Ubuntu.sh" in the installed
-   "~/Games/Clan Wars Ubuntu Preview 4" folder.
+   To reopen it later, run "Start Clan Wars Ubuntu.sh" in the install
+   folder shown by the installer.
 2. Open Steam Setup in the Starter. In Steam, enable Proton under
    TRIBES 3: Rivals > Properties > Compatibility. Copy the complete
    launch option into Properties > General > Launch Options.
@@ -20,6 +20,12 @@ native Linux Python. Clicking Join Game requests Steam and Proton.
 Steam Play without a Clan Wars join request runs the ordinary Steam
 game command. The Steam launch-option setting belongs to that Steam
 game and must be switched manually if another Starter uses it.
+
+Installations with Linux auto-updates enabled check for a signed launcher
+update when you open Clan Wars. They keep the existing Steam launch option.
+If you already installed Preview 6 r74, close Clan Wars and run the separate
+Enable-Clan-Wars-Linux-Auto-Updates.sh once, then reopen Clan Wars. Pass the
+install folder as an argument if you installed outside the default folder.
 
 For a headless check of the server connection, run:
     sh "Start Clan Wars Ubuntu.sh" --check-lobby

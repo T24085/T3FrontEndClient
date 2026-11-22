@@ -52,6 +52,9 @@ fi
 case "${1:-}" in
     --ubuntu-native)
         shift
+        if [ "$#" -eq 0 ]; then
+            exec "$launcher_python" -I -B "$root/ubuntu_startup.py"
+        fi
         exec "$launcher_python" -I -B "$root/ubuntu_starter.py" "$@"
         ;;
     --ubuntu-dispatch)

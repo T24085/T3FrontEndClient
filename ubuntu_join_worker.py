@@ -2,6 +2,7 @@
 from contextlib import suppress
 import json
 from pathlib import Path
+import re
 import threading
 import time
 
@@ -26,14 +27,35 @@ def serve(directory, package, game_dir, workspace, context):
     if (directory/'cancel').exists():
         status(directory,'stopped')
         return 0
-    lobby = DirectClient(request['connection'], ssl_context=context)
+    session = request.get('direct_session')
+    client_type = DirectClient
+    if session is not None:
+        if not isinstance(session, str) or re.fullmatch('[0-9a-f]{32}', session) is None:
+            raise ValueError('Invalid Clan Wars handoff admission.')
+
+        class HandoffClient(DirectClient):
+            def begin_game_attempt(self):
+                # Keep the GUI's admission identity when resetting owned sockets.
+                with self.lock:
+                    super().begin_game_attempt()
+                    self.direct_session = session
+
+        client_type = HandoffClient
+    lobby = client_type(request['connection'], ssl_context=context)
+    if session is not None:
+        lobby.direct_session = session
     game = None
     try:
         caps = lobby.capabilities()
         lobby.code, lobby.token, lobby.player_id = request['code'], request['token'], request['player']
         sync = MapSync(lobby,package,workspace)
-        sync.start(caps.get('mapFileSync'))
-        game = DirectGame(lobby,package,game_dir,workspace,directory/'game',map_sync=sync)
+        if hasattr(sync, 'session_enabled'):
+            sync.start(caps.get('mapFileSync'), session_version=caps.get('mapSessionSync'))
+        else:
+            sync.start(caps.get('mapFileSync'))
+        # StableGame binds the desktop Job receipt to this workspace path.
+        game = DirectGame(lobby, package, game_dir, workspace,
+                          workspace/'direct-desktop-control', map_sync=sync)
         public = request['role'] == 'public'
         failure = []
         def join():

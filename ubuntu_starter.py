@@ -1,7 +1,6 @@
 """Native Ubuntu lobby UI. Steam is contacted only for a requested game."""
 import argparse
-from contextlib import contextmanager
-import fcntl
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path, PureWindowsPath
@@ -17,37 +16,16 @@ import uuid
 ROOT = Path(__file__).resolve().parent
 sys.path[:0] = [str(ROOT), str(ROOT/'lib')]
 from linux_launcher import APP_ID, prepare_launch, run_in_terminal, windows_path
+from ubuntu_startup import exclusive, private_area
 
 MARKER = '-clanwars-ubuntu-join='
 ACTIVE = ('starting', 'playing', 'stopping', 'quarantined')
-
-
-def private_area():
-    data = Path(os.environ.get('XDG_DATA_HOME') or Path.home()/'.local/share')
-    if not data.is_absolute():
-        raise ValueError('XDG_DATA_HOME must be an absolute path.')
-    directory = data/'ClanWarsUbuntuStarter'
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if directory.is_symlink() or directory.stat().st_uid != os.getuid() or directory.stat().st_mode & 0o077:
-        raise ValueError('Clan Wars Ubuntu Starter data must be private to your Linux user.')
-    return directory
 
 
 def write_private(path, value):
     descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
         json.dump(value, stream)
-
-
-@contextmanager
-def exclusive(path):
-    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, 'rb') as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ValueError('Clan Wars already has this session open.') from exc
-        yield
 
 
 def steam_option():
@@ -74,7 +52,7 @@ class GameHandoff:
                 return json.loads(status_file.read_bytes())
             except FileNotFoundError:
                 if time.monotonic() <= self.deadline:
-                    return {'status':'starting','error':None,'progress':'Waiting for Steam to open the gameâ€¦'}
+                    return {'status':'starting','error':None,'progress':'Waiting for Steam to open the game…'}
                 self._cancel()
                 return {'status':'failed','error':'Steam did not hand off the game. Check Clan Wars Steam Setup.'}
 
@@ -90,8 +68,12 @@ class GameHandoff:
             request = self.state/'joins'/identifier
             request.mkdir(mode=0o700, parents=True)
             with self.lobby.lock:
+                # The lobby window keeps polling during preparation. Its requests
+                # must use the same host admission as the Proton worker.
+                self.lobby.begin_game_attempt()
                 details = dict(connection=self.lobby.connection, role=role, issued=time.time(),
                                code=self.lobby.code, token=self.lobby.token, player=self.lobby.player_id,
+                               direct_session=self.lobby.direct_session,
                                **values)
             write_private(request/'request.json', details)
             try:
@@ -148,7 +130,7 @@ def dispatch(command):
         from ubuntu_join_worker import status
         log_path = request/'proton.log'
         try:
-            status(request, 'starting', progress='Starting Steam Protonâ€¦')
+            status(request, 'starting', progress='Starting Steam Proton…')
             compat = state/'compatdata'
             compat.mkdir(exist_ok=True)
             isolated_env = dict(os.environ, STEAM_COMPAT_DATA_PATH=str(compat))
@@ -163,13 +145,13 @@ def dispatch(command):
                 status(request, 'failed', error=f'Proton closed before the game reported a result. Log: {log_path}')
             return code
         except Exception as exc:
-            status(request, 'failed', error=f'{exc} â€” Startup files: {request}')
+            status(request, 'failed', error=f'{exc} — Startup files: {request}')
             return 1
         finally:
             claimed.unlink(missing_ok=True)
 
 
-def show_starter(lobby, state):
+def show_starter(lobby, state, on_ready=None):
     import tkinter as tk
     from tkinter import messagebox, ttk
     from desktop_launcher import Desktop
@@ -202,7 +184,7 @@ def show_starter(lobby, state):
     def show_setup():
         setup = tk.Toplevel(window)
         setup.title('Steam Setup')
-        instructions = 'Force a Proton version in TRIBES 3 â†’ Properties â†’ Compatibility. Paste this line into General â†’ Launch Options.'
+        instructions = 'Force a Proton version in TRIBES 3 → Properties → Compatibility. Paste this line into General → Launch Options.'
         ttk.Label(setup, text=instructions, wraplength=520).pack(padx=18, pady=12)
         field = ttk.Entry(setup, width=82)
         field.insert(0, steam_option())
@@ -220,17 +202,23 @@ def show_starter(lobby, state):
         raise ValueError('Open Clan Wars from your Ubuntu desktop session.') from exc
     map_sync = MapSync(lobby, ROOT, state/'game-files')
     app = UbuntuDesktop(window, lobby, lambda current:GameHandoff(current,state), map_sync=map_sync)
-    window.title('Clan Wars â€¢ Ubuntu Starter Preview')
+    window.title('Clan Wars • Ubuntu Starter Preview')
     app.button(app.sidebar, 'Steam Setup', show_setup, False).pack(fill='x', padx=18, pady=(6,0))
     if lobby.public_supported:
         app.public_panel = PublicCTFPanel(tk, app, lobby)
         app.show_panel('public' if lobby.public_only else 'lobbies')
+    revision = json.loads((ROOT/'package-manifest.json').read_bytes()).get('linux_starter_update_revision', 0)
+    if revision:
+        ttk.Label(app.sidebar, text=f'Linux update {revision}').pack(side='bottom', anchor='w', padx=18)
+    if on_ready is not None:
+        window.update_idletasks()
+        on_ready()
     window.mainloop()
     if getattr(app, 'close_worker', None):
         app.close_worker.join()
 
 
-def main(args=None):
+def main(args=None, *, owned_state=None, on_ready=None):
     os.umask(0o077)
     args = list(sys.argv[1:] if args is None else args)
     if args[:1] == ['--dispatch']:
@@ -244,8 +232,8 @@ def main(args=None):
         print(steam_option())
         return 0
     from direct_client import DirectClient, group_connection
-    state = private_area()
-    with exclusive(state/'starter.lock'):
+    state = private_area() if owned_state is None else owned_state
+    with exclusive(state/'starter.lock') if owned_state is None else nullcontext():
         lobby = DirectClient(group_connection(ROOT,state))
         try:
             capabilities = lobby.capabilities()
@@ -254,7 +242,7 @@ def main(args=None):
                 print(f'Connected to Clan Wars. {len(lobby.server_maps)} maps; '
                       f'Public CTF: {capabilities.get("publicCTF") is True}. Proton was not started.')
             else:
-                show_starter(lobby,state)
+                show_starter(lobby,state,on_ready)
         finally:
             lobby.close()
     return 0
