@@ -61,9 +61,11 @@ to agree before requesting a capture. It reuses compatible map-owned captures
 and preserves their authored framing when the map supplies no overrides.
 
 The custom frame and artwork layout also recover when their canvas slots
-load late or Unreal resets their geometry. Fixtures cover these resets, late
-materials, and rejected PNG brushes. Rendered gameplay remains to be verified,
-including the reported blank frame on maps without an authored PNG.
+load late or Unreal resets their geometry. The free minimap restores its
+authored center after a native reset or a return from radar mode, and keeps
+the player's manual pan. Fixtures cover these resets, late materials, and
+rejected PNG brushes. Rendered gameplay remains to be verified, including
+the reported blank frame on maps without an authored PNG.
 
 # Private match restart
 

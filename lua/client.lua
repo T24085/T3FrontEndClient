@@ -1221,7 +1221,10 @@ return function(env)
    slot:SetSize({X=size.width,Y=size.height})
   end
  end
- local function configure_framing(widget,initialize)
+ local function same_translation(a,b)
+  return a and b and near(a.X,b.X) and near(a.Y,b.Y)
+ end
+ local function configure_framing(widget,record,initialize)
   local width=state.capture_width
   local scale=1024/width
   if initialize or math.abs(widget.CachedMapScale-scale)>math.max(1e-8,scale*1e-6) then
@@ -1248,11 +1251,22 @@ return function(env)
    local theta=math.rad(minimap.rotation_deg+90)
    widget:RotateMapToVector({X=math.cos(theta),Y=math.sin(theta)})
   end
-  if initialize and minimap.center and not widget.DefaultRadar then
-   local translation={X=-minimap.center[1]*widget.MapScale,Y=-minimap.center[2]*widget.MapScale}
-   widget.DefaultMapTranslation,widget.TargetTranslation=translation,translation
+  if not minimap.center then return end
+  if widget.DefaultRadar then
+   record.applied_center=nil
+   return
+  end
+  local translation={X=-minimap.center[1]*widget.MapScale,Y=-minimap.center[2]*widget.MapScale}
+  local default,target=widget.DefaultMapTranslation,widget.TargetTranslation
+  local centered=not record.applied_center or same_translation(target,default)
+      or same_translation(target,record.applied_center)
+  if not same_translation(default,translation) then widget.DefaultMapTranslation=translation end
+  -- Restore the authored center after a native reset without undoing player panning.
+  if centered and not same_translation(target,translation) then
+   widget.TargetTranslation=translation
    widget:UpdateTranslation(0,false)
   end
+  record.applied_center=translation
  end
  local function background_visible(widget)
   local visibility=widget.MapTexture:GetVisibility()
@@ -1467,10 +1481,11 @@ return function(env)
     if not state.widgets[key] and valid(widget.MapTexture) and (valid(widget.Material) or valid(state.texture)) then
      local prior=widget.MinimapCapture
      assert(not valid(prior) or same(prior,state.capture),'radar_client_foreign_widget_capture')
-     state.widgets[key]={widget=widget,name=widget:GetFullName(),prior=prior}
+     local record={widget=widget,name=widget:GetFullName(),prior=prior}
+     state.widgets[key]=record
      widget.MinimapCapture=state.capture
      widget:UpdateSublevel()
-     if minimap then configure_framing(widget,true) end
+     if minimap then configure_framing(widget,record,true) end
      local baseScale=1024/(state.authored and not minimap and state.map_size or state.capture_width)
      assert(finite(widget.CachedMapScale) and math.abs(widget.CachedMapScale-baseScale)<=math.max(1e-8,baseScale*1e-6),
             'radar_client_native_widget_scale_mismatch')
@@ -1482,7 +1497,7 @@ return function(env)
     if record then
      if not valid(widget.MinimapCapture) then widget.MinimapCapture=state.capture end
      assert(same(widget.MinimapCapture,state.capture),'radar_client_widget_binding_changed')
-     if minimap then configure_framing(widget,false);configure_frame(widget) end
+     if minimap then configure_framing(widget,record,false);configure_frame(widget) end
      if configure_texture(widget,record) then
       projected=projected+1
       if not record.reported then

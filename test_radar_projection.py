@@ -149,6 +149,7 @@ function widget:UpdateTranslation(delta,interpolate)
     assert(delta==0 and not interpolate)
     self.CachedMapTranslation=self.TargetTranslation
 end
+function f.vector(x,y) return {X=x,Y=y} end
 function widget:UpdateTexture()
     f.updates=f.updates+1
     if f.delayed_material then return end
@@ -314,6 +315,29 @@ class RadarProjectionTest(unittest.TestCase):
         writes = (f.frame.writes, art.writes)
         self.assertTrue(f.tick())
         self.assertEqual((f.frame.writes, art.writes), writes)
+
+    def test_authored_center_recovers_without_overwriting_manual_pan(self):
+        f = self.fixture(*MAPS[-1], minimap="{center={1500,-4000}}")
+        f.widget.DefaultRadar = True
+        f.widget.TargetTranslation = f.vector(12, 25)
+        self.assertTrue(f.tick())
+        self.assertEqual((f.widget.TargetTranslation.X, f.widget.TargetTranslation.Y), (12, 25))
+
+        f.widget.DefaultRadar = False
+        self.assertTrue(f.tick())
+        offset = (-1500 * f.widget.MapScale, 4000 * f.widget.MapScale)
+        self.assertEqual((f.widget.TargetTranslation.X, f.widget.TargetTranslation.Y), offset)
+
+        f.widget.DefaultMapTranslation = f.vector(0, 0)
+        f.widget.TargetTranslation = f.vector(0, 0)
+        self.assertTrue(f.tick())
+        self.assertEqual((f.widget.TargetTranslation.X, f.widget.TargetTranslation.Y), offset)
+
+        f.widget.DefaultMapTranslation = f.vector(0, 0)
+        f.widget.TargetTranslation = f.vector(33, 77)
+        self.assertTrue(f.tick())
+        self.assertEqual((f.widget.TargetTranslation.X, f.widget.TargetTranslation.Y), (33, 77))
+        self.assertEqual((f.widget.DefaultMapTranslation.X, f.widget.DefaultMapTranslation.Y), offset)
 
     def test_png_brush_rejection_clears_the_placeholder_using_the_native_capture(self):
         f = self.fixture(*MAPS[-1], minimap="{image_file='valid.png',image_bounds={{0,0},{1000,1000}}}")
