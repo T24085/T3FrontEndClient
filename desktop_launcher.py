@@ -1,6 +1,8 @@
 """Development-only Community Starter lobby and owned game launcher."""
 import argparse
 import json
+import os
+import webbrowser
 from pathlib import Path
 import queue
 import sys
@@ -130,6 +132,8 @@ class Desktop:
         self.lobbies_nav.pack(fill='x',padx=18,pady=(0,6))
         self.live_nav=self.button(side,'Live matches',lambda:self.show_panel('live'),False)
         self.live_nav.pack(fill='x',padx=18)
+        self.button(side, 'About this launcher', self.show_connection_info, False).pack(
+            fill='x', padx=18, pady=(6, 0))
         if server_access is not None:
             from server_access import show_setup
             self.access_button = self.button(side, 'Set up server access', lambda: show_setup(self, server_access), False)
@@ -769,6 +773,69 @@ class Desktop:
             self.run_async(lambda:self.lobby.action('state'),self.render,background=True)
         if not self.closing: self.refresh_handle=self.root.after(2000,self.refresh)
 
+    def show_connection_info(self):
+        """Explain the launcher's observable behavior and give players verification links."""
+        if getattr(self, 'connection_window', None) is not None and self.connection_window.winfo_exists():
+            self.connection_window.lift()
+            self.connection_window.focus_set()
+            return
+        window = tk.Toplevel(self.root, bg=BG, padx=24, pady=20)
+        self.connection_window = window
+        window.title('About this launcher')
+        window.transient(self.root)
+        window.resizable(False, False)
+        self.label(window, 'About this launcher', 19, True).pack(anchor='w')
+        host = getattr(self.lobby, 'hostname', '')
+        port = getattr(self.lobby, 'port', '')
+        if host:
+            endpoint = f'{host}:{port}' if port else host
+            self.label(window, 'Community server', 12, True).pack(anchor='w', pady=(14, 2))
+            self.label(window, endpoint, 11, color=ACCENT).pack(anchor='w')
+        sections = (
+            ('Connection', 'Starter talks to the community server for lobbies and matches. '
+             'Direct hosting also uses the assigned game server for gameplay and optional proximity voice.'),
+            ('Game files', 'You play using your installed copy of TRIBES 3. Starter prepares a separate '
+             'game session. Builds with map downloads also cache community content and verify its hashes.'),
+            ('Account and files', 'Sign in through Steam as usual. Starter does not ask for your Steam or Epic '
+             'password. It can save settings and logs in your Windows user profile and stage files in your chosen workspace.'),
+            ('Verify it yourself', 'Review the source, inspect the launcher and game processes in Task Manager, '
+             'or scan a downloaded archive with your antivirus. If your download includes a published SHA-256, '
+             'compare it with the hash of your file.'),
+        )
+        for title, text in sections:
+            self.label(window, title, 12, True).pack(anchor='w', pady=(12, 2))
+            body = self.label(window, text, 11, color=MUTED)
+            body.configure(wraplength=465, justify='left')
+            body.pack(anchor='w')
+        links = tk.Frame(window, bg=BG)
+        links.pack(fill='x', pady=(16, 0))
+        self.button(links, 'Client source', lambda: webbrowser.open(
+            'https://github.com/T24085/T3FrontEndClient'), False).pack(side='left')
+        self.button(links, 'Close', window.destroy, False).pack(side='right')
+        window.bind('<Escape>', lambda _event: window.destroy())
+        window.focus_set()
+
+
+    def show_connection_info_once(self):
+        """Use the persistent entry after the first-run introduction."""
+        profile = Path(os.environ.get('LOCALAPPDATA') or Path.home() / '.config')
+        receipt = profile / 'Tribes3CommunityStarter' / 'connection-info-v1.seen'
+        if receipt.exists():
+            return
+        self.show_connection_info()
+        window = self.connection_window
+
+        def remember(event):
+            if event.widget is not window:
+                return
+            try:
+                receipt.parent.mkdir(parents=True, exist_ok=True)
+                receipt.touch()
+            except OSError:
+                pass
+
+        window.bind('<Destroy>', remember, add='+')
+
     def close(self):
         if self.closing: return
         self.closing = True
@@ -836,10 +903,11 @@ def main(*, ssl_context=None, on_ready=None):
         access = ServerAccess.load(CLIENT_PACKAGE)
     except (ValueError, OSError):
         access = None
-    Desktop(root,lobby,game_factory,steam_name_loader=steam_name_loader,server_access=access,map_sync=map_sync)
+    gui = Desktop(root,lobby,game_factory,steam_name_loader=steam_name_loader,server_access=access,map_sync=map_sync)
     if on_ready is not None:
         root.update_idletasks()
         on_ready()
+    root.after_idle(gui.show_connection_info_once)
     root.mainloop()
 
 

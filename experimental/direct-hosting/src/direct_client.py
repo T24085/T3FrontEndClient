@@ -1183,6 +1183,7 @@ def main(root=ROOT, *, on_ready=None):
         if on_ready is not None:
             window.update_idletasks()
             on_ready()
+        window.after_idle(gui.show_connection_info_once)
         window.mainloop()
     finally:
         lobby.close()
