@@ -191,6 +191,8 @@ class GameHandoff:
         self.role = 'player'
         self.public_round = None
         self.watch_id = None
+        self.match_id = None
+        self.switch_pending = False
 
     def snapshot(self):
         with self.lock:
@@ -202,13 +204,14 @@ class GameHandoff:
                 if result.get('watch_released') and self.watch_id:
                     with self.lobby.lock:
                         self.lobby._watch_tokens.pop(self.watch_id, None)
-                return dict(result, role=self.role, watchId=self.watch_id)
             except FileNotFoundError:
                 if time.monotonic() <= self.deadline:
-                    return {'status':'starting','error':None,
+                    result = {'status':'starting','error':None,
                             'progress':'Waiting for Steam. First-time shader processing can take several minutes.'}
-                self._cancel()
-                return {'status':'failed','error':'Steam did not hand off the game. Check Clan Wars Steam Setup.'}
+                else:
+                    self._cancel()
+                    result = {'status':'failed','error':'Steam did not hand off the game. Check Clan Wars Steam Setup.'}
+            return dict(result, role=self.role, watchId=self.watch_id, matchId=self.match_id)
 
     def _send(self, role, **values):
         from community_transport import CommunityError
@@ -249,6 +252,7 @@ class GameHandoff:
             self.deadline = time.monotonic() + HANDOFF_WAIT
             self.role = role
             self.watch_id = values.get('watch_id')
+            self.match_id = values.get('match')
             return 'starting'
 
     def start(self, *, expected_map=None, expected_match_id=None):
@@ -256,6 +260,43 @@ class GameHandoff:
 
     def start_public(self, name, *, team='auto'):
         return self._send('public', name=name, team=team)
+
+    def switch_public_team(self, round_id, team):
+        from community_transport import CommunityError
+        from direct_network import read_json, write_json
+        from ubuntu_join_worker import SWITCH_FILE, SWITCH_RESULT, SWITCH_WAIT
+
+        if type(round_id) is not int or round_id < 1 or team not in ('blue', 'red'):
+            raise ValueError('Invalid Public CTF team switch.')
+        with self.lock:
+            if self.role != 'public' or self.snapshot()['status'] != 'playing':
+                raise CommunityError('Join Public CTF before switching teams.')
+            directory = self.directory
+            if self.switch_pending or (directory/SWITCH_FILE).exists():
+                raise CommunityError('A Public CTF team switch is already pending.')
+            nonce = uuid.uuid4().hex
+            (directory/SWITCH_RESULT).unlink(missing_ok=True)
+            write_json(directory/SWITCH_FILE, {'nonce': nonce, 'round': round_id, 'team': team})
+            self.switch_pending = True
+
+        try:
+            until = time.monotonic() + SWITCH_WAIT
+            while time.monotonic() < until:
+                try:
+                    result = read_json(directory/SWITCH_RESULT, 4096)
+                except FileNotFoundError:
+                    result = None
+                if isinstance(result, dict) and result.get('nonce') == nonce:
+                    if result.get('error'):
+                        raise CommunityError(result['error'])
+                    return result.get('status')
+                if (directory/'cancel').exists() or self.snapshot()['status'] not in ACTIVE:
+                    raise CommunityError('Public CTF closed during the team switch.')
+                time.sleep(.1)
+            raise CommunityError('The Public CTF team switch did not respond. Check the current team before retrying.')
+        finally:
+            with self.lock:
+                self.switch_pending = False
 
     def start_spectating(self, watch_id):
         with self.lock:

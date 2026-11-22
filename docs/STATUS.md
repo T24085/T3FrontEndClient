@@ -19,8 +19,10 @@ and reconnects using the retained public seat. The panel shows current team
 sizes, disabled reasons, and switch announcements from the host.
 
 Competition, Scrim, and PUG lobby choices automatically lock their rosters
-at match start. The Windows and Proton Direct Starter builds use the same
-launcher source for these controls. Native gameplay qualification is pending.
+at match start. The Ubuntu launcher sends Public CTF team changes to the
+worker that owns the current Proton session. Fixtures exercise the worker
+through process handoff and verify that a denied move keeps the game open.
+Native gameplay qualification is pending.
 
 # Private lobby admission
 
@@ -56,6 +58,8 @@ replaced match and joins the fresh match through the existing lobby flow. The
 restart uses the same map and teams and starts a new scored round.
 With a paired Direct Host, rejoining by the same registered device restores a
 reserved place in the replacement even if the player left the original lobby.
+The native Ubuntu launcher reports its owned match ID during Steam startup
+and gameplay so this flow can identify the replaced session on both platforms.
 
 # Public CTF team selection and the Maps tab
 

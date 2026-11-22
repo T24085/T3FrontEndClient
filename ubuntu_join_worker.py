@@ -14,6 +14,39 @@ IMPORT_FILE = 'retail-settings-import.json'
 IMPORT_RESULT = 'retail-settings-result.json'
 IMPORT_INIS = ('Input.ini', 'GameUserSettings.ini')
 IMPORT_LIMIT = 3 * 1024 * 1024
+SWITCH_FILE = 'public-switch.json'
+SWITCH_RESULT = 'public-switch-result.json'
+SWITCH_WAIT = 180
+
+
+def switch_public_team(directory, game):
+    from direct_network import read_json, write_json
+
+    path = directory/SWITCH_FILE
+    try:
+        request = read_json(path, 1024)
+        if not isinstance(request, dict):
+            return
+        nonce, round_id, team = (request.get(key) for key in ('nonce', 'round', 'team'))
+        if not isinstance(nonce, str) or not re.fullmatch('[a-f0-9]{32}', nonce):
+            return
+        try:
+            if type(round_id) is not int or round_id < 1 or team not in ('blue', 'red'):
+                raise ValueError('Invalid Public CTF team switch.')
+            if (directory/'cancel').exists() or time.time() - path.stat().st_mtime >= SWITCH_WAIT:
+                raise ValueError('The Public CTF team switch expired. Try again.')
+            outcome = game.switch_public_team(round_id, team)
+            if outcome is None:
+                raise ValueError('The Public CTF game changed. Refresh and try again.')
+            result = {'nonce': nonce, 'status': outcome}
+        except (OSError, RuntimeError, ValueError) as exc:
+            result = {'nonce': nonce, 'error': str(exc)[:512] or 'Public CTF could not switch teams.'}
+    except (OSError, ValueError) as exc:
+        print(f'Could not process the Public CTF team switch: {exc}', flush=True)
+        return
+    finally:
+        path.unlink(missing_ok=True)
+    write_json(directory/SWITCH_RESULT, result)
 
 
 def voice_preferences(path):
@@ -161,7 +194,9 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
         next_poll = 0
         next_voice = 0
         last = None
+        switch = None
         while True:
+            switching = switch is not None and switch.is_alive()
             snapshot = game.snapshot()
             phase = snapshot['status']
             cancelled = (directory/'cancel').exists()
@@ -171,7 +206,13 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
             if now >= next_voice:
                 refresh_voice()
                 next_voice = now + 1
-            if public and not cancelled and phase == 'playing' and now >= next_poll:
+            if (public and not cancelled and not switching and not launch.is_alive()
+                    and phase == 'playing' and (directory/SWITCH_FILE).exists()):
+                switch = threading.Thread(target=switch_public_team, args=(directory, game),
+                                          name='ubuntu-public-team-switch')
+                switch.start()
+                switching = True
+            if public and not cancelled and not switching and phase == 'playing' and now >= next_poll:
                 next_poll = now + 2
                 with suppress(RuntimeError, OSError):
                     current = game.public_round
@@ -183,16 +224,19 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
                 status(directory,'failed',error=failure[0],
                        watch_released=spectator and watch_id not in lobby._watch_tokens)
                 return 1
-            if not launch.is_alive() and phase in ('stopped','finished','failed','quarantined'):
+            if not switching and not launch.is_alive() and phase in ('stopped','finished','failed','quarantined'):
                 if game.thread is not None and game.thread.is_alive():
                     time.sleep(.25)
                     continue
                 status(directory,phase,error=snapshot.get('error') or (failure[0] if failure else None),
                        watch_released=spectator and watch_id not in lobby._watch_tokens)
                 return int(phase in ('failed','quarantined'))
-            entry = (phase,snapshot.get('error'),snapshot.get('progress'))
+            if switching and phase in ('idle', 'stopped', 'finished'):
+                entry = ('stopping', None, None) if cancelled else ('starting', None, 'Switching Public CTF teams…')
+            else:
+                entry = (phase,snapshot.get('error'),snapshot.get('progress'))
             if entry != last:
-                status(directory,'starting' if phase=='idle' else phase,
+                status(directory,'starting' if entry[0]=='idle' else entry[0],
                        error=entry[1],progress=entry[2])
                 last = entry
             time.sleep(.25)

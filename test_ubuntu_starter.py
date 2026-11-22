@@ -14,7 +14,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from ubuntu_join_worker import serve, status
+from ubuntu_join_worker import SWITCH_FILE, SWITCH_RESULT, serve, status, switch_public_team
+
+DIRECT_SOURCE = Path(__file__).resolve().parent/'experimental/direct-hosting/src'
 
 if sys.platform == 'linux':
     from ubuntu_starter import APP_ID, HANDOFF_WAIT, MARKER, SNAP_LOCK, GameHandoff, dispatch, main, steam_persona
@@ -23,7 +25,7 @@ if sys.platform == 'linux':
 
 class UbuntuJoinWorkerTest(unittest.TestCase):
     def join(self, sync, caps, *, session=None, through_bridge=False, spectator=False,
-             public=False, team=None):
+             public=False, team=None, switch=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             directory = root/'joins'/'fixture'
@@ -46,6 +48,11 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
                     request['team'] = team
             (directory/'claimed.json').write_text(json.dumps(request), encoding='utf-8')
             observed = []
+            switched = threading.Event()
+            nonce = 'f'*32
+            if switch:
+                (directory/SWITCH_FILE).write_text(json.dumps({'nonce': nonce, 'round': 2, 'team': 'blue'}),
+                                                   encoding='utf-8')
 
             class Lobby:
                 def __init__(self, *_args, **_kwargs):
@@ -61,13 +68,33 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
                 def begin_game_attempt(self):
                     self.direct_session = 'b'*32
 
+                def public_state(self, *, renew):
+                    return {}
+
             def start(**_kwargs):
                 lobby = direct.DirectGame.call_args.args[0]
                 lobby.begin_game_attempt()
                 observed.append(lobby.direct_session)
 
-            game = SimpleNamespace(start=Mock(side_effect=start), snapshot=lambda: {'status': 'finished'},
+            def snapshot():
+                if not switch or (directory/SWITCH_RESULT).exists():
+                    return {'status': 'finished'}
+                return {'status': 'stopped' if switched.is_set() else 'playing'}
+
+            game = SimpleNamespace(start=Mock(side_effect=start), snapshot=snapshot, public_round=None,
                                    thread=None, stop=Mock())
+
+            def change_team(round_id, target):
+                switched.set()
+                status_path = directory/'status.json'
+                until = time.monotonic() + 5
+                while time.monotonic() < until:
+                    if status_path.exists() and json.loads(status_path.read_bytes()).get('progress') == 'Switching Public CTF teams…':
+                        return 'starting'
+                    time.sleep(.03)
+                raise ValueError('The starting phase was not shown during the switch.')
+
+            game.switch_public_team = Mock(side_effect=change_team)
             def spectate(value):
                 self.assertEqual(value, watch_id)
                 lobby = direct.DirectGame.call_args.args[0]
@@ -78,7 +105,8 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
             game.start_public = Mock(side_effect=lambda *args, **kwargs: start())
             direct = SimpleNamespace(DirectClient=Lobby, DirectGame=Mock(return_value=game))
             map_sync = Mock(return_value=sync)
-            with patch.dict(sys.modules, direct_client=direct, map_sync=SimpleNamespace(MapSync=map_sync)):
+            with patch.object(sys, 'path', [str(DIRECT_SOURCE), *sys.path]), \
+                    patch.dict(sys.modules, direct_client=direct, map_sync=SimpleNamespace(MapSync=map_sync)):
                 if through_bridge:
                     bridge = Path(__file__).with_name('linux_bootstrap.pyw')
                     package = bridge.resolve().parent
@@ -117,6 +145,10 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
             else:
                 game.start.assert_called_once_with(expected_map='Stonehenge2026', expected_match_id='match')
             self.assertEqual(outcome['status'], 'finished')
+            if switch:
+                game.switch_public_team.assert_called_once_with(2, 'blue')
+                self.assertEqual(json.loads((directory/SWITCH_RESULT).read_bytes()),
+                                 {'nonce': nonce, 'status': 'starting'})
             lobby.close.assert_called_once()
             return observed
 
@@ -155,6 +187,10 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
         observed = self.join(sync, {'mapFileSync': 2, 'mapSessionSync': 3}, session=session,
                              through_bridge=True, spectator=True)
         self.assertEqual(observed, [session, session])
+
+    def test_proton_worker_keeps_ownership_during_the_team_switch(self):
+        sync = SimpleNamespace(start=Mock(), cancelled=threading.Event())
+        self.join(sync, {}, public=True, switch=True)
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'Native Ubuntu tests run on Linux')
@@ -235,6 +271,37 @@ class UbuntuHandoffTest(unittest.TestCase):
                         patch('ubuntu_starter.run_in_terminal', side_effect=run):
                     self.assertEqual(dispatch(command), 0)
                 self.assertEqual(handoff.snapshot()['status'], 'finished')
+
+    def test_private_handoff_reports_the_owned_match_before_and_after_launch(self):
+        handoff = GameHandoff(self.lobby, self.state, launch=Mock())
+        with patch('ubuntu_starter.shutil.which', return_value='/usr/bin/steam'):
+            handoff.start(expected_match_id='current')
+        self.assertEqual(handoff.snapshot()['matchId'], 'current')
+        status(handoff.directory, 'playing')
+        playing = handoff.snapshot()
+        self.assertEqual((playing['role'], playing['status'], playing['matchId']), ('player', 'playing', 'current'))
+        handoff.stop()
+        self.assertTrue((handoff.directory/'cancel').exists())
+        self.assertEqual(handoff.snapshot()['status'], 'stopped')
+        with patch('ubuntu_starter.shutil.which', return_value='/usr/bin/steam'):
+            handoff.start_public('Pilot')
+        self.assertIsNone(handoff.snapshot()['matchId'])
+
+    def test_team_switch_uses_the_open_session_and_surfaces_a_denial(self):
+        launch = Mock()
+        handoff = GameHandoff(self.lobby, self.state, launch=launch)
+        with patch('ubuntu_starter.shutil.which', return_value='/usr/bin/steam'):
+            handoff.start_public('Pilot')
+        directory = handoff.directory
+        status(directory, 'playing')
+        game = SimpleNamespace(switch_public_team=Mock(side_effect=ValueError('Team is full.')))
+        with patch.object(sys, 'path', [str(DIRECT_SOURCE), *sys.path]), \
+                patch('ubuntu_starter.time.sleep', side_effect=lambda _: switch_public_team(directory, game)):
+            with self.assertRaisesRegex(RuntimeError, 'Team is full'):
+                handoff.switch_public_team(4, 'red')
+        game.switch_public_team.assert_called_once_with(4, 'red')
+        launch.assert_called_once()
+        self.assertEqual(handoff.snapshot()['status'], 'playing')
 
     def test_ordinary_steam_play_preserves_its_command(self):
         command = ['steam-runtime','proton','run','ordinary-game.exe','-argument']

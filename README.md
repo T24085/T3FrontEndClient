@@ -39,24 +39,25 @@ The November 22 Direct rollout was verified with Windows Starter r76 and Ubuntu 
 
 The [paired backend](https://github.com/T24085/T3BackEndServer) documents host setup and the server components used for the rollout.
 
-### Join or switch teams
+## Source preview
 
 On supported hosts, **Public CTF** shows both teams and **Auto Balance**.
 While playing, **Switch to A** or **Switch to B** asks the host to move you.
 Starter reconnects to the same round after your previous game closes. A
-disabled choice shows the host's reason.
+disabled choice shows the host's reason. On native Ubuntu, the launcher
+sends the request to the Proton worker that owns the current game.
 
 In **Lobbies**, **Competition**, **Scrim**, and **PUG** lock the player roster
 after the match starts. Players with a reserved place can still select **Rejoin**.
 If a lobby leader restarts the match, reserved players can rejoin the replacement
 on their original team.
 
-A Direct package with directory seeds adds **Community servers**. Connect to
+A Windows Direct package with directory seeds adds **Community servers**. Connect to
 a host that offers open Public CTF registration, or use the selected host's
 invitation. The browser keeps a saved view for master outages and can measure
 ping to a selected server.
 
-The [paired backend branch](https://github.com/T24085/T3BackEndServer/tree/feat/phoenix-rising-issue-integration) supports these lobby and map options. The [verification status](docs/STATUS.md) covers the CTF scorebar, generator icons, flag carrier names, and minimap markers in this branch.
+Use the [paired backend branch](https://github.com/T24085/T3BackEndServer/tree/feat/phoenix-rising-issue-integration) to test these lobby and map options. The [verification status](docs/STATUS.md) covers the launcher checks and the CTF HUD changes that still need an in-game test.
 
 ## Starter screenshots
 
