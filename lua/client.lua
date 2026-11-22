@@ -1125,7 +1125,7 @@ end
 end)()
 local releaseRadarHelperFactory=(function()
 -- Local minimap capture and display. Native radars, teams, power and authored
--- authored ValWorldSettings remain owners. The native zoom stays intact.
+-- ValWorldSettings remain owners. The native zoom stays intact.
 return function(env)
  local valid,report,scope,signature=assert(env.valid),assert(env.report),assert(env.scope),assert(env.signature)
  local contracts=assert(env.blueprint_contracts);local prefix=assert(env.world_prefix)
@@ -1220,29 +1220,38 @@ return function(env)
    end
   end
  end
+ local function background_visible(widget)
+  local visibility=widget.MapTexture:GetVisibility()
+  local placeholder=valid(widget.EmptyTexture) and widget.EmptyTexture:GetVisibility() or 1
+  return (visibility==0 or visibility==3 or visibility==4) and (placeholder==1 or placeholder==2)
+ end
  local function configure_texture(widget,record)
   local image=state.texture
   local background=widget.MapTexture
   local material=widget.Material
   if valid(image) and not record.png_failed then
    local ok=pcall(function()
-    if not same(background.Brush.ResourceObject,image) then
+    if not same(background.Brush.ResourceObject,image) or not background_visible(widget) then
      background:SetBrushFromTexture(image,false)
      if valid(widget.EmptyTexture) then widget.EmptyTexture:SetVisibility(1) end
      background:SetVisibility(4)
     end
    end)
-   if not ok then
+   if not ok or not same(background.Brush.ResourceObject,image) or not background_visible(widget) then
     record.png_failed=true
-    widget:UpdateTexture()
     report('MINIMAP_BRUSH_FALLBACK|map='..env.descriptor.name)
    end
   end
   if record.png_failed then image=nil end
-  if not same(background.Brush.ResourceObject,image) and not same(background.Brush.ResourceObject,material) then
-   widget:UpdateTexture()
+  if not valid(image) then
+   -- UpdateSublevel sets projection and zoom. The original UpdateTexture
+   -- assigns the live material and clears the separate placeholder image.
+   if not same(background.Brush.ResourceObject,material) or not background_visible(widget) then
+    widget:UpdateTexture()
+   end
+   if not same(background.Brush.ResourceObject,material) or not background_visible(widget) then return false end
   end
-  if not (valid(image) or minimap.center or minimap.scale or minimap.extent) then return end
+  if not minimap or not (valid(image) or record.background_image or minimap.center or minimap.scale or minimap.extent) then return true end
   local bounds=valid(image) and minimap.image_bounds or nil
   local position=state.capture_center
   local spanX,spanY=state.capture_width,state.capture_width
@@ -1264,6 +1273,7 @@ return function(env)
    record.background_scale=widget.MapScale
    record.background_image=valid(image)
   end
+  return true
  end
  local function setup(pc,gs)
   own_world(pc,gs)
@@ -1280,11 +1290,17 @@ return function(env)
   end
   for _,actor in ipairs(FindAllOf('BP_MinimapCapture_C') or {}) do
    if valid(actor) and same(actor:GetWorld(),world) then
-    if not minimap then
+    local component=actor.SceneCaptureComponent2D
+    local target=valid(component) and component.TextureTarget or nil
+    if not valid(target) then return end
+    if target:GetFullName()~=targetName or component.ProjectionType~=1 then
+     -- An alternate authored capture can have its own display material.
+     -- Preserve its native binding instead of reassigning the target.
      state={pc=pc,gs=gs,world=world,map_owned_capture=true}
-    else
-     local component=actor.SceneCaptureComponent2D
-     if not valid(component) or component.ProjectionType~=1 then return end
+     report('BASE_RADAR_CLIENT_MAP_CAPTURE_PRESENT|map='..env.descriptor.name..'|binding=native')
+     return
+    end
+    if minimap then
      local origin=component:K2_GetComponentLocation()
      if minimap.center then
       signature('/Script/Engine.Actor:K2_SetActorLocation',{{'NewLocation','StructProperty',0},{'bSweep','BoolProperty',24},
@@ -1293,12 +1309,15 @@ return function(env)
       assert(actor:K2_SetActorLocation({X=base.X+center.X-origin.X,Y=base.Y+center.Y-origin.Y,Z=base.Z},
                                       false,{},true),'minimap_authored_capture_center_failed')
      else center={X=origin.X,Y=origin.Y} end
-     if not minimap.extent and not minimap.scale then width=component.OrthoWidth end
-     if width<=0 then return end
-     component.OrthoWidth=width
-     state={pc=pc,gs=gs,world=world,settings=settings,map_size=size,capture_width=width,capture_center=center,
-            capture=actor,capture_name=actor:GetFullName(),widgets={},component=component,texture=texture_from_png(pc)}
+     if minimap.extent or minimap.scale then component.OrthoWidth=width end
     end
+    width=component.OrthoWidth
+    if not finite(width) or width<=0 then return end
+    verify_blueprints()
+    signature('/Script/UMG.Widget:GetOwningPlayer',{{'ReturnValue','ObjectProperty',0}})
+    signature('/Script/UMG.PanelWidget:GetChildrenCount',{{'ReturnValue','IntProperty',0}})
+    state={pc=pc,gs=gs,world=world,settings=settings,map_size=size,capture_width=width,capture_center=center,
+           capture=actor,capture_name=actor:GetFullName(),widgets={},component=component,texture=texture_from_png(pc),authored=true}
     report('BASE_RADAR_CLIENT_MAP_CAPTURE_PRESENT|map='..env.descriptor.name)
     return
    end
@@ -1404,38 +1423,39 @@ return function(env)
     count=count+1;local key=widget:GetAddress()
     local previous=state.widgets[key]
     if previous and (not valid(previous.widget) or previous.name~=widget:GetFullName()) then state.widgets[key]=nil end
-    if not state.widgets[key] and valid(widget.MapTexture) and valid(widget.Material) then
+    if not state.widgets[key] and valid(widget.MapTexture) and (valid(widget.Material) or valid(state.texture)) then
      local prior=widget.MinimapCapture
      assert(not valid(prior) or same(prior,state.capture),'radar_client_foreign_widget_capture')
      state.widgets[key]={widget=widget,name=widget:GetFullName(),prior=prior}
      widget.MinimapCapture=state.capture
      widget:UpdateSublevel()
      if minimap then configure_framing(widget,true) end
-     local baseScale=1024/state.capture_width
+     local baseScale=1024/(state.authored and not minimap and state.map_size or state.capture_width)
      assert(finite(widget.CachedMapScale) and math.abs(widget.CachedMapScale-baseScale)<=math.max(1e-8,baseScale*1e-6),
             'radar_client_native_widget_scale_mismatch')
-     local expectedScale=widget.CachedMapScale*(minimap and widget.DefaultZoom or 1)
+     local expectedScale=widget.CachedMapScale*widget.DefaultZoom
      assert(finite(widget.MapScale) and math.abs(widget.MapScale-expectedScale)<=math.max(1e-8,expectedScale*1e-6),
             'radar_client_marker_scale_mismatch')
-     assert(same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_native_material_binding_mismatch')
-     report('BASE_RADAR_CLIENT_WIDGET_BOUND|widget='..widget:GetFullName()..'|cachedScale='..widget.CachedMapScale..'|mapScale='..widget.MapScale..'|projectionWidthCm='..state.capture_width..'|zoom='..tostring(widget.CachedZoom))
     end
-    if state.widgets[key] then
+    local record=state.widgets[key]
+    if record then
+     if not valid(widget.MinimapCapture) then widget.MinimapCapture=state.capture end
      assert(same(widget.MinimapCapture,state.capture),'radar_client_widget_binding_changed')
-     if minimap then
-      configure_framing(widget,false)
-      configure_texture(widget,state.widgets[key])
-     else
-      assert(same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_widget_binding_changed')
+     if minimap then configure_framing(widget,false) end
+     if configure_texture(widget,record) then
+      projected=projected+1
+      if not record.reported then
+       record.reported=true
+       report('BASE_RADAR_CLIENT_WIDGET_BOUND|widget='..widget:GetFullName()..'|cachedScale='..widget.CachedMapScale..'|mapScale='..widget.MapScale..'|projectionWidthCm='..state.capture_width..'|zoom='..tostring(widget.CachedZoom))
+      end
+      if not state.manual_capture then
+       signature('/Script/Engine.SceneCaptureComponent2D:CaptureScene',{})
+       state.component:CaptureScene()
+       state.manual_capture=true
+       report('BASE_RADAR_CLIENT_CAPTURE_REQUESTED|source=bound_community_map')
+      end
      end
-     projected=projected+1
-     if not state.manual_capture then
-      signature('/Script/Engine.SceneCaptureComponent2D:CaptureScene',{})
-      state.component:CaptureScene()
-      state.manual_capture=true
-      report('BASE_RADAR_CLIENT_CAPTURE_REQUESTED|source=bound_community_map')
-     end
-     if env.descriptor.radars_per_team~=0 and bind_native_radars(widget,state.widgets[key]) then bound=bound+1 end
+     if env.descriptor.radars_per_team~=0 and bind_native_radars(widget,record) then bound=bound+1 end
     end
    end
   end

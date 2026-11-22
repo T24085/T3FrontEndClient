@@ -20,7 +20,7 @@ MAPS = (
 
 
 FIXTURE = '''
-local f={captures={},radars={},meshes={},requests=0,spawns=0,reports={}}
+local f={captures={},radars={},meshes={},requests=0,spawns=0,updates=0,reports={}}
 local next_address=0
 local function object(name)
     local actor={}
@@ -46,14 +46,20 @@ local lib=object('UILibrary /Script/ValhallaUI.Default__UILibrary')
 function lib:GetWorldSettings(context) assert(context==pc);return settings end
 local target=object('TextureRenderTarget2D /Game/Maps/Game/CrossFire/Crossfire_RenderTarget2D.Crossfire_RenderTarget2D')
 target.SizeX,target.SizeY=1024,1024
+f.target=target
+local function capture_component(capture,width)
+    local component={ProjectionType=1,TextureTarget=target,OrthoWidth=width}
+    function component:GetOwner() return capture end
+    function component:CaptureScene() f.requests=f.requests+1 end
+    function component:K2_GetComponentLocation() return {X=150,Y=300,Z=100000} end
+    return component
+end
 local api=object('GameplayStatics /Script/Engine.Default__GameplayStatics')
 function api:BeginDeferredActorSpawnFromClass(context,klass,transform)
     assert(context==pc and klass:GetFullName():find('BP_MinimapCapture_C',1,true))
     f.spawns=f.spawns+1;f.height=transform.Translation.Z;f.origin=transform.Translation
     local capture=object('MinimapCapture');capture.world=world
-    local component={ProjectionType=1,TextureTarget=target}
-    function component:GetOwner() return capture end
-    function component:CaptureScene() f.requests=f.requests+1 end
+    local component=capture_component(capture)
     capture.SceneCaptureComponent2D=component
     f.component=component
     f.captures[#f.captures+1]=capture
@@ -105,13 +111,15 @@ local function slot()
     function s:SetAutoSize(value) self.automatic=value end
     return s
 end
-widget.MapTexture={Brush={ResourceObject=widget.Material},Slot=slot()}
+widget.MapTexture={Brush={ResourceObject=widget.Material},Slot=slot(),visibility=4}
 function widget.MapTexture:SetBrushFromTexture(texture,matchSize)
     assert(not matchSize)
+    if f.reject_png_brush then return end
     self.Brush.ResourceObject=texture
 end
 function widget.MapTexture:SetVisibility(value) self.visibility=value end
-widget.EmptyTexture={SetVisibility=widget.MapTexture.SetVisibility}
+function widget.MapTexture:GetVisibility() return self.visibility end
+widget.EmptyTexture={SetVisibility=widget.MapTexture.SetVisibility,GetVisibility=widget.MapTexture.GetVisibility,visibility=1}
 f.frame=slot()
 local wrapper=object('minimap root')
 function wrapper:GetClass()
@@ -134,7 +142,12 @@ function widget:UpdateTranslation(delta,interpolate)
     self.CachedMapTranslation=self.TargetTranslation
 end
 function widget:UpdateTexture()
+    f.updates=f.updates+1
+    if f.delayed_material then return end
+    assert(self.MinimapCapture)
     self.MapTexture.Brush.ResourceObject=self.Material
+    self.MapTexture:SetVisibility(4)
+    self.EmptyTexture:SetVisibility(1)
 end
 widget.RadarSensors={children=0,GetChildrenCount=function(self) return self.children end}
 function widget.RadarSensors:GetChildAt() return {GetClass=function()return radarWidgetClass end} end
@@ -167,8 +180,16 @@ function f.add_mesh(asset,x,z,half_z,elsewhere,hidden,collision)
     end
     f.meshes[#f.meshes+1]=actor
 end
-function f.add_map_capture()
+function f.add_map_capture(width)
     local capture=object('authored capture');capture.world=world;f.captures[1]=capture
+    f.component=capture_component(capture,width or authored)
+    capture.SceneCaptureComponent2D=f.component
+    if not width then f.component.TextureTarget=object('Alternate native capture target') end
+end
+function f.blank(clear_brush)
+    widget.MapTexture:SetVisibility(1)
+    widget.EmptyTexture:SetVisibility(4)
+    if clear_brush then widget.MapTexture.Brush.ResourceObject=nil end
 end
 function f.add_radars()
     for team=1,2 do
@@ -255,6 +276,19 @@ class RadarProjectionTest(unittest.TestCase):
         self.assertAlmostEqual(f.widget.MapTexture.Slot.position.Y, 2000 * 1024 / 70000)
         self.assertTrue(any(line.startswith('MINIMAP_PNG_FALLBACK|') for line in f.reports.values()))
 
+    def test_png_brush_rejection_clears_the_placeholder_using_the_native_capture(self):
+        f = self.fixture(*MAPS[-1], minimap="{image_file='valid.png',image_bounds={{0,0},{1000,1000}}}")
+        self.assertTrue(f.tick())
+        self.assertAlmostEqual(f.widget.MapTexture.Slot.size.X, 1000 * 1024 / MAPS[-1][-1])
+        f.blank(True)
+        f.reject_png_brush = True
+        self.assertTrue(f.tick())
+        self.assertEqual((f.requests, f.updates), (1, 1))
+        self.assertEqual(f.widget.MapTexture.Brush.ResourceObject.GetFullName(f.widget.MapTexture.Brush.ResourceObject),
+                         'Map material')
+        self.assertAlmostEqual(f.widget.MapTexture.Slot.size.X, 1024)
+        self.assertTrue(any(line.startswith('MINIMAP_BRUSH_FALLBACK|') for line in f.reports.values()))
+
     def test_generated_native_rows_use_own_cooked_meshes_and_authored_map_size(self):
         for map_id, group, level, size in MAPS:
             with self.subTest(map=map_id):
@@ -281,6 +315,22 @@ class RadarProjectionTest(unittest.TestCase):
         self.assertTrue(f.tick())
         self.assertEqual(f.widget.RadarSensors.children, 2)
         self.assertEqual((f.requests, f.spawns), (1, 1))
+
+    def test_live_background_repairs_the_native_placeholder_and_retries_delayed_material(self):
+        f = self.fixture(*MAPS[-1])
+        f.blank(True)
+        f.delayed_material = True
+        self.assertFalse(f.tick())
+        self.assertEqual((f.spawns, f.requests, f.updates), (1, 0, 1))
+        f.delayed_material = False
+        self.assertTrue(f.tick())
+        self.assertEqual((f.spawns, f.requests, f.updates), (1, 1, 2))
+        self.assertEqual((f.widget.MapTexture.visibility, f.widget.EmptyTexture.visibility), (4, 1))
+        f.blank(False)
+        f.widget.MinimapCapture = None
+        self.assertTrue(f.tick())
+        self.assertEqual((f.requests, f.updates), (1, 3))
+        self.assertEqual((f.widget.MapTexture.visibility, f.widget.EmptyTexture.visibility), (4, 1))
 
     def test_two_radars_per_team_bind_once_after_both_pairs_arrive(self):
         f = self.fixture(*MAPS[-1], radar_count=2)
@@ -319,6 +369,20 @@ class RadarProjectionTest(unittest.TestCase):
         authored.add_map_capture()
         self.assertTrue(authored.tick())
         self.assertEqual((authored.requests, authored.spawns), (0, 0))
+
+    def test_existing_capture_refreshes_native_material_without_changing_authored_framing(self):
+        f = self.fixture(*MAPS[1])
+        f.add_map_capture(125000)
+        f.blank(True)
+        f.component.TextureTarget = None
+        self.assertFalse(f.tick())
+        self.assertEqual((f.requests, f.spawns, f.updates), (0, 0, 0))
+        f.component.TextureTarget = f.target
+        self.assertTrue(f.tick())
+        self.assertEqual((f.requests, f.spawns, f.updates), (1, 0, 1))
+        self.assertEqual(f.component.OrthoWidth, 125000)
+        self.assertAlmostEqual(f.widget.CachedMapScale, 1024 / MAPS[1][-1])
+        self.assertEqual((f.widget.MapTexture.visibility, f.widget.EmptyTexture.visibility), (4, 1))
 
     def test_waits_for_compatible_world_settings(self):
         f = self.fixture(*MAPS[2])

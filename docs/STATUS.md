@@ -46,12 +46,14 @@ the host offers an authored frame. The verified session can supply a map
 center, capture scale or extent, rotation, zoom range, and frame size. An
 optional verified PNG uses world-space bounds to align with native markers.
 The live capture remains available when the PNG fails to download, verify,
-or import. Existing map manifests and unconfigured maps use their native
-presentation.
+or import. When the map widget still shows its empty placeholder, Starter
+refreshes the original capture material and waits for the brush and visibility
+to agree before requesting a capture. It reuses compatible map-owned captures
+and preserves their authored framing when the map supplies no overrides.
 
-This source candidate has fixture coverage for projection and PNG fallback.
-Rendered gameplay remains to be verified, including the reported blank
-frame on maps without an authored PNG.
+Fixtures cover a late material, a native widget reset, and rejected PNG
+brushes. Rendered gameplay remains to be verified, including the reported
+blank frame on maps without an authored PNG.
 
 # Private match restart
 
