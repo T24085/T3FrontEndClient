@@ -12,12 +12,14 @@ import os
 from pathlib import Path, PureWindowsPath
 import platform
 import pty
+import re
 import selectors
 import shlex
 import shutil
 import ssl
 import subprocess
 import sys
+import time
 import uuid
 
 APP_ID = '2687970'
@@ -73,17 +75,43 @@ def steam_command(command, env):
     return index, source
 
 
-def windows_path(root, value):
-    drive = PureWindowsPath(root.strip())
-    if not drive.is_absolute() or drive.parts != (drive.anchor,) or drive.anchor.startswith('\\\\'):
-        raise ValueError('Proton did not return an absolute DOS mapping for the Linux root.')
-    path = Path(value)
-    if not path.is_absolute():
-        raise ValueError('A Linux launch path was not absolute.')
-    return str(drive.joinpath(*path.parts[1:]))
+def parse_windows_path(output):
+    """Accept one unambiguous DOS path, even if Steam prints runtime notices."""
+    matches = set()
+    for line in output.decode('utf-8-sig', errors='replace').splitlines():
+        line = line.removeprefix('\\\\?\\')
+        if (re.fullmatch(r'[A-Za-z]:[\\/][^<>:"|?*\x00-\x1f\ufffd]*', line)
+                and '..' not in PureWindowsPath(line).parts):
+            matches.add(PureWindowsPath(line))
+    return str(matches.pop()) if len(matches) == 1 else None
 
 
-def prepare_launch(root, command, env, *, run=subprocess.run, workspace=None, state_directory=None):
+def proton_drives(compat_data):
+    drives = []
+    devices = Path(compat_data)/'pfx/dosdevices'
+    try:
+        for drive in devices.iterdir():
+            if re.fullmatch('[a-zA-Z]:', drive.name) and drive.is_symlink():
+                try:
+                    target = drive.resolve(strict=True)
+                except (OSError, RuntimeError):
+                    continue
+                if target.is_dir():
+                    drives.append((target, PureWindowsPath(drive.name.upper() + '\\')))
+    except OSError:
+        pass
+    return sorted(drives, key=lambda item: (-len(item[0].parts), str(item[1])))
+
+
+def mapped_path(path, drives):
+    for directory, drive in drives:
+        if path.is_relative_to(directory):
+            return parse_windows_path(str(drive.joinpath(*path.relative_to(directory).parts)).encode())
+    return None
+
+
+def prepare_launch(root, command, env, *, run=subprocess.run, workspace=None, state_directory=None,
+                   join_directory=None):
     root = Path(root).resolve(strict=True)
     index, source = steam_command(command, env)
     for relative in ('python/pythonw.exe', 'linux_bootstrap.pyw', 'package-manifest.json'):
@@ -95,10 +123,10 @@ def prepare_launch(root, command, env, *, run=subprocess.run, workspace=None, st
     state = Path(state_directory) if state_directory is not None else data_home/'Tribes3CommunityStarter'
     session = state/'linux-launches'/uuid.uuid4().hex
     session.mkdir(parents=True, mode=0o700)
-    workspace = Path(workspace) if workspace is not None else state/'sessions'
-    workspace.mkdir(parents=True, exist_ok=True)
+    workspace = (Path(workspace) if workspace is not None else state/'sessions').resolve()
     if workspace == source or source in workspace.parents:
         raise ValueError('Community staging must be outside the original game.')
+    workspace.mkdir(parents=True, exist_ok=True)
     # Import the Linux trust bundle into this launch, without disabling TLS or
     # installing anything into the Wine/Windows certificate store.
     ca_candidates = (ssl.get_default_verify_paths().cafile,
@@ -118,23 +146,46 @@ def prepare_launch(root, command, env, *, run=subprocess.run, workspace=None, st
     # Python's documented file-stream mode also applies to our owned children.
     child_env['PYTHONLEGACYWINDOWSSTDIO'] = '1'
     child_env['PYTHONIOENCODING'] = 'utf-8'
-    # Use Proton's own path translator once. Do not assume a Z: mapping or a
-    # default prefix; retain any Steam runtime/container command before Proton.
-    lookup = session/'proton-preflight.log'
+    # Initialize this prefix with a real path. Snap may not export the Linux
+    # root, and different paths can live on separate Wine drives.
+    lookup = (join_directory if join_directory is not None else session)/'proton-preflight.log'
     print(f'Proton path-translation log: {lookup}', flush=True)
+    deadline = time.monotonic() + 120
     with lookup.open('wb') as log:
-        log.write(b'Starting Proton path translation\n')
-        log.flush()
-        result = run(command[:index+1] + ['getcompatpath', '/'], env=child_env,
-                     stdout=subprocess.PIPE, stderr=log, timeout=90, check=False)
-        log.write(f'Proton path translation exited with code {result.returncode}\n'.encode())
-    if result.returncode or len(result.stdout) > 4096:
-        raise ValueError('Proton could not initialize or translate paths; check its installation in Steam.')
-    dos_root = result.stdout.decode('utf-8-sig').strip()
-    win = lambda p: windows_path(dos_root, p)
-    argv = command[:index+2] + [win(root/'python/pythonw.exe'), '-B', win(root/'linux_bootstrap.pyw'),
-                              '--game-dir', win(source), '--workspace', win(workspace),
-                              '--launch-dir', win(session), '--ca-sha256', ca_sha]
+        def probe(path, label):
+            log.write(f'Translating {label}\n'.encode())
+            log.flush()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError('Proton path translation timed out.')
+            try:
+                result = run(command[:index+1] + ['getcompatpath', str(path)], env=child_env,
+                             stdout=subprocess.PIPE, stderr=log, timeout=min(90, remaining), check=False)
+            except subprocess.TimeoutExpired as exc:
+                raise ValueError('Proton path translation timed out.') from exc
+            log.write(f'Proton path translation exited with code {result.returncode}\n'.encode())
+            log.write(result.stdout[:4096] + b'\n')
+            if result.returncode or len(result.stdout) > 4096:
+                raise ValueError(f'Proton could not translate the {label} path.')
+            return parse_windows_path(result.stdout)
+
+        launch_dir = probe(session, 'launch diagnostics')
+        drives = proton_drives(child_env['STEAM_COMPAT_DATA_PATH'])
+
+        def win(path, label, translated=None):
+            mapped = mapped_path(path.resolve(), drives) or translated
+            if not mapped and path != session:
+                mapped = probe(path, label)
+            if not mapped:
+                raise ValueError(f'Proton did not return a usable Windows path for {label}.')
+            return mapped
+
+        package = PureWindowsPath(win(root, 'Clan Wars installation'))
+        argv = command[:index+2] + [str(package/'python/pythonw.exe'), '-B', str(package/'linux_bootstrap.pyw'),
+                                  '--game-dir', win(source, 'Steam game'), '--workspace', win(workspace, 'workspace'),
+                                  '--launch-dir', win(session, 'launch diagnostics', launch_dir), '--ca-sha256', ca_sha]
+        if join_directory is not None:
+            argv += ['--ubuntu-join', win(join_directory, 'join request')]
     record = {'platform': platform.platform(), 'architecture': platform.machine(),
               'game_source': str(source), 'package': str(root), 'workspace': str(workspace),
               'proton': command[index], 'compat_data': child_env['STEAM_COMPAT_DATA_PATH'],

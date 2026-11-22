@@ -121,10 +121,11 @@ class UbuntuHandoffTest(unittest.TestCase):
             self.assertTrue((request/'claimed.json').is_file())
             self.assertEqual(env['STEAM_COMPAT_DATA_PATH'],str(self.state/'compatdata'))
             self.assertEqual(kwargs['workspace'],self.state/'game-files')
-            return ['proton','run','--launch-dir','Z:\\dummy'],env,None
+            self.assertEqual(kwargs['join_directory'], request)
+            return ['proton','run','--launch-dir','Z:\\dummy','--ubuntu-join','S:\\request'],env,None
 
         def run(command, *_):
-            self.assertIn('--ubuntu-join',command)
+            self.assertEqual(command[-2:], ['--ubuntu-join', 'S:\\request'])
             status(request,'finished')
             return 0
 
@@ -161,9 +162,10 @@ class UbuntuHandoffTest(unittest.TestCase):
         def launch(_root, full, env, **kwargs):
             self.assertEqual(full, argv[:-1])
             self.assertEqual(kwargs['workspace'], snap_state/'game-files')
+            self.assertEqual(kwargs['join_directory'], request)
             self.assertEqual(env['STEAM_COMPAT_DATA_PATH'], str(snap_state/'compatdata'))
             self.assertGreater((request/'claimed.json').stat().st_mtime, stamp + 200)
-            return ['proton','run','--launch-dir','Z:\\dummy'], env, None
+            return ['proton','run','--launch-dir','Z:\\dummy','--ubuntu-join','S:\\request'], env, None
 
         def run(*_args):
             status(request, 'finished')

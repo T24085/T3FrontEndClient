@@ -3,7 +3,7 @@ import argparse
 from contextlib import nullcontext
 import json
 import os
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 import re
 import shlex
 import shutil
@@ -16,13 +16,14 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 sys.path[:0] = [str(ROOT), str(ROOT/'lib')]
-from linux_launcher import APP_ID, prepare_launch, run_in_terminal, windows_path
+from linux_launcher import APP_ID, prepare_launch, run_in_terminal
 from ubuntu_startup import exclusive, private_area
 
 MARKER = '-clanwars-ubuntu-join='
 ACTIVE = ('starting', 'playing', 'stopping', 'quarantined')
 HANDOFF_WAIT = 600
 SNAP_LOCK = 'host-steam-session.lock'
+SOURCE_STARTER_REVISION = None
 VDF_STRING = r'"((?:\\.|[^"\\\r\n])*)"'
 VDF_ACCOUNT = re.compile(r'"[0-9]{17}"\s*\{((?:\s*' + VDF_STRING + r'\s*' + VDF_STRING + r')*)\s*\}')
 VDF_FIELD = re.compile(VDF_STRING + r'\s*' + VDF_STRING)
@@ -218,9 +219,8 @@ def dispatch(command):
             compat.mkdir(exist_ok=True)
             isolated_env = dict(os.environ, STEAM_COMPAT_DATA_PATH=str(compat))
             argv, env, _ = prepare_launch(ROOT, [part for part in command if part not in markers],
-                                         isolated_env, workspace=state/'game-files', state_directory=state)
-            dos_root = PureWindowsPath(argv[argv.index('--launch-dir')+1]).anchor
-            argv += ['--ubuntu-join', windows_path(dos_root, request)]
+                                         isolated_env, workspace=state/'game-files', state_directory=state,
+                                         join_directory=request)
             with log_path.open('wb') as log:
                 code = run_in_terminal(argv, env, ROOT, log)
             outcome = json.loads((request/'status.json').read_bytes())
@@ -243,7 +243,7 @@ def show_starter(lobby, state, on_ready=None):
 
     manifest = json.loads((ROOT/'package-manifest.json').read_bytes())
     revision = manifest.get('linux_starter_update_revision', 0)
-    base = manifest.get('starter_update_revision')
+    build = SOURCE_STARTER_REVISION if revision and SOURCE_STARTER_REVISION else manifest.get('starter_update_revision')
     base_label = starter_version()
 
     class UbuntuDesktop(Desktop):
@@ -251,9 +251,7 @@ def show_starter(lobby, state, on_ready=None):
 
         def label(self, parent, text, *args, **kwargs):
             if revision and parent is getattr(self, 'sidebar', None) and text == base_label:
-                text = f'Linux update {revision}'
-                if type(base) is int:
-                    text += f'\nBase installer r{base}'
+                text = f'Build r{build}\nLinux update {revision}' if type(build) is int else f'Linux update {revision}'
                 label = super().label(parent, text, *args, **kwargs)
                 label.configure(justify='left')
                 return label

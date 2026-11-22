@@ -1,3 +1,12 @@
+# Native Ubuntu Proton path translation
+
+The Steam wrapper resolves each launch path using the selected Proton
+prefix. It can use existing drive mappings if Proton emits extra runtime
+output or does not return a usable path for the initial probe. The join
+directory can use a different Wine drive from the install. The preflight
+log is saved with the join attempt. The Linux feed embeds the verified
+Starter source revision so the sidebar shows the running build.
+
 # Native Ubuntu Steam Snap handoff
 
 The Ubuntu launcher uses Steam Snap's common data directory for the handoff,

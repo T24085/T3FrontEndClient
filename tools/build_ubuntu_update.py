@@ -66,6 +66,11 @@ def feed(installer, snapshot, output, revision, certificate):
         if name not in overlay:
             raise ValueError(f'Ubuntu base is missing {name}.')
         files[name] = source_bytes(name)
+    marker = b'\nSOURCE_STARTER_REVISION = None\n'
+    if files['ubuntu_starter.py'].count(marker) != 1:
+        raise ValueError('Ubuntu launcher is missing its source revision marker.')
+    source_revision = f'\nSOURCE_STARTER_REVISION = {current["revision"]}\n'.encode('ascii')
+    files['ubuntu_starter.py'] = files['ubuntu_starter.py'].replace(marker, source_revision)
     if (not 1 <= revision < 2**31 or not files.keys() <= UPDATE_CHANNELS[LINUX_CHANNEL][1]
             or any(not 0 < len(raw) <= MAX_FILE for raw in files.values())
             or sum(map(len, files.values())) > MAX_TOTAL):
