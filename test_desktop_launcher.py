@@ -47,6 +47,52 @@ class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
 
+    def test_restart_controls_and_owned_client_handoff(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        game = FakeGame()
+        app = Desktop(root, lobby, lambda _: game)
+        try:
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            app.caps.update(matchRestartEnabled=True, gameClientReady=True)
+            lobby.room.update(phase='ready', match={'id':'previous','status':'ready'})
+            app.render(lobby.room)
+            self.assertEqual(app.restart_button.cget('state'), 'normal')
+            with patch('desktop_launcher.simpledialog.askstring', return_value='Dropped player'):
+                with patch.object(app, 'call_action') as action:
+                    app.restart_button.invoke()
+            action.assert_called_once_with('restart', matchId='previous', reason='Dropped player')
+
+            lobby.room['restart'] = {'stage':'countdown','matchId':'previous','seconds':7,'reason':'Dropped player'}
+            app.render(lobby.room)
+            self.assertEqual(app.phase.get(), 'Restarting in 7s · Dropped player')
+            self.assertEqual(app.game_button.cget('state'), 'disabled')
+            self.assertEqual(app.restart_button.cget('state'), 'disabled')
+            app.game = game
+            previous = {'status':'playing','matchId':'previous','role':'player'}
+            self.assertFalse(app.stop_restarted_client(previous))
+            lobby.room['restart']['stage'] = 'draining'
+            self.assertFalse(app.stop_restarted_client(dict(previous, role='spectator')))
+            self.assertFalse(app.stop_restarted_client(dict(previous, matchId='other')))
+            self.assertTrue(app.stop_restarted_client(previous))
+            self.assertTrue(game.stopped)
+
+            lobby.room['match'] = {'id':'replacement','status':'ready'}
+            lobby.room['players'][0]['team'] = 'blue'
+            lobby.room['restart']['stage'] = 'complete'
+            app.render(lobby.room)
+            app.game_status = 'stopped'
+            app.join_attempted_match = 'previous'
+            with patch.object(app, 'join_game') as join_game:
+                app.maybe_auto_join()
+            join_game.assert_called_once()
+        finally:
+            app.close()
+
     def test_lobby_code_paste_cleans_invite_text_and_only_joins_when_clicked(self):
         for value in ('  abc234  ', 'Lobby code: abc234\n', 't3://join/abc234',
                       'https://friend.test/lobby/join/abc234', 'https://friend.test/lobby?code=abc234'):

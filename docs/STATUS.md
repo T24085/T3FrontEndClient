@@ -1,3 +1,11 @@
+# Private match restart
+
+Hosts that advertise match restart give the private lobby leader a Restart
+match action with a reason. All lobby members see the countdown and reason.
+Starter closes only the owned game session for the replaced match and joins
+the fresh match through the existing lobby flow. The restart uses the same
+map and teams and starts a new scored round.
+
 # Public CTF team selection and the Maps tab
 
 Public CTF shows player names and live counts by team. Auto Balance picks a

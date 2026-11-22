@@ -453,7 +453,7 @@ class CommunityGame:
             if self.status=='starting' and self.startup_phase=='checking_maps':
                 progress=self.map_sync.status or 'Checking map files…'
             return {'status':self.status, 'error':self.error, 'run':str(self.run) if self.run else None,
-                    'role':self.role, 'watchId':self.watch_id,
+                    'role':self.role, 'watchId':self.watch_id, 'matchId':self.match_id,
                     'progress':progress,
                     'preparation':preparation}
 

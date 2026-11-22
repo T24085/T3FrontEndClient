@@ -224,7 +224,7 @@ class CommunityClient:
 
     def action(self, operation, **data):
         with self.lock:
-            if self.code is None or operation not in ('state', 'team', 'map', 'start', 'stop', 'reset', 'leave','spectators','rules'):
+            if self.code is None or operation not in ('state', 'team', 'map', 'start', 'stop', 'restart', 'reset', 'leave','spectators','rules'):
                 raise CommunityError('No valid lobby action is available.')
             if 'code' in data:
                 raise CommunityError('Invalid lobby action.')
