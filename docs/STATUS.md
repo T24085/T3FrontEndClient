@@ -93,8 +93,10 @@ index support send the catalog body only when it changes.
 The client reads both teams' replicated flags during the same reconciliation
 as the scores and generator icons. It repairs missing native scorebar flag
 widgets and retries the native carrier name when the remote PlayerState
-arrives. The dropped label and home reset use the retail widget. Detachment
-clears stale holder data in the HUD while the actor's replication catches up.
+arrives. The dropped label and home reset use the retail widget. The HUD
+accepts a newly replicated carrier while the attachment loads. Once it has
+seen that carrier attached, detachment clears stale holder data in the HUD
+while the actor's replication catches up.
 
 The score bar waits for all generator actors and teams before repairing the
 panels. It uses the native generator-ready callback to restore missing icons.

@@ -563,6 +563,7 @@ local ctfFlagHud=(function()
     local worldIdentity,controllerIdentity
     local retry={}
     local mapWidgets={}
+    local observedAttachments={}
     local scanDelay=0
 
     local function class_is(widget,expected)
@@ -570,32 +571,43 @@ local ctfFlagHud=(function()
     end
 
     local function snapshot(world)
-        local flags,teams={},{}
+        local flags,teams,attachments={},{},{}
         for _,flag in ipairs(FindAllOf('TopPickup_Flag') or {}) do
             if valid(flag) and same_object(flag:GetWorld(),world) then
                 local team=flag.r_TeamId
                 if team~=1 and team~=2 then return end
                 local info=flag:GetHeldBy()
                 if type(info.bReturned)~='boolean' then return end
+                local key=flag:GetAddress()
                 local holder=info.Holder
                 if info.bReturned then
                     holder=nil
                 elseif valid(holder) then
                     local root=flag.RootComponent
                     local attached=valid(root) and root:GetAttachParent() or nil
-                    if valid(root) and not same_object(flag:GetOwner(),holder)
-                        and not (valid(attached) and same_object(attached:GetOwner(),holder)) then
-                        -- The release can detach before the replicated holder clears.
-                        -- This value is sent only to the HUD; the actor is untouched.
-                        info={bReturned=false}
-                        holder=nil
+                    local address=holder:GetAddress()
+                    if same_object(flag:GetOwner(),holder)
+                        or (valid(attached) and same_object(attached:GetOwner(),holder)) then
+                        attachments[key]=address
+                    elseif observedAttachments[key]==address then
+                        attachments[key]=address
+                        if valid(root) then
+                            -- A witnessed detachment can precede the replicated
+                            -- holder clearing. A newly seen carrier can arrive
+                            -- before attachment and must not look dropped.
+                            info={bReturned=false}
+                            holder=nil
+                        end
                     end
                 end
-                flags[flag:GetAddress()]={flag=flag,team=team,info=info,holder=holder}
+                flags[key]={flag=flag,team=team,info=info,holder=holder}
                 teams[team]=true
             end
         end
-        if teams[1] and teams[2] then return flags end
+        if teams[1] and teams[2] then
+            observedAttachments=attachments
+            return flags
+        end
     end
 
     local function inspect(panel,expected,flags,team)
@@ -669,7 +681,7 @@ local ctfFlagHud=(function()
     function runtime.prepare(pc,world)
         if not same_object(controllerIdentity,pc) or not same_object(worldIdentity,world) then
             controllerIdentity,worldIdentity=pc,world
-            retry,mapWidgets,scanDelay={},{},0
+            retry,mapWidgets,observedAttachments,scanDelay={},{},{},0
         end
         return snapshot(world)
     end

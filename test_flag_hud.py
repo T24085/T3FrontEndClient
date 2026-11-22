@@ -61,10 +61,16 @@ function f.flag(team,foreign)
     flag.RootComponent={GetAttachParent=function()return flag.attachment end}
     function flag:GetHeldBy()return self.info end
     function flag:GetOwner()return self.holder end
-    function flag:take(pawn)
+    function flag:attach(pawn)
         self.holder=pawn
         self.attachment={GetOwner=function()return pawn end}
+    end
+    function flag:replicate_holder(pawn)
         self.info={Holder=pawn,bReturned=false}
+    end
+    function flag:take(pawn)
+        self:attach(pawn)
+        self:replicate_holder(pawn)
     end
     function flag:drop(position,lag)
         self.position=position
@@ -253,5 +259,54 @@ map.Flags:add(unknown)
 update(10)
 assert(map.binds==2 and map.Flags:GetChildAt(1)==unknown)
 for _,skip in ipairs({foreign,otherPlayer,hidden}) do assert(skip.binds==0 and skip.updates==0) end
+return true
+''')
+
+    def test_late_join_and_handoff_wait_for_attachment_before_inferring_drop(self):
+        self.run_lua(r'''
+local own,enemy=f.flag(1),f.flag(2)
+local blue,map=f.score(1),f.map()
+local first,next=f.pawn(),f.pawn()
+first:setName('First runner')
+next:setName('Next runner')
+enemy:replicate_holder(first)
+local function update(now)
+    local flags=assert(hud.prepare(f.pc,f.world))
+    hud.score(blue,flags,1,now)
+    hud.minimap(f.pc,f.world,flags,now)
+end
+update(1)
+update(2)
+local score=blue.EnemyObjectives:GetChildAt(0)
+local marker=map.Flags:GetChildAt(1)
+local icon=marker.WBP_Game_MinimapFlagIcon
+assert(score.Text.value=='First runner' and not icon.visible)
+
+enemy:attach(first)
+update(3)
+local root=enemy.RootComponent
+enemy.RootComponent=nil
+enemy:drop(500,true)
+update(4)
+assert(score.Text.value=='First runner' and not icon.visible)
+enemy.RootComponent=root
+update(5)
+assert(score.Text.value=='DROPPED' and icon.visible and marker.location==5)
+assert(enemy.info.Holder==first)
+
+enemy:replicate_holder(next)
+update(6)
+assert(score.Text.value=='Next runner' and not icon.visible)
+enemy:attach(next)
+update(7)
+enemy:drop(750,true)
+update(8)
+assert(score.Text.value=='DROPPED' and icon.visible and marker.location==7.5)
+
+enemy:reset()
+update(9)
+enemy:replicate_holder(next)
+update(10)
+assert(score.Text.value=='Next runner' and not icon.visible)
 return true
 ''')
