@@ -11,12 +11,15 @@ files, lobby identity, game staging and Proton prefix.
    TRIBES 3: Rivals > Properties > Compatibility. Copy the complete
    launch option into Properties > General > Launch Options.
    Save any earlier launch option so you can switch back to it.
-3. Enter your Steam display name in the Starter. Create or join a lobby,
-   choose a team, and click Join Game once the match is ready. Use
+3. Open Steam and sign in before your first join. Check the player name in
+   the Starter, which fills in the last-used Steam persona when available.
+   Create or join a lobby, choose a team, and click Join Game once the match is ready. Use
    Join Public CTF from its own panel for public play.
 
 Opening the Starter, browsing matches, and working in a lobby use
-native Linux Python. Clicking Join Game requests Steam and Proton.
+native Linux Python. Clicking Join Game asks Steam to start the game, and
+can open Steam if it is closed. First-time shader processing can take several
+minutes.
 Steam Play without a Clan Wars join request runs the ordinary Steam
 game command. The Steam launch-option setting belongs to that Steam
 game and must be switched manually if another Starter uses it.

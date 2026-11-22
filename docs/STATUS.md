@@ -1,3 +1,12 @@
+# Native Ubuntu Steam Snap handoff
+
+The Ubuntu launcher uses Steam Snap's common data directory for the handoff,
+Proton prefix, and game workspace when it launches the Snap. The native
+launcher and Snap wrapper share the game-session lock. Startup waits up to
+ten minutes for Steam to invoke the wrapper, and the Proton worker measures
+its own startup window from the claim. The player name defaults to Steam's
+last-used persona and can still be edited.
+
 # Native Ubuntu Starter Preview 6 r74
 
 Preview 6 packages the verified Linux base with the current signed Direct

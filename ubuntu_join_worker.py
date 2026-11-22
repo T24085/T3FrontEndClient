@@ -18,11 +18,12 @@ def serve(directory, package, game_dir, workspace, context):
     from map_sync import MapSync
 
     request_path = directory/'claimed.json'
-    if request_path.stat().st_size > 32768:
+    info = request_path.stat()
+    if info.st_size > 32768:
         raise ValueError('Invalid Clan Wars handoff size.')
     request = json.loads(request_path.read_bytes())
     request_path.unlink()
-    if not 0 <= time.time()-request['issued'] <= 150:
+    if not 0 <= time.time() - info.st_mtime <= 300:
         raise ValueError('The Clan Wars handoff expired.')
     if (directory/'cancel').exists():
         status(directory,'stopped')

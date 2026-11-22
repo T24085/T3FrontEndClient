@@ -14,7 +14,8 @@ from unittest.mock import Mock, patch
 from ubuntu_join_worker import serve, status
 
 if sys.platform == 'linux':
-    from ubuntu_starter import APP_ID, MARKER, GameHandoff, dispatch, main
+    from ubuntu_starter import APP_ID, HANDOFF_WAIT, MARKER, SNAP_LOCK, GameHandoff, dispatch, main, steam_persona
+    from ubuntu_startup import StarterBusy, exclusive
 
 
 class UbuntuJoinWorkerTest(unittest.TestCase):
@@ -140,6 +141,61 @@ class UbuntuHandoffTest(unittest.TestCase):
         with patch('ubuntu_starter.os.execvp',side_effect=OSError) as execute, self.assertRaises(OSError):
             dispatch(command)
         execute.assert_called_once_with(command[0],command)
+
+    def test_snap_dispatch_finds_the_host_request_after_shaders_and_shares_its_game_lock(self):
+        home = Path(self.home.name)
+        common = home/'snap/steam/common'
+        calls = []
+        handoff = GameHandoff(self.lobby, self.state, launch=lambda argv, **_: calls.append(argv))
+        with patch('ubuntu_starter.shutil.which', return_value='/snap/bin/steam'), patch.dict(os.environ, HOME=str(home)):
+            self.assertEqual(handoff.start(expected_match_id='match'), 'starting')
+        request = handoff.directory
+        snap_state = common/'.local/share/ClanWarsUbuntuStarter'
+        self.assertEqual(request.parent, snap_state/'joins')
+        self.assertTrue((snap_state/SNAP_LOCK).samefile(self.state/'steam-session.lock'))
+        stamp = time.time() - 240
+        os.utime(request/'request.json', (stamp, stamp))
+        self.assertGreater(HANDOFF_WAIT, 240)
+        argv = ['proton', 'run', 'original.exe', calls[0][-1]]
+
+        def launch(_root, full, env, **kwargs):
+            self.assertEqual(full, argv[:-1])
+            self.assertEqual(kwargs['workspace'], snap_state/'game-files')
+            self.assertEqual(env['STEAM_COMPAT_DATA_PATH'], str(snap_state/'compatdata'))
+            self.assertGreater((request/'claimed.json').stat().st_mtime, stamp + 200)
+            return ['proton','run','--launch-dir','Z:\\dummy'], env, None
+
+        def run(*_args):
+            status(request, 'finished')
+            return 0
+
+        snap_env = {'SNAP_NAME': 'steam', 'SNAP_USER_COMMON': str(common),
+                    'HOME': str(common/'revision'), 'XDG_DATA_HOME': str(common/'unrelated')}
+        with patch.dict(os.environ, snap_env), patch('ubuntu_starter.prepare_launch', side_effect=launch), \
+                patch('ubuntu_starter.run_in_terminal', side_effect=run):
+            with exclusive(self.state/'steam-session.lock'), self.assertRaises(StarterBusy):
+                dispatch(argv)
+            self.assertTrue((request/'request.json').is_file())
+            self.assertEqual(dispatch(argv), 0)
+        self.assertEqual(handoff.snapshot()['status'], 'finished')
+
+    def test_snap_and_native_personas_select_the_selected_steam_install(self):
+        home = Path(self.home.name)
+        native = home/'.steam/root/config'
+        snap = home/'snap/steam/common/.local/share/Steam/config'
+        def vdf(folder, name, recent='1'):
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder/'loginusers.vdf').write_text(
+                '"users"\n{\n"76561198000000001"\n{\n"PersonaName" "Previous"\n"MostRecent" "0"\n}\n'
+                f'"76561198000000002"\n{{\n"PersonaName" "{name}"\n"MostRecent" "{recent}"\n}}\n}}\n',
+                encoding='utf-8')
+        vdf(native, 'Native Pilot')
+        vdf(snap, r'Snap \"Pilot\" {CTF}')
+        with patch.dict(os.environ, XDG_DATA_HOME=str(home/'xdg')):
+            self.assertEqual(steam_persona('/usr/bin/steam', home), 'Native Pilot')
+            self.assertEqual(steam_persona('/snap/bin/steam', home), 'Snap "Pilot" {CTF}')
+            vdf(snap, 'Previous', recent='0')
+            self.assertIsNone(steam_persona('/snap/bin/steam', home))
 
 
 if __name__ == '__main__':

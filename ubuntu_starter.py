@@ -7,6 +7,7 @@ from pathlib import Path, PureWindowsPath
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -20,6 +21,11 @@ from ubuntu_startup import exclusive, private_area
 
 MARKER = '-clanwars-ubuntu-join='
 ACTIVE = ('starting', 'playing', 'stopping', 'quarantined')
+HANDOFF_WAIT = 600
+SNAP_LOCK = 'host-steam-session.lock'
+VDF_STRING = r'"((?:\\.|[^"\\\r\n])*)"'
+VDF_ACCOUNT = re.compile(r'"[0-9]{17}"\s*\{((?:\s*' + VDF_STRING + r'\s*' + VDF_STRING + r')*)\s*\}')
+VDF_FIELD = re.compile(VDF_STRING + r'\s*' + VDF_STRING)
 
 
 def write_private(path, value):
@@ -30,6 +36,77 @@ def write_private(path, value):
 
 def steam_option():
     return '/bin/sh ' + shlex.quote(str(ROOT/'Start Community Starter.sh')) + ' --ubuntu-dispatch %command%'
+
+
+def steam_snap_common(steam, home):
+    if steam and (Path(steam).parent == Path('/snap/bin') or Path(steam).resolve().name == 'snap'):
+        return home/'snap/steam/common'
+    return None
+
+
+def snap_state(common):
+    if not common.is_absolute():
+        raise ValueError('The Steam Snap data folder must be absolute.')
+    state = common/'.local/share/ClanWarsUbuntuStarter'
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = state.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError('Clan Wars Steam Snap data must be private to your Linux user.')
+    return state
+
+
+def join_state(state, steam, home):
+    common = steam_snap_common(steam, home)
+    if common is None:
+        return state
+    target = snap_state(common)
+    # Both namespaces must lock the same inode. The Snap can open its own
+    # link while the native launcher and updater keep using the original.
+    native_lock = state/'steam-session.lock'
+    fd = os.open(native_lock, os.O_CREAT | os.O_RDONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        lock = target/SNAP_LOCK
+        try:
+            os.link(native_lock, lock, follow_symlinks=False)
+        except FileExistsError:
+            pass
+        info = lock.lstat()
+        native = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077
+                or (info.st_dev, info.st_ino) != (native.st_dev, native.st_ino)):
+            raise ValueError('The Steam Snap game-session lock does not match Clan Wars.')
+    except OSError as exc:
+        raise ValueError('Could not share the Clan Wars game-session lock with Steam Snap. '
+                         'Keep Clan Wars Linux data on the same volume as your home directory.') from exc
+    finally:
+        os.close(fd)
+    return target
+
+
+def steam_persona(steam, home):
+    """Read the last-used Steam persona without starting Steam."""
+    from player_names import display_name
+    common = steam_snap_common(steam, home)
+    if common is not None:
+        roots = (common/'.local/share/Steam',)
+    else:
+        data = Path(os.environ.get('XDG_DATA_HOME') or home/'.local/share')
+        roots = (data/'Steam', home/'.steam/steam', home/'.steam/root', home/'.local/share/Steam')
+    for root in roots:
+        try:
+            with (root/'config/loginusers.vdf').open('rb') as stream:
+                raw = stream.read(256 * 1024 + 1)
+            if len(raw) > 256 * 1024:
+                continue
+            accounts = [dict(VDF_FIELD.findall(match.group(1)))
+                        for match in VDF_ACCOUNT.finditer(raw.decode('utf-8-sig'))]
+            recent = [account['PersonaName'] for account in accounts
+                      if account.get('MostRecent') == '1' and 'PersonaName' in account]
+            if len(recent) == 1:
+                return display_name(re.sub(r'\\(["\\])', r'\1', recent[0]))
+        except (OSError, ValueError):
+            continue
+    return None
 
 
 class GameHandoff:
@@ -52,7 +129,8 @@ class GameHandoff:
                 return json.loads(status_file.read_bytes())
             except FileNotFoundError:
                 if time.monotonic() <= self.deadline:
-                    return {'status':'starting','error':None,'progress':'Waiting for Steam to open the game…'}
+                    return {'status':'starting','error':None,
+                            'progress':'Waiting for Steam. First-time shader processing can take several minutes.'}
                 self._cancel()
                 return {'status':'failed','error':'Steam did not hand off the game. Check Clan Wars Steam Setup.'}
 
@@ -65,13 +143,13 @@ class GameHandoff:
             if steam is None:
                 raise CommunityError('Install native Steam on Ubuntu to join a game.')
             identifier = uuid.uuid4().hex
-            request = self.state/'joins'/identifier
+            request = join_state(self.state, steam, Path.home())/'joins'/identifier
             request.mkdir(mode=0o700, parents=True)
             with self.lobby.lock:
                 # The lobby window keeps polling during preparation. Its requests
                 # must use the same host admission as the Proton worker.
                 self.lobby.begin_game_attempt()
-                details = dict(connection=self.lobby.connection, role=role, issued=time.time(),
+                details = dict(connection=self.lobby.connection, role=role,
                                code=self.lobby.code, token=self.lobby.token, player=self.lobby.player_id,
                                direct_session=self.lobby.direct_session,
                                **values)
@@ -85,7 +163,7 @@ class GameHandoff:
                 request.rmdir()
                 raise
             self.directory = request
-            self.deadline = time.monotonic() + 120
+            self.deadline = time.monotonic() + HANDOFF_WAIT
             self.role = role
             return 'starting'
 
@@ -116,17 +194,22 @@ def dispatch(command):
         os.execvp(command[0], command)
     if len(markers) != 1 or not re.fullmatch('[0-9a-f]{32}', markers[0][len(MARKER):]):
         raise ValueError('The Clan Wars Steam handoff is invalid.')
-    state = private_area()
+    common = os.environ.get('SNAP_USER_COMMON') if os.environ.get('SNAP_NAME') == 'steam' else None
+    state = snap_state(Path(common)) if common else private_area()
     request = state/'joins'/markers[0][len(MARKER):]
     if request.resolve() != request or not request.is_dir():
         raise ValueError('The Clan Wars Steam handoff expired.')
-    with exclusive(state/'steam-session.lock'):
+    lock = state/(SNAP_LOCK if common else 'steam-session.lock')
+    if common and not lock.is_file():
+        raise ValueError('The Steam Snap game-session lock is missing. Reopen Clan Wars and click Join Game.')
+    with exclusive(lock):
         pending = request/'request.json'
         claimed = request/'claimed.json'
-        if not pending.is_file() or (request/'cancel').exists() or time.time()-pending.stat().st_mtime > 120:
+        if not pending.is_file() or (request/'cancel').exists() or time.time()-pending.stat().st_mtime > HANDOFF_WAIT:
             pending.unlink(missing_ok=True)
             raise ValueError('The Clan Wars Steam handoff expired. Click Join Game again.')
         pending.rename(claimed)
+        os.utime(claimed, None)
         from ubuntu_join_worker import status
         log_path = request/'proton.log'
         try:
@@ -154,12 +237,27 @@ def dispatch(command):
 def show_starter(lobby, state, on_ready=None):
     import tkinter as tk
     from tkinter import messagebox, ttk
-    from desktop_launcher import Desktop
+    from desktop_launcher import Desktop, starter_version
     from direct_client import PublicCTFPanel
     from map_sync import MapSync
 
+    manifest = json.loads((ROOT/'package-manifest.json').read_bytes())
+    revision = manifest.get('linux_starter_update_revision', 0)
+    base = manifest.get('starter_update_revision')
+    base_label = starter_version()
+
     class UbuntuDesktop(Desktop):
         public_panel = None
+
+        def label(self, parent, text, *args, **kwargs):
+            if revision and parent is getattr(self, 'sidebar', None) and text == base_label:
+                text = f'Linux update {revision}'
+                if type(base) is int:
+                    text += f'\nBase installer r{base}'
+                label = super().label(parent, text, *args, **kwargs)
+                label.configure(justify='left')
+                return label
+            return super().label(parent, text, *args, **kwargs)
 
         def set_capabilities(self, caps):
             super().set_capabilities(dict(caps, spectateEnabled=False))
@@ -184,7 +282,8 @@ def show_starter(lobby, state, on_ready=None):
     def show_setup():
         setup = tk.Toplevel(window)
         setup.title('Steam Setup')
-        instructions = 'Force a Proton version in TRIBES 3 → Properties → Compatibility. Paste this line into General → Launch Options.'
+        instructions = ('Open Steam and sign in before your first join. Force a Proton version in '
+                        'TRIBES 3 → Properties → Compatibility. Paste this line into General → Launch Options.')
         ttk.Label(setup, text=instructions, wraplength=520).pack(padx=18, pady=12)
         field = ttk.Entry(setup, width=82)
         field.insert(0, steam_option())
@@ -200,16 +299,20 @@ def show_starter(lobby, state, on_ready=None):
         window = tk.Tk()
     except tk.TclError as exc:
         raise ValueError('Open Clan Wars from your Ubuntu desktop session.') from exc
-    map_sync = MapSync(lobby, ROOT, state/'game-files')
+    steam = shutil.which('steam')
+    home = Path.home()
+    common = steam_snap_common(steam, home)
+    workspace = (snap_state(common) if common else state)/'game-files'
+    map_sync = MapSync(lobby, ROOT, workspace)
     app = UbuntuDesktop(window, lobby, lambda current:GameHandoff(current,state), map_sync=map_sync)
+    persona = steam_persona(steam, home)
+    if persona:
+        app.name.set(persona)
     window.title('Clan Wars • Ubuntu Starter Preview')
     app.button(app.sidebar, 'Steam Setup', show_setup, False).pack(fill='x', padx=18, pady=(6,0))
     if lobby.public_supported:
         app.public_panel = PublicCTFPanel(tk, app, lobby)
         app.show_panel('public' if lobby.public_only else 'lobbies')
-    revision = json.loads((ROOT/'package-manifest.json').read_bytes()).get('linux_starter_update_revision', 0)
-    if revision:
-        ttk.Label(app.sidebar, text=f'Linux update {revision}').pack(side='bottom', anchor='w', padx=18)
     if on_ready is not None:
         window.update_idletasks()
         on_ready()
