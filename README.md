@@ -16,6 +16,8 @@ Use a matching Steam installation of TRIBES 3: Rivals and a player package or in
 - **Linux Clan Wars package** — From the extracted folder, run `sh "Clan Wars - Linux.sh" --setup`. Enable Proton in the game's Steam properties, paste the printed line into **Launch Options**, then launch from Steam.
 - **GitHub Community Starter r12 prerelease** — This is the separately published r12 playtest build. Use its release-specific install instructions and compatible server access. [Windows ZIP](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.08-r12/TRIBES3-Community-Starter-Windows-20261108-r12.zip) · [Linux/Proton archive](https://github.com/T24085/T3FrontEndClient/releases/download/windows-2026.11.08-r12/TRIBES3-Community-Starter-Linux-Proton-20261108-r12.tar.gz) · [Setup and checksums](https://github.com/T24085/T3FrontEndClient/releases/tag/windows-2026.11.08-r12)
 
+For the native Linux preview, see [Run Phoenix Rising without a terminal](docs/LINUX_NATIVE_LAUNCH.md).
+
 In **Lobbies**, create a room or enter a lobby code, choose teams and a map, then start the match. The first preparation checks the original Steam files. Starter reuses verified files and syncs compatible map updates from the host.
 
 ## Starter screenshots
