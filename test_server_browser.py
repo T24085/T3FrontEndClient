@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from server_browser import ServerBrowserWindow, ServerDirectory, filter_rows
-from server_directory import DirectoryError, canonical, encode_blob, key_id, signed_bytes
+from server_directory import CACHE_SECONDS, DirectoryError, canonical, encode_blob, key_id, signed_bytes
 
 
 def modulus(key):
@@ -25,6 +25,65 @@ def signed(key, kind, fields):
 
 
 class BrowserTest(unittest.TestCase):
+    def test_expired_seed_recovers_through_pinned_masters_without_replay(self):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public = encode_blob(modulus(key))
+        now = 1780000000
+        old_origin = 'https://directory-old.example.com'
+        new_origin = 'https://directory-new.example.com'
+
+        def trust(revision, origin, *, issued=now, lifetime=3600, signer=key):
+            return signed(signer, 'trust', {'format': 1, 'revision': revision, 'masters': [origin],
+                                          'groups': [], 'issued_at': issued, 'expires_at': issued + lifetime})
+
+        expired = trust(2, old_origin, issued=now - CACHE_SECONDS - 172800)
+        feed = {'format': 1, 'trust': trust(1, old_origin), 'revocations': [], 'listings': []}
+        origins = []
+
+        def fetch(origin, _):
+            origins.append(origin)
+            return feed
+
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            seed = root / 'seed.json'
+            seed.write_bytes(canonical({'root': public, 'trust': expired}))
+            directory = ServerDirectory(seed, root / 'local', clock=lambda: now, fetch=fetch)
+            directory.refresh()
+            self.assertFalse(directory.online)
+            self.assertEqual(directory.index.trust_payload['revision'], 2)
+            self.assertEqual(origins, [old_origin])
+
+            feed['trust'] = trust(3, new_origin, signer=other_key)
+            directory.refresh()
+            self.assertFalse(directory.online)
+            self.assertEqual(directory.rows(), [])
+            self.assertEqual(origins, [old_origin, old_origin])
+
+            feed['trust'] = trust(3, new_origin, lifetime=20)
+            feed['listings'] = [signed(key, 'heartbeat', {
+                'format': 1, 'server_id': key_id(public), 'key': public, 'name': 'New Host',
+                'region': 'US West', 'hostname': 'west.example.com', 'address': '93.184.216.34',
+                'port': 18443, 'protocol': 1, 'version': 'r76', 'mode': 'regional', 'map': 'Drydock',
+                'game_type': 'CTF', 'players': 1, 'max_players': 24, 'spectators': 0, 'locked': False,
+                'memberships': [], 'issued_at': now, 'expires_at': now + 60,
+            })]
+            directory.refresh()
+            self.assertTrue(directory.online)
+            self.assertEqual(directory.index.trust_payload['masters'], [new_origin])
+            self.assertEqual(origins[-2:], [old_origin, new_origin])
+            self.assertTrue(directory.rows()[0]['live'])
+            now += 21
+            [cached] = directory.rows()
+            self.assertFalse(cached['live'])
+            self.assertGreater(cached['expires_at'], now)
+            self.assertLess(cached['live_until'], now)
+            now += CACHE_SECONDS + 60
+            restored = ServerDirectory(seed, root / 'local', clock=lambda: now)
+            self.assertEqual(restored.index.trust_payload['masters'], [new_origin])
+            self.assertEqual(restored.rows(), [])
+
     def test_signed_list_falls_back_to_saved_rows_with_favourites_and_history(self):
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         public = encode_blob(modulus(key))

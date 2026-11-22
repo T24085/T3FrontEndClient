@@ -16,7 +16,7 @@
     "server_access_contract.py": "62155a3c7e5d8a314c4e7928e0ddee92cb0d6417d72253d305dd996deec84e1a",
     "map_sync_contract.py": "2de77f0c399bfe230736487f364bc4efafe1d07928d0077556c7645a9a9685a8",
     "direct_update_contract.py": "aae5eab1484756bc80a2e3e90bcbdd43f80f5fdf121e9a9fb80b45f282e4acbc",
-    "server_directory.py": "22e42dbe140fa6ec5785189f4d6c46e7fbede01a7e597aa827f1d5ac25a3648d",
+    "server_directory.py": "f921bd3e5711a5128bd4ca7d17391841f66c15507cf85c47fcdf9f6812be045a",
     "directory_transport.py": "38fd92b2185cb26aa1c4ace5652370b91f24bb25fe1fb536f413df7e93335714"
   }
 }

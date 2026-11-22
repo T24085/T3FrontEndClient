@@ -182,16 +182,17 @@ def verify(document, kind, signer):
 def _lifetime(payload, now, maximum, *, stale=0):
     issued = _integer(payload['issued_at'], 0, 2**53 - 1)
     expires = _integer(payload['expires_at'], issued + 1, issued + maximum)
-    if issued > now + CLOCK_SKEW or expires <= now - stale:
+    if issued > now + CLOCK_SKEW or (stale is not None and expires <= now - stale):
         raise DirectoryError('Directory record is expired or from the future.')
 
 
-def verify_trust(document, root, now, *, stale=0):
+def verify_trust(document, root, now, *, stale=0, bootstrap=False):
+    """Allow expired root-signed topology to locate masters during recovery."""
     payload = _envelope(document)
     _fields(payload, ('format', 'revision', 'issued_at', 'expires_at', 'masters', 'groups'))
     _integer(payload['format'], VERSION, VERSION)
     _integer(payload['revision'], 1, 2**53 - 1)
-    _lifetime(payload, now, MAX_TRUST_AGE, stale=stale)
+    _lifetime(payload, now, MAX_TRUST_AGE, stale=None if bootstrap else stale)
     masters, groups = payload['masters'], payload['groups']
     if not isinstance(masters, list) or not 1 <= len(masters) <= MAX_MASTERS:
         raise DirectoryError('Invalid directory master list.')
@@ -302,11 +303,11 @@ def feed_fields(feed):
 class DirectoryIndex:
     """Merge independently verified records and discard expired live listings."""
 
-    def __init__(self, root, trust, now, *, blocked=(), cached=False):
+    def __init__(self, root, trust, now, *, blocked=(), bootstrap=False):
         self.root = root
         self.blocked = frozenset(_identity(key) for key in blocked)
         self.trust = trust
-        self.trust_payload = verify_trust(trust, root, now, stale=CACHE_SECONDS if cached else 0)
+        self.trust_payload = verify_trust(trust, root, now, bootstrap=bootstrap)
         self.revocations = {}
         self.listings = {}
 
@@ -350,6 +351,8 @@ class DirectoryIndex:
         feed_fields(feed)
         if not cached:
             self.use_trust(feed['trust'], now)
+            if self.trust_payload['expires_at'] <= now:
+                raise DirectoryError('Waiting for a current signed directory topology.')
         trusted = {group['id']: group for group in self.trust_payload['groups']}
         for document in feed['revocations']:
             try:
@@ -381,6 +384,8 @@ class DirectoryIndex:
         rows = []
         for document in self.listings.values():
             payload = document['payload']
-            live = payload['expires_at'] > now
-            rows.append(dict(payload, live=live, badges=badges(payload, groups, revoked, now) if live else []))
+            live_until = min(payload['expires_at'], self.trust_payload['expires_at'])
+            live = live_until > now
+            rows.append(dict(payload, live=live, live_until=live_until,
+                             badges=badges(payload, groups, revoked, now) if live else []))
         return sorted(rows, key=lambda row: (row['name'].casefold(), row['server_id']))

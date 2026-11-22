@@ -8,7 +8,7 @@ import time
 import uuid
 
 from directory_transport import directory_request, measure_ping, request_masters
-from server_directory import (CACHE_SECONDS, DirectoryError, DirectoryIndex, HEX_ID, MAX_RESPONSE,
+from server_directory import (DirectoryError, DirectoryIndex, HEX_ID, MAX_RESPONSE,
                               PROTOCOL_VERSION, canonical, read_json, verify_trust)
 
 
@@ -48,14 +48,16 @@ class ServerDirectory:
         trusted = []
         for candidate in (seed['trust'], saved_feed.get('trust') if isinstance(saved_feed, dict) else None):
             try:
-                trust = verify_trust(candidate, root, now, stale=CACHE_SECONDS)
+                trust = verify_trust(candidate, root, now, bootstrap=True)
             except DirectoryError:
                 continue
             trusted.append((trust['revision'], candidate))
         if not trusted:
-            raise DirectoryError('No valid signed Starter directory seeds remain.')
-        _, trust = max(trusted, key=lambda entry: entry[0])
-        self.index = DirectoryIndex(root, trust, now, cached=True)
+            raise DirectoryError('No Starter directory seed passed signature and format checks.')
+        revision, trust = max(trusted, key=lambda entry: entry[0])
+        if any(other != trust for number, other in trusted if number == revision):
+            raise DirectoryError('Conflicting signed directory trust revision.')
+        self.index = DirectoryIndex(root, trust, now, bootstrap=True)
         if saved_feed:
             try:
                 self.index.absorb(saved_feed, now, cached=True)
@@ -71,16 +73,22 @@ class ServerDirectory:
                                    and HEX_ID.fullmatch(value))) if isinstance(values, list) else ()
 
     def refresh(self):
-        with self.lock:
-            masters = tuple(self.index.trust_payload['masters'])
         worked = False
-        for _, feed in request_masters(masters, fetch=self.fetch):
+        queried = set()
+        # Follow one signed topology change within the same refresh.
+        for _ in range(2):
             with self.lock:
-                try:
-                    self.index.absorb(feed, self.clock())
-                except DirectoryError:
-                    continue
-                worked = True
+                masters = tuple(origin for origin in self.index.trust_payload['masters'] if origin not in queried)
+            if not masters:
+                break
+            queried.update(masters)
+            for _, feed in request_masters(masters, fetch=self.fetch):
+                with self.lock:
+                    try:
+                        self.index.absorb(feed, self.clock())
+                    except DirectoryError:
+                        continue
+                    worked = True
         with self.lock:
             self.online = worked
             if worked:
@@ -107,11 +115,13 @@ class ServerDirectory:
 
     def rows(self):
         with self.lock:
-            rows = self.index.rows(self.clock(), cached=True)
+            now = self.clock()
+            rows = self.index.rows(now, cached=True)
+            show_cache = not self.online or self.index.trust_payload['expires_at'] <= now
             return [dict(row, favourite=row['server_id'] in self.favourites,
                          recent=row['server_id'] in self.history,
                          compatible=row['protocol'] == PROTOCOL_VERSION)
-                    for row in rows if row['live'] or not self.online]
+                    for row in rows if row['live'] or show_cache]
 
 
 def filter_rows(rows, *, region='', full=False, locked=False, incompatible=False,
@@ -220,7 +230,7 @@ class ServerBrowserWindow:
 
     def controls(self):
         row = self.selected()
-        usable = bool(row and row['live'])
+        usable = bool(row and row['live_until'] > self.directory.clock())
         can_connect = bool(usable and row['compatible'] and 'connect' not in self.pending)
         for button in (self.join_button, self.invitation_button):
             button.configure(state='normal' if can_connect else 'disabled')
@@ -234,7 +244,7 @@ class ServerBrowserWindow:
         row = self.selected()
         if 'connect' in self.pending:
             return
-        if row and row['live'] and row['expires_at'] > self.directory.clock() and row['compatible']:
+        if row and row['live_until'] > self.directory.clock() and row['compatible']:
             self.connect(row, self, replace=replace)
         elif row:
             self.status.set('Refresh to verify that this server is still available.')
@@ -245,7 +255,7 @@ class ServerBrowserWindow:
 
     def ping(self):
         row = self.selected()
-        if row and row['live'] and row['expires_at'] > self.directory.clock():
+        if row and row['live_until'] > self.directory.clock():
             self.submit('ping', lambda: (row['server_id'], measure_ping(row)))
 
     def favourite(self):
@@ -265,7 +275,7 @@ class ServerBrowserWindow:
     def render(self):
         selected = self.table.selection()
         rows = self.directory.rows()
-        self.next_expiration = min((row['expires_at'] for row in rows if row['live']), default=float('inf'))
+        self.next_expiration = min((row['live_until'] for row in rows if row['live']), default=float('inf'))
         regions = tuple(sorted({row['region'] for row in rows}, key=str.casefold))
         self.region.configure(values=('All regions', *regions))
         region = self.region.get()
@@ -308,8 +318,12 @@ class ServerBrowserWindow:
                 if error:
                     self.status.set(error)
                 elif name == 'refresh':
-                    self.status.set('Choose a server to connect or measure ping.' if self.directory.online
-                                    else 'No master answered. Showing the last saved directory.')
+                    if self.directory.online:
+                        self.status.set('Choose a server to connect or measure ping.')
+                    elif self.directory.rows():
+                        self.status.set('No current directory found. Showing the last saved servers.')
+                    else:
+                        self.status.set('No current directory found. Refresh or open a host invitation.')
                 elif name == 'connect':
                     self.on_connected(value)
                     return

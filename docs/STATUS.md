@@ -5,6 +5,10 @@ columns, region and compatibility filters, favourites, and connection
 history. Starter validates server listings, group membership, and revocations.
 Match traffic and map downloads use the selected Direct Host.
 
+If the shipped seed or last saved topology expires, Starter can still ask its
+root-signed masters for a current revision. Expired listings and group badges
+stay unavailable for connection during recovery.
+
 **Open invitation** also connects directly to an unlisted host from a player
 or group invitation file. Starter checks the host's TLS connection and game
 compatibility before switching. A direct invitation can be opened even if
