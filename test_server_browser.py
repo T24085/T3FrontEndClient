@@ -2,7 +2,11 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import os
+import shutil
+import sys
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -76,18 +80,20 @@ class BrowserTest(unittest.TestCase):
             self.assertTrue(row['favourite'])
             self.assertTrue(row['recent'])
 
-    @unittest.skipUnless(os.name == 'nt', 'Windows and Proton package use the CNG verifier')
+    @unittest.skipUnless(os.name == 'nt' or shutil.which('openssl'), 'Requires the packaged verifier')
     def test_packaged_verifier_accepts_only_the_listed_server_key(self):
-        from starter_update_signing import verify
+        from server_directory import verify
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        payload = signed_bytes('heartbeat', {'test': 1})
-        signature = key.sign(payload, padding.PKCS1v15(), hashes.SHA256())
-        self.assertTrue(verify(payload, signature, modulus=modulus(key)))
-        self.assertFalse(verify(payload + b'altered', signature, modulus=modulus(key)))
+        other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        document = signed(key, 'heartbeat', {'test': 1})
+        with patch.dict(sys.modules, {'cryptography.exceptions': None}):
+            self.assertEqual(verify(document, 'heartbeat', encode_blob(modulus(key))), {'test': 1})
+            with self.assertRaises(DirectoryError):
+                verify(document, 'heartbeat', encode_blob(modulus(other)))
+            with self.assertRaises(DirectoryError):
+                verify(dict(document, payload={'test': 2}), 'heartbeat', encode_blob(modulus(key)))
 
     def test_invitations_must_match_selected_server_endpoint(self):
-        import sys
-        from unittest.mock import patch
         here = Path(__file__).parent/'experimental/direct-hosting/src'
         with patch.object(sys, 'path', [str(here), *sys.path]):
             from direct_client import invitation_for_server
@@ -102,6 +108,33 @@ class BrowserTest(unittest.TestCase):
             invitation_for_server(dict(row, address='93.184.216.35'), invite)
         with self.assertRaisesRegex(ValueError, 'protocol'):
             invitation_for_server(dict(row, protocol=2), invite)
+
+    def test_changing_hosts_checks_for_a_game_started_during_connection(self):
+        here = Path(__file__).parent/'experimental/direct-hosting/src'
+        with patch.object(sys, 'path', [str(here), *sys.path]):
+            import direct_client
+        browser = Mock()
+        gui = SimpleNamespace(root=Mock(), sidebar=Mock(), button=Mock(), close=Mock(), closing=False,
+                              room=None, watch_id=None, controls_busy=False, game=None, game_status='idle',
+                              public_panel=SimpleNamespace(pending=set()))
+        selected = Mock()
+        with patch('server_browser.ServerBrowserWindow', return_value=browser) as show, \
+                patch.object(direct_client, 'choose_directory_connection') as connect:
+            direct_client.add_server_directory(gui, Mock(), Path('.'), selected)
+            gui.button.call_args.args[2]()
+            handlers = show.call_args.kwargs
+            handlers['connect']({'name': 'New server'}, browser)
+            connect.assert_called_once()
+            gui.public_panel.pending.add('start')
+            handlers['on_connected']({'host': 'new'})
+            selected.assert_not_called()
+            gui.close.assert_not_called()
+            browser.status.set.assert_called_with('Leave the current lobby or game before changing servers.')
+            browser.window.after.assert_called_once()
+            gui.public_panel.pending.clear()
+            handlers['on_connected']({'host': 'new'})
+            selected.assert_called_once_with({'host': 'new'})
+            gui.close.assert_called_once()
 
 
 if __name__ == '__main__':

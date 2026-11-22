@@ -393,7 +393,7 @@ def dispatch(command):
             claimed.unlink(missing_ok=True)
 
 
-def show_starter(lobby, state, on_ready=None):
+def show_starter(lobby, state, on_ready=None, *, directory=None):
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
     from desktop_launcher import BG, MUTED, TEXT, Desktop, starter_version
@@ -666,6 +666,9 @@ def show_starter(lobby, state, on_ready=None):
         app.armor_panel = UbuntuArmorPanel(tk, app, lobby)
     app.settings_nav = app.button(app.sidebar, 'Settings', app.show_settings, False)
     app.settings_nav.pack(fill='x', padx=18, pady=(6, 0))
+    chosen = []
+    if directory is not None:
+        direct_client.add_server_directory(app, directory, state, chosen.append)
     launcher_tips = getattr(direct_client, 'LauncherTips', None)
     if launcher_tips is not None:
         sidebar_bg = app.sidebar.cget('bg')
@@ -680,12 +683,14 @@ def show_starter(lobby, state, on_ready=None):
                   bg=sidebar_bg, fg=MUTED, activebackground=sidebar_bg, activeforeground=TEXT,
                   relief='flat', bd=0, padx=0, pady=2, anchor='w', cursor='hand2',
                   font=('Segoe UI', 9)).pack(anchor='w')
+    window.protocol('WM_DELETE_WINDOW', app.close)
     if on_ready is not None:
         window.update_idletasks()
         on_ready()
     window.mainloop()
     if getattr(app, 'close_worker', None):
         app.close_worker.join()
+    return chosen[0] if chosen else None
 
 
 def main(args=None, *, owned_state=None, on_ready=None):
@@ -701,20 +706,49 @@ def main(args=None, *, owned_state=None, on_ready=None):
     if parsed.steam_option:
         print(steam_option())
         return 0
-    from direct_client import DirectClient, group_connection
+    import direct_client
     state = private_area() if owned_state is None else owned_state
     with exclusive(state/'starter.lock') if owned_state is None else nullcontext():
-        lobby = DirectClient(group_connection(ROOT,state))
-        try:
-            capabilities = lobby.capabilities()
-            if parsed.check_lobby:
+        if parsed.check_lobby:
+            lobby = direct_client.DirectClient(direct_client.group_connection(ROOT, state))
+            try:
+                capabilities = lobby.capabilities()
                 lobby.live_matches()
                 print(f'Connected to Clan Wars. {len(lobby.server_maps)} maps; '
                       f'Public CTF: {capabilities.get("publicCTF") is True}. Proton was not started.')
+            finally:
+                lobby.close()
+            return 0
+
+        load_directory = getattr(direct_client, 'load_server_directory', None)
+        directory = load_directory(ROOT, state) if load_directory else None
+        selected = None
+        while True:
+            lobby = None
+            try:
+                connection = selected if selected is not None else direct_client.group_connection(ROOT, state)
+                lobby = direct_client.DirectClient(connection)
+                lobby.capabilities()
+            except (OSError, ValueError, RuntimeError):
+                if lobby is not None:
+                    lobby.close()
+                if directory is None:
+                    raise
+                import tkinter as tk
+                chooser = tk.Tk()
+                chooser.withdraw()
+                try:
+                    selected = direct_client.browse_for_server(chooser, directory, state, on_ready=on_ready)
+                finally:
+                    chooser.destroy()
             else:
-                show_starter(lobby,state,on_ready)
-        finally:
-            lobby.close()
+                try:
+                    selected = show_starter(lobby, state, on_ready, directory=directory)
+                finally:
+                    lobby.close()
+            if selected is None:
+                break
+            on_ready = None
     return 0
 
 

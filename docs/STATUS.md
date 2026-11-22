@@ -10,6 +10,11 @@ access. Invitations retain their existing access. Starter preserves current
 lobby and game ownership until the new host passes its checks. Event routing
 and a live release remain open.
 
+The native Ubuntu launcher uses the same signed browser and host selection
+as Windows. If its bundled host is unreachable, it can open the browser
+without launching Steam. Fixtures on Ubuntu cover that fallback, switching
+hosts, and signature verification with the packaged OpenSSL path.
+
 # Public CTF team switching
 
 On a host that advertises switch choices, the Public CTF panel can start a

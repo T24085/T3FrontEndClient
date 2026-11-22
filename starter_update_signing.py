@@ -25,10 +25,10 @@ class PKCS1PaddingInfo(ctypes.Structure):
 
 
 def verify(payload, signature, *, modulus=PUBLIC_MODULUS):
-    if len(signature) != len(modulus):
+    if not modulus or len(signature) != len(modulus):
         return False
     if os.name != 'nt':
-        return verify_openssl(payload, signature)
+        return verify_openssl(payload, signature, modulus=modulus)
     cng = ctypes.WinDLL('bcrypt.dll', use_last_error=True, winmode=0x800)
     handle = ctypes.c_void_p
     dword = ctypes.c_uint32
@@ -56,18 +56,28 @@ def verify(payload, signature, *, modulus=PUBLIC_MODULUS):
         cng.BCryptCloseAlgorithmProvider(provider, 0)
 
 
-def verify_openssl(payload, signature):
-    # Encode the same pinned RSA key as a PKCS#1 public-key DER sequence.
-    modulus = b'\0' + PUBLIC_MODULUS
-    body = b'\x02\x82' + len(modulus).to_bytes(2, 'big') + modulus + b'\x02\x03' + PUBLIC_EXPONENT
-    key = b'\x30\x82' + len(body).to_bytes(2, 'big') + body
+def verify_openssl(payload, signature, *, modulus=PUBLIC_MODULUS):
+    # Encode the supplied RSA key as a PKCS#1 DER sequence. Directory servers
+    # use their own keys. The updater still defaults to the release signing pin.
+    def der(tag, data):
+        length = len(data)
+        if length < 128:
+            return bytes((tag, length)) + data
+        size = length.to_bytes((length.bit_length() + 7) // 8, 'big')
+        return bytes((tag, 0x80 | len(size))) + size + data
+
+    integer = b'\0' + modulus if modulus[0] & 0x80 else modulus
+    key = der(0x30, der(2, integer) + der(2, PUBLIC_EXPONENT))
     with TemporaryDirectory(prefix='clan-wars-signature-') as directory:
         root = Path(directory)
         public_key, signed = root/'key.der', root/'signature.bin'
         public_key.write_bytes(key)
         signed.write_bytes(signature)
-        result = subprocess.run(
-            ['openssl', 'dgst', '-sha256', '-keyform', 'DER', '-verify', str(public_key), '-signature', str(signed)],
-            input=payload, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False,
-        )
+        try:
+            result = subprocess.run(
+                ['openssl', 'dgst', '-sha256', '-keyform', 'DER', '-verify', str(public_key), '-signature', str(signed)],
+                input=payload, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return False
     return result.returncode == 0

@@ -1565,6 +1565,126 @@ def public_directory_connection(row, local, *, ssl_context=None, test_source=Non
     return connection
 
 
+def load_server_directory(root, local):
+    seed = root/'directory-seed.json'
+    if seed.is_file():
+        try:
+            from server_browser import ServerDirectory
+            return ServerDirectory(seed, local)
+        except (ImportError, ValueError, OSError):
+            logging.getLogger(__name__).warning('The Starter directory seed is unavailable.')
+    return None
+
+
+def choose_directory_connection(directory, local, row, browser, *, replace=False):
+    from tkinter import filedialog
+    from server_directory import DirectoryError
+
+    profile = local/'directory-invitations'/(row['server_id']+'.json')
+    auto_register = not replace and not profile.exists() and 'open_registration' in row
+    if auto_register:
+        candidate = None
+    elif profile.exists() and not replace:
+        candidate = profile
+    else:
+        candidate = filedialog.askopenfilename(
+            parent=browser.window, title='Choose the invitation for '+row['name'],
+            filetypes=[('Player invitation', '*.json')])
+        if not candidate:
+            return
+
+    def check():
+        try:
+            if directory.clock() >= row['expires_at']:
+                raise DirectoryError('Refresh the listing before connecting.')
+            if auto_register:
+                connection = public_directory_connection(row, local)
+            else:
+                invitation = read_json(candidate, 16384)
+                connection = invitation_for_server(row, invitation)
+                if 'enrollment_token' in connection:
+                    connection = enroll_group_connection(connection, local)
+                client = DirectClient(connection)
+                try:
+                    caps = client.capabilities()
+                    if not caps.get('gameClientReady'):
+                        raise DirectoryError('This server does not support the current game client.')
+                finally:
+                    client.close()
+                with locked_state(profile):
+                    write_json(profile, connection)
+            try:
+                directory.connected(row['server_id'])
+            except OSError:
+                logging.getLogger(__name__).warning('Could not save directory connection history.')
+            return connection
+        except CommunityError as exc:
+            raise DirectoryError(str(exc)) from exc
+
+    browser.status.set('Registering for Public CTF…' if auto_register else 'Checking the invitation and server…')
+    browser.submit('connect', check)
+
+
+def browse_for_server(window, directory, local, *, on_ready=None):
+    from server_browser import ServerBrowserWindow
+
+    chosen = None
+
+    def connected(connection):
+        nonlocal chosen
+        chosen = connection
+        browser.window.destroy()
+
+    browser = ServerBrowserWindow(window, directory,
+        connect=lambda row, view, **opts: choose_directory_connection(directory, local, row, view, **opts),
+        on_connected=connected)
+    if on_ready is not None:
+        browser.window.update_idletasks()
+        on_ready()
+    window.wait_window(browser.window)
+    return chosen
+
+
+def add_server_directory(gui, directory, local, on_connected):
+    from server_browser import ServerBrowserWindow
+
+    browser = None
+    message = 'Leave the current lobby or game before changing servers.'
+
+    def can_change_host():
+        if gui.closing or gui.room or gui.watch_id or gui.controls_busy:
+            return False
+        if gui.public_panel is not None and {'start', 'continue', 'switch'} & gui.public_panel.pending:
+            return False
+        phase = gui.game.snapshot()['status'] if gui.game is not None else gui.game_status
+        return phase in ('idle', 'stopped', 'finished', 'failed')
+
+    def show_directory():
+        nonlocal browser
+        if browser is not None and browser.window.winfo_exists():
+            browser.window.lift()
+            return
+
+        def select(row, view, *, replace=False):
+            if can_change_host():
+                choose_directory_connection(directory, local, row, view, replace=replace)
+            else:
+                view.status.set(message)
+
+        def connected(connection):
+            if can_change_host():
+                on_connected(connection)
+                gui.close()
+            else:
+                browser.status.set(message)
+                browser.render()
+                browser.poll_handle = browser.window.after(120, browser.poll)
+
+        browser = ServerBrowserWindow(gui.root, directory, connect=select, on_connected=connected)
+
+    gui.button(gui.sidebar, 'Community servers', show_directory, False).pack(fill='x', padx=18, pady=(6, 0))
+
+
 def main(root=ROOT, *, on_ready=None, weapon_directory=None):
     connection = None
     while True:
@@ -1585,59 +1705,8 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
     local=pathlib.Path(os.environ.get('LOCALAPPDATA',pathlib.Path.home()))/'Tribes3DirectStarter'
     local.mkdir(parents=True,exist_ok=True);saved=local/'connection.json'
     chooser=tk.Tk();chooser.withdraw()
-    lobby = source = directory = None
-    if (root/'directory-seed.json').is_file():
-        try:
-            from server_browser import ServerBrowserWindow, ServerDirectory
-            directory = ServerDirectory(root/'directory-seed.json', local)
-        except (ImportError, ValueError, OSError):
-            logging.getLogger(__name__).warning('The Starter directory seed is unavailable.')
-
-    def choose_connection(row, browser, *, replace=False):
-        from server_directory import DirectoryError
-        profile = local/'directory-invitations'/(row['server_id']+'.json')
-        auto_register = not replace and not profile.exists() and 'open_registration' in row
-        if auto_register:
-            candidate = None
-        elif profile.exists() and not replace:
-            candidate = profile
-        else:
-            candidate = filedialog.askopenfilename(
-                parent=browser.window, title='Choose the invitation for '+row['name'],
-                filetypes=[('Player invitation', '*.json')])
-            if not candidate:
-                return
-        def check():
-            try:
-                if directory.clock() >= row['expires_at']:
-                    raise DirectoryError('Refresh the listing before connecting.')
-                if auto_register:
-                    connection = public_directory_connection(row, local)
-                else:
-                    invitation = read_json(candidate, 16384)
-                    connection = invitation_for_server(row, invitation)
-                    if 'enrollment_token' in connection:
-                        connection = enroll_group_connection(connection, local)
-                    client = DirectClient(connection)
-                    try:
-                        caps = client.capabilities()
-                        if not caps.get('gameClientReady'):
-                            raise DirectoryError('This server does not support the current game client.')
-                    finally:
-                        client.close()
-                    with locked_state(profile):
-                        write_json(profile, connection)
-                try:
-                    directory.connected(row['server_id'])
-                except OSError:
-                    logging.getLogger(__name__).warning('Could not save directory connection history.')
-                return connection
-            except CommunityError as exc:
-                raise DirectoryError(str(exc)) from exc
-        browser.status.set('Registering for Public CTF…' if auto_register else 'Checking the invitation and server…')
-        browser.submit('connect', check)
-
-    selected_hosts = []
+    lobby = source = None
+    directory = load_server_directory(root, local)
     try:
         try:
             try:
@@ -1668,16 +1737,9 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
             lobby=None
             messagebox.showerror('Direct Starter setup',str(exc))
         if lobby is None and directory is not None and source is not None:
-            def initial_connection(connection):
-                selected_hosts.append(connection)
-                browser.window.destroy()
-            browser = ServerBrowserWindow(chooser, directory, connect=choose_connection,
-                                          on_connected=initial_connection)
-            chooser.wait_window(browser.window)
+            return browse_for_server(chooser, directory, local, on_ready=on_ready)
     finally:
         chooser.destroy()
-    if selected_hosts:
-        return selected_hosts[0]
     if lobby is None:
         # A canceled invitation or unreachable host does not invalidate the update.
         if on_ready is not None:
@@ -1785,35 +1847,7 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
             gui.armor_panel = ArmorPanel(tk, gui, lobby, model_directory=root/'armor-models',
                                          weapon_directory=weapon_directory or local/'weapon-library')
         if directory is not None:
-            browser = None
-
-            def can_change_host():
-                return not (gui.room or gui.watch_id or gui.controls_busy
-                            or gui.game_status not in ('idle', 'stopped', 'finished', 'failed'))
-
-            def show_directory():
-                nonlocal browser
-                if browser is not None and browser.window.winfo_exists():
-                    browser.window.lift()
-                    return
-
-                def select_host(row, view, *, replace=False):
-                    if can_change_host():
-                        choose_connection(row, view, replace=replace)
-                    else:
-                        view.status.set('Leave the current lobby or game before changing servers.')
-
-                def switch_host(connection):
-                    if can_change_host():
-                        chosen.append(connection)
-                        gui.close()
-                    else:
-                        browser.status.set('Leave the current lobby or game before changing servers.')
-                        browser.poll_handle = browser.window.after(120, browser.poll)
-
-                browser = ServerBrowserWindow(window, directory, connect=select_host, on_connected=switch_host)
-
-            gui.button(gui.sidebar, 'Community servers', show_directory, False).pack(fill='x', padx=18, pady=(6, 0))
+            add_server_directory(gui, directory, local, chosen.append)
         if gui.settings_nav is not None:
             gui.settings_nav.pack_forget()
             gui.settings_nav.pack(fill='x', padx=18, pady=(6, 0))

@@ -12,7 +12,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, sentinel
 
 from ubuntu_join_worker import SWITCH_FILE, SWITCH_RESULT, serve, status, switch_public_team
 
@@ -211,6 +211,54 @@ class UbuntuHandoffTest(unittest.TestCase):
         with patch.dict(sys.modules, direct_client=direct),                 patch.dict(os.environ, XDG_DATA_HOME=str(self.state.parent)),                 patch('ubuntu_starter.subprocess.Popen') as launch:
             self.assertEqual(main(['--check-lobby']),0)
             launch.assert_not_called()
+
+    def test_native_directory_uses_selected_host_and_closes_previous_lobby(self):
+        original, selected = Mock(), Mock()
+        direct = SimpleNamespace(DirectClient=Mock(side_effect=[original, selected]),
+                                 group_connection=Mock(return_value={'hostname': 'bundled'}),
+                                 load_server_directory=Mock(return_value=sentinel.directory))
+
+        def show(lobby, state, on_ready, *, directory):
+            self.assertEqual(state, self.state)
+            self.assertIs(directory, sentinel.directory)
+            if lobby is original:
+                on_ready()
+                return {'hostname': 'selected'}
+            original.close.assert_called_once()
+            self.assertIsNone(on_ready)
+            return None
+
+        ready = Mock()
+        with patch.dict(sys.modules, direct_client=direct), \
+                patch('ubuntu_starter.show_starter', side_effect=show), \
+                patch('ubuntu_starter.subprocess.Popen') as launch:
+            self.assertEqual(main([], owned_state=self.state, on_ready=ready), 0)
+        launch.assert_not_called()
+        ready.assert_called_once()
+        selected.close.assert_called_once()
+        direct.group_connection.assert_called_once()
+        self.assertEqual([call.args[0]['hostname'] for call in direct.DirectClient.call_args_list],
+                         ['bundled', 'selected'])
+
+    def test_native_directory_opens_when_the_bundled_host_is_unavailable(self):
+        chooser, lobby, ready = Mock(), Mock(), Mock()
+        direct = SimpleNamespace(DirectClient=Mock(return_value=lobby),
+                                 group_connection=Mock(side_effect=OSError('Unreachable')),
+                                 load_server_directory=Mock(return_value=sentinel.directory),
+                                 browse_for_server=Mock(return_value={'hostname': 'selected'}))
+
+        def browse(_window, _directory, _state, *, on_ready):
+            on_ready()
+            return {'hostname': 'selected'}
+
+        direct.browse_for_server.side_effect = browse
+        with patch.dict(sys.modules, direct_client=direct, tkinter=SimpleNamespace(Tk=lambda: chooser)), \
+                patch('ubuntu_starter.show_starter', return_value=None) as show:
+            self.assertEqual(main([], owned_state=self.state, on_ready=ready), 0)
+        direct.browse_for_server.assert_called_once_with(chooser, sentinel.directory, self.state, on_ready=ready)
+        chooser.destroy.assert_called_once()
+        show.assert_called_once_with(lobby, self.state, None, directory=sentinel.directory)
+        ready.assert_called_once()
 
     def test_explicit_join_is_claimed_once_and_uses_separate_prefix(self):
         calls = []
