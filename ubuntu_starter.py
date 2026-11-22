@@ -17,7 +17,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 sys.path[:0] = [str(ROOT), str(ROOT/'lib')]
-from linux_launcher import APP_ID, prepare_launch, run_in_terminal
+from linux_launcher import APP_ID, armor_viewport, prepare_launch, run_in_terminal
 from ubuntu_startup import exclusive, private_area
 
 MARKER = '-clanwars-ubuntu-join='
@@ -190,6 +190,7 @@ class GameHandoff:
         self.deadline = 0
         self.role = 'player'
         self.public_round = None
+        self.watch_id = None
 
     def snapshot(self):
         with self.lock:
@@ -197,7 +198,11 @@ class GameHandoff:
                 return {'status':'idle','error':None}
             status_file = self.directory/'status.json'
             try:
-                return json.loads(status_file.read_bytes())
+                result = json.loads(status_file.read_bytes())
+                if result.get('watch_released') and self.watch_id:
+                    with self.lobby.lock:
+                        self.lobby._watch_tokens.pop(self.watch_id, None)
+                return dict(result, role=self.role, watchId=self.watch_id)
             except FileNotFoundError:
                 if time.monotonic() <= self.deadline:
                     return {'status':'starting','error':None,
@@ -219,7 +224,14 @@ class GameHandoff:
             with self.lobby.lock:
                 # The lobby window keeps polling during preparation. Its requests
                 # must use the same host admission as the Proton worker.
-                self.lobby.begin_game_attempt()
+                if role == 'spectator':
+                    token = self.lobby._watch_tokens.get(values['watch_id'])
+                    if token is None:
+                        request.rmdir()
+                        raise CommunityError('This spectator reservation has expired.')
+                    values['watch_token'] = token
+                else:
+                    self.lobby.begin_game_attempt()
                 details = dict(connection=self.lobby.connection, role=role,
                                code=self.lobby.code, token=self.lobby.token, player=self.lobby.player_id,
                                direct_session=self.lobby.direct_session,
@@ -236,6 +248,7 @@ class GameHandoff:
             self.directory = request
             self.deadline = time.monotonic() + HANDOFF_WAIT
             self.role = role
+            self.watch_id = values.get('watch_id')
             return 'starting'
 
     def start(self, *, expected_map=None, expected_match_id=None):
@@ -244,9 +257,41 @@ class GameHandoff:
     def start_public(self, name):
         return self._send('public', name=name)
 
+    def start_spectating(self, watch_id):
+        with self.lock:
+            try:
+                return self._send('spectator', watch_id=watch_id)
+            except Exception:
+                try:
+                    self.lobby.release_spectator(watch_id)
+                except (OSError, ValueError, RuntimeError):
+                    if self.snapshot()['status'] not in ACTIVE:
+                        self.watch_id = watch_id
+                raise
+
+    def stop_spectating(self):
+        from community_transport import CommunityError
+        with self.lock:
+            if self.watch_id is None:
+                return
+            self.stop()
+            if self.snapshot()['status'] in ACTIVE:
+                return
+            try:
+                self.lobby.release_spectator(self.watch_id)
+            except CommunityError as exc:
+                if exc.code != 'spectator_session_invalid':
+                    raise
+            self.watch_id = None
+
     def _cancel(self):
         (self.directory/'cancel').touch()
-        (self.directory/'request.json').unlink(missing_ok=True)
+        try:
+            (self.directory/'request.json').unlink()
+        except FileNotFoundError:
+            return
+        from ubuntu_join_worker import status
+        status(self.directory, 'stopped')
 
     def stop(self):
         with self.lock:
@@ -324,6 +369,7 @@ def show_starter(lobby, state, on_ready=None):
 
     class UbuntuDesktop(Desktop):
         public_panel = None
+        armor_panel = None
         tool_tips = None
 
         def label(self, parent, text, *args, **kwargs):
@@ -336,7 +382,7 @@ def show_starter(lobby, state, on_ready=None):
 
         def set_capabilities(self, caps):
             lobby.proximity_supported = caps.get('proximityVoice') == VOICE_PROTOCOL
-            super().set_capabilities(dict(caps, spectateEnabled=False))
+            super().set_capabilities(caps)
             self.refresh_voice_notice()
 
         def refresh_voice_notice(self):
@@ -359,14 +405,24 @@ def show_starter(lobby, state, on_ready=None):
         def show_panel(self, name):
             if self.closing:
                 return
+            if self.tool_tips is not None:
+                tab = {'lobbies': 'create_lobby', 'live': 'lobby_browser', 'public': 'public_ctf'}.get(name, name)
+                self.tool_tips.event('open_tab', tab)
+            if self.armor_panel is not None:
+                self.armor_panel.panel.pack_forget()
             if self.public_panel is not None:
                 self.public_panel.panel.pack_forget()
-                if name == 'public':
-                    self.current_panel = name
-                    self.lobby_panel.pack_forget()
-                    self.live_panel.pack_forget()
-                    self.public_panel.panel.pack(side='left', fill='both', expand=True, padx=32, pady=28)
-                    return
+            panel = {'armor': self.armor_panel, 'public': self.public_panel}.get(name)
+            if panel is not None:
+                self.current_panel = name
+                self.lobby_panel.pack_forget()
+                self.live_panel.pack_forget()
+                if self.maps_panel is not None:
+                    self.maps_panel.pack_forget()
+                panel.panel.pack(side='left', fill='both', expand=True, padx=32, pady=28)
+                if name == 'armor':
+                    panel.open()
+                return
             super().show_panel(name)
 
         def show_settings(self):
@@ -538,6 +594,35 @@ def show_starter(lobby, state, on_ready=None):
     if lobby.public_supported:
         app.public_panel = direct_client.PublicCTFPanel(tk, app, lobby)
         app.show_panel('public' if lobby.public_only else 'lobbies')
+    armor_panel = getattr(direct_client, 'ArmorPanel', None)
+    if armor_panel is not None and getattr(lobby, 'armor_supported', False):
+        viewport = armor_viewport(tk, direct_client.ArmorViewport)
+
+        class UbuntuArmorPanel(armor_panel):
+            def select_suit(self, event=None):
+                super().select_suit(event)
+                key = self.current_selection()
+                if (key in direct_client.ARMOR_MODEL_BLOBS and key not in self.models
+                        and key != self.displayed_model):
+                    self.model_status.configure(text='Loading 3D suit…')
+                    self.submit(key)
+
+            def show_model(self, key):
+                model = self.models.get(key)
+                if model is None:
+                    return False
+                try:
+                    if self.viewport is None:
+                        self.viewport = viewport(self.model_frame)
+                    self.present_model(model)
+                except (AttributeError, OSError, ValueError, tk.TclError):
+                    self.model_frame.pack_forget()
+                    self.model_status.pack(fill='both', expand=True)
+                    return False
+                self.displayed_model = key
+                return True
+
+        app.armor_panel = UbuntuArmorPanel(tk, app, lobby)
     app.settings_nav = app.button(app.sidebar, 'Settings', app.show_settings, False)
     app.settings_nav.pack(fill='x', padx=18, pady=(6, 0))
     launcher_tips = getattr(direct_client, 'LauncherTips', None)

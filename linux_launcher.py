@@ -5,9 +5,11 @@ After that, Play in Steam opens the community lobby. No Steam configuration is
 edited and Proton, Steam, Tailscale and the original game are not redistributed.
 """
 import argparse
+import ctypes as C
 import errno
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PureWindowsPath
 import platform
@@ -193,6 +195,153 @@ def prepare_launch(root, command, env, *, run=subprocess.run, workspace=None, st
               'scope': 'Proton compatibility candidate; game readiness requires runtime evidence'}
     (session/'launch.json').write_text(json.dumps(record, indent=2)+'\n', encoding='utf-8')
     return argv, child_env, session
+
+
+def armor_viewport(tk, base):
+    """Render the shared armor model in an EGL buffer and display it in Tk."""
+    class LinuxArmorViewport(base):
+        width, height = 420, 300
+
+        def __init__(self, frame):
+            self.frame = frame
+            self.model = self.texture_owner = self.drag_start = self.pending = None
+            self.context = self.surface = self.display = None
+            self.texture_id = C.c_uint()
+            self.label = tk.Label(frame, bg='#13202e', borderwidth=0)
+            self.label.pack(fill='both', expand=True)
+            self.reset_camera()
+            for widget in (frame, self.label):
+                widget.bind('<Map>', self.redraw)
+                widget.bind('<ButtonPress-1>', self.start_drag)
+                widget.bind('<B1-Motion>', self.drag)
+                widget.bind('<ButtonRelease-1>', self.end_drag)
+                widget.bind('<Button-4>', lambda _event: self.zoom(0.88))
+                widget.bind('<Button-5>', lambda _event: self.zoom(1.14))
+                widget.bind('<MouseWheel>', self.wheel)
+            for event, action in (
+                ('<Left>', lambda: self.orbit(-12, 0)), ('<Right>', lambda: self.orbit(12, 0)),
+                ('<Up>', lambda: self.orbit(0, -10)), ('<Down>', lambda: self.orbit(0, 10)),
+                ('<plus>', lambda: self.zoom(0.88)), ('<minus>', lambda: self.zoom(1.14)),
+                ('<Home>', self.reset_camera),
+            ):
+                frame.bind(event, lambda _event, callback=action: callback())
+            frame.bind('<Destroy>', self.close)
+
+        def initialize(self):
+            ptr, number, enum = C.c_void_p, C.c_int, C.c_uint
+            integers, single, double = C.POINTER(number), C.c_float, C.c_double
+            egl = self.egl = C.CDLL('libEGL.so.1')
+            self.gl = C.CDLL('libGL.so.1')
+            functions = (
+                (egl, {
+                    'eglGetPlatformDisplay': (ptr, enum, ptr, ptr),
+                    'eglInitialize': (enum, ptr, ptr, ptr),
+                    'eglBindAPI': (enum, enum),
+                    'eglChooseConfig': (enum, ptr, integers, C.POINTER(ptr), number, integers),
+                    'eglCreatePbufferSurface': (ptr, ptr, ptr, integers),
+                    'eglCreateContext': (ptr, ptr, ptr, ptr, integers),
+                    'eglMakeCurrent': (enum, ptr, ptr, ptr, ptr),
+                    'eglDestroySurface': (enum, ptr, ptr), 'eglDestroyContext': (enum, ptr, ptr),
+                    'eglTerminate': (enum, ptr),
+                }),
+                (self.gl, {
+                    'glViewport': (None, number, number, number, number),
+                    'glClearColor': (None, single, single, single, single), 'glClear': (None, enum),
+                    'glMatrixMode': (None, enum), 'glLoadIdentity': (None,),
+                    'glFrustum': (None, double, double, double, double, double, double),
+                    'glTranslatef': (None, single, single, single),
+                    'glRotatef': (None, single, single, single, single),
+                    'glEnable': (None, enum), 'glDisable': (None, enum),
+                    'glColorMaterial': (None, enum, enum),
+                    'glLightfv': (None, enum, enum, C.POINTER(single)),
+                    'glInterleavedArrays': (None, enum, number, ptr),
+                    'glDrawArrays': (None, enum, number, number),
+                    'glGenTextures': (None, number, C.POINTER(enum)),
+                    'glDeleteTextures': (None, number, C.POINTER(enum)),
+                    'glBindTexture': (None, enum, enum), 'glTexParameteri': (None, enum, enum, number),
+                    'glPixelStorei': (None, enum, number),
+                    'glTexImage2D': (None, enum, number, number, number, number, number, enum, enum, ptr),
+                    'glReadPixels': (None, number, number, number, number, enum, enum, ptr),
+                }),
+            )
+            for library, signatures in functions:
+                for name, (result, *arguments) in signatures.items():
+                    function = getattr(library, name)
+                    function.restype, function.argtypes = result, arguments
+            self.display = egl.eglGetPlatformDisplay(0x31DD, None, None)
+            config, count = ptr(), number()
+            # Pbuffer surface, full RGB and depth, desktop OpenGL.
+            attributes = (number * 13)(0x3033, 1, 0x3024, 8, 0x3023, 8, 0x3022, 8,
+                                       0x3025, 24, 0x3040, 8, 0x3038)
+            if not (self.display and egl.eglInitialize(self.display, None, None) and egl.eglBindAPI(0x30A2)
+                    and egl.eglChooseConfig(self.display, attributes, C.byref(config), 1, C.byref(count))
+                    and count.value):
+                self.close()
+                raise OSError('The armor viewport could not open Linux OpenGL.')
+            size = (number * 5)(0x3057, self.width, 0x3056, self.height, 0x3038)
+            self.surface = egl.eglCreatePbufferSurface(self.display, config, size)
+            self.context = egl.eglCreateContext(self.display, config, None, (number * 1)(0x3038))
+            if not self.surface or not self.context:
+                self.close()
+                raise OSError('The armor viewport could not create a Linux OpenGL buffer.')
+
+        def draw(self):
+            self.pending = None
+            if self.model is None or not self.frame.winfo_ismapped():
+                return
+            if not self.egl.eglMakeCurrent(self.display, self.surface, self.surface, self.context):
+                return
+            try:
+                gl = self.gl
+                near = 0.2
+                half_height = near * math.tan(math.radians(21))
+                half_width = half_height * self.width / self.height
+                gl.glViewport(0, 0, self.width, self.height)
+                gl.glClearColor(0.075, 0.125, 0.18, 1)
+                gl.glClear(0x4100)
+                gl.glMatrixMode(0x1701)
+                gl.glLoadIdentity()
+                gl.glFrustum(-half_width, half_width, -half_height, half_height, near, 24)
+                gl.glMatrixMode(0x1700)
+                gl.glLoadIdentity()
+                gl.glEnable(0x0B71)
+                gl.glEnable(0x0B50)
+                gl.glEnable(0x4000)
+                gl.glEnable(0x0B57)
+                gl.glColorMaterial(0x0408, 0x1602)
+                gl.glLightfv(0x4000, 0x1203, (C.c_float * 4)(0.5, 0.8, 1, 0))
+                gl.glLightfv(0x4000, 0x1200, (C.c_float * 4)(0.36, 0.36, 0.4, 1))
+                gl.glTranslatef(0, 0, -self.distance)
+                gl.glRotatef(self.pitch, 1, 0, 0)
+                gl.glRotatef(self.yaw, 0, 1, 0)
+                layout = self.bind_material(self.model)
+                gl.glInterleavedArrays(layout, 0, C.cast(self.model.vertices, C.c_void_p))
+                gl.glDrawArrays(4, 0, self.model.count)
+                stride = self.width * 3
+                pixels = C.create_string_buffer(stride * self.height)
+                gl.glPixelStorei(0x0D05, 1)
+                gl.glReadPixels(0, 0, self.width, self.height, 0x1907, 0x1401, pixels)
+                raw = pixels.raw
+                ppm = f'P6\n{self.width} {self.height}\n255\n'.encode()
+                self.image = tk.PhotoImage(master=self.frame, format='PPM',
+                                           data=ppm + b''.join(raw[i:i+stride] for i in range(len(raw)-stride, -1, -stride)))
+                self.label.configure(image=self.image)
+            finally:
+                self.egl.eglMakeCurrent(self.display, None, None, None)
+
+        def close(self, _event=None):
+            if self.pending is not None:
+                self.frame.after_cancel(self.pending)
+                self.pending = None
+            if self.context:
+                self.egl.eglDestroyContext(self.display, self.context)
+            if self.surface:
+                self.egl.eglDestroySurface(self.display, self.surface)
+            if self.display:
+                self.egl.eglTerminate(self.display)
+            self.context = self.surface = self.display = None
+
+    return LinuxArmorViewport
 
 
 def run_in_terminal(argv, env, cwd, log):

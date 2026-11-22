@@ -1,3 +1,10 @@
+# Native Ubuntu spectating and armor
+
+Ubuntu enables the Direct Lobby Browser spectator controls and starts an
+owned Proton observer process using the reservation from the launcher. The
+Armor panel uses the same server catalog, saved choices and verified
+models as Windows, with an EGL preview on Ubuntu.
+
 # Native Ubuntu Settings and Tool Tips
 
 The Ubuntu sidebar shows the same host-delivered Tool Tips and announcements

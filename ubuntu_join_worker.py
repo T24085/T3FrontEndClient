@@ -56,9 +56,10 @@ def apply_retail_import(state, directory):
     pending.unlink(missing_ok=True)
 
 
-def status(directory, phase, *, error=None, progress=None):
+def status(directory, phase, *, error=None, progress=None, watch_released=False):
     temporary = directory/'status.tmp'
-    temporary.write_text(json.dumps(dict(status=phase,error=error,progress=progress)),encoding='utf-8')
+    temporary.write_text(json.dumps(dict(status=phase,error=error,progress=progress,
+                                         watch_released=watch_released)),encoding='utf-8')
     temporary.replace(directory/'status.json')
 
 
@@ -95,7 +96,14 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
     if session is not None:
         lobby.direct_session = session
     game = None
+    spectator = request['role'] == 'spectator'
     try:
+        if spectator:
+            watch_id, token = request.get('watch_id'), request.get('watch_token')
+            if (not isinstance(watch_id, str) or not re.fullmatch('[A-Za-z0-9_-]{16,64}', watch_id)
+                    or not isinstance(token, str) or not token.isascii() or not 32 <= len(token) <= 128):
+                raise ValueError('Invalid spectator handoff.')
+            lobby._watch_tokens[watch_id] = token
         caps = lobby.capabilities()
         lobby.code, lobby.token, lobby.player_id = request['code'], request['token'], request['player']
         state = directory.parent.parent
@@ -136,6 +144,8 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
             try:
                 if public:
                     game.start_public(request['name'])
+                elif spectator:
+                    game.start_spectating(watch_id)
                 else:
                     game.start(expected_map=request['map'], expected_match_id=request['match'])
             except Exception as exc:
@@ -164,13 +174,15 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
                             and type(state.get('round')) is int and state['round'] > current[1]):
                         game.continue_public((current[0],state['round']))
             if failure and not launch.is_alive() and phase == 'idle':
-                status(directory,'failed',error=failure[0])
+                status(directory,'failed',error=failure[0],
+                       watch_released=spectator and watch_id not in lobby._watch_tokens)
                 return 1
             if not launch.is_alive() and phase in ('stopped','finished','failed','quarantined'):
                 if game.thread is not None and game.thread.is_alive():
                     time.sleep(.25)
                     continue
-                status(directory,phase,error=snapshot.get('error') or (failure[0] if failure else None))
+                status(directory,phase,error=snapshot.get('error') or (failure[0] if failure else None),
+                       watch_released=spectator and watch_id not in lobby._watch_tokens)
                 return int(phase in ('failed','quarantined'))
             entry = (phase,snapshot.get('error'),snapshot.get('progress'))
             if entry != last:
@@ -179,7 +191,12 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
                 last = entry
             time.sleep(.25)
     finally:
-        if game is not None:
-            game.stop()
-            sync.cancelled.set()
-        lobby.close()
+        try:
+            if game is not None:
+                game.stop()
+                if spectator:
+                    with suppress(RuntimeError, OSError):
+                        game.stop_spectating()
+                sync.cancelled.set()
+        finally:
+            lobby.close()

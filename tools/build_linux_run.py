@@ -1,6 +1,6 @@
 """Wrap the official Linux ZIP in a single portable self-extracting installer."""
 import argparse
-from base64 import b64encode
+from base64 import b64decode, b64encode
 from hashlib import file_digest, md5, sha256
 import json
 from pathlib import Path
@@ -74,9 +74,41 @@ def signed_preview_overlay(root, manifest):
                      'linux_update_channel': LINUX_CHANNEL}
 
 
-def build(package, proof_path, output, *, ubuntu_preview=False, signed_update=None):
+def linux_runtime_overlay(root, overlay, direct_release):
+    sys.path.insert(0, str(SOURCE))
+    try:
+        from starter_update import LINUX_CHANNEL, MAX_INDEX, decode_index, download_update_file
+        from direct_update_contract import LINUX_INDEX
+    finally:
+        sys.path.pop(0)
+
+    def read(name, bound):
+        with (root/name).open('rb') as stream:
+            return stream.read(bound + 1)
+
+    raw = read(LINUX_INDEX, MAX_INDEX)
+    index = decode_index(raw, channel=LINUX_CHANNEL)
+    native = {'ubuntu_starter.py', 'ubuntu_join_worker.py', 'linux_launcher.py', 'linux_bootstrap.pyw'}
+    if index['files'].keys() != set(direct_release['files']) | native:
+        raise ValueError('Signed Linux update does not cover the installed Direct runtime.')
+    for name, row in index['files'].items():
+        data = download_update_file(row, read)
+        if (len(data), sha256(data).hexdigest()) != (row['bytes'], row['sha256']):
+            raise ValueError(f'Signed Linux update failed verification: {name}')
+        if name.endswith(('.py', '.pyw')):
+            compile(data, name, 'exec')
+        if name not in native and data != b64decode(overlay[name], validate=True):
+            raise ValueError(f'The signed Linux update does not match the Direct build: {name}')
+        overlay[name] = b64encode(data).decode('ascii')
+    direct_release.update(linux_revision=index['revision'], linux_files=sorted(index['files']),
+                          linux_index_sha256=sha256(raw).hexdigest())
+
+
+def build(package, proof_path, output, *, ubuntu_preview=False, signed_update=None, linux_update=None):
     if signed_update is not None and not ubuntu_preview:
         raise ValueError('A signed update can only be embedded in an Ubuntu preview.')
+    if linux_update is not None and signed_update is None:
+        raise ValueError('An embedded Linux update requires its signed Direct baseline.')
     proof = json.loads(proof_path.read_bytes())
     with package.open('rb') as payload:
         assert file_digest(payload, 'sha256').hexdigest() == proof['sha256']
@@ -103,6 +135,8 @@ def build(package, proof_path, output, *, ubuntu_preview=False, signed_update=No
             source_profile = (SOURCE/'player_profile.py').read_text(encoding='utf-8').encode()
             profile = proton_profile_overlay(signed_files['player_profile.py'], source_profile)
             overlay['player_profile.py'] = b64encode(profile).decode('ascii')
+        if linux_update is not None:
+            linux_runtime_overlay(linux_update, overlay, release)
         code = code.replace('PREVIEW = None', 'PREVIEW = '+repr(overlay), 1)
         if release is not None:
             release['preview'] = 7
@@ -149,6 +183,10 @@ def build(package, proof_path, output, *, ubuntu_preview=False, signed_update=No
         result.update(base_revision=proof['revision'], revision=release['revision'], preview=release['preview'],
                       signed_update_index_sha256=release['index_sha256'], signed_files=len(release['files']),
                       signed_file_platform_overrides=['player_profile.py'])
+        if linux_update is not None:
+            result.update(linux_revision=release['linux_revision'],
+                          linux_index_sha256=release['linux_index_sha256'],
+                          linux_signed_files=len(release['linux_files']))
     return result
 
 
@@ -158,9 +196,10 @@ def main():
         parser.add_argument('--'+name, type=Path, required=True)
     parser.add_argument('--ubuntu-preview', action='store_true')
     parser.add_argument('--signed-update', type=Path, help='Directory containing the verified Direct feed snapshot')
+    parser.add_argument('--linux-update', type=Path, help='Directory containing the verified Linux feed snapshot')
     args = parser.parse_args()
     result = build(args.package,args.package_proof,args.output,ubuntu_preview=args.ubuntu_preview,
-                   signed_update=args.signed_update)
+                   signed_update=args.signed_update, linux_update=args.linux_update)
     args.proof.write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(result),flush=True)
 

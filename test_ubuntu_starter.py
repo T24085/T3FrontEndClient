@@ -22,7 +22,7 @@ if sys.platform == 'linux':
 
 
 class UbuntuJoinWorkerTest(unittest.TestCase):
-    def join(self, sync, caps, *, session=None, through_bridge=False):
+    def join(self, sync, caps, *, session=None, through_bridge=False, spectator=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             directory = root/'joins'/'fixture'
@@ -36,12 +36,16 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
             }
             if session is not None:
                 request['direct_session'] = session
+            watch_id, watch_token = 'fixture-watch-id', 'T' * 32
+            if spectator:
+                request.update(role='spectator', watch_id=watch_id, watch_token=watch_token)
             (directory/'claimed.json').write_text(json.dumps(request), encoding='utf-8')
             observed = []
 
             class Lobby:
                 def __init__(self, *_args, **_kwargs):
                     self.lock = threading.RLock()
+                    self._watch_tokens = {}
                     self.direct_session = 'a'*32
                     self.close = Mock()
 
@@ -59,6 +63,13 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
 
             game = SimpleNamespace(start=Mock(side_effect=start), snapshot=lambda: {'status': 'finished'},
                                    thread=None, stop=Mock())
+            def spectate(value):
+                self.assertEqual(value, watch_id)
+                lobby = direct.DirectGame.call_args.args[0]
+                self.assertEqual(lobby._watch_tokens.pop(watch_id), watch_token)
+                start()
+            game.start_spectating = Mock(side_effect=spectate)
+            game.stop_spectating = Mock()
             direct = SimpleNamespace(DirectClient=Lobby, DirectGame=Mock(return_value=game))
             map_sync = Mock(return_value=sync)
             with patch.dict(sys.modules, direct_client=direct, map_sync=SimpleNamespace(MapSync=map_sync)):
@@ -85,8 +96,14 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
             map_sync.assert_called_once_with(lobby, package, workspace)
             direct.DirectGame.assert_called_once_with(lobby, package, game_dir, workspace,
                                                     workspace/'direct-desktop-control', map_sync=sync)
-            game.start.assert_called_once_with(expected_map='Stonehenge2026', expected_match_id='match')
-            self.assertEqual(json.loads((directory/'status.json').read_bytes())['status'], 'finished')
+            outcome = json.loads((directory/'status.json').read_bytes())
+            if spectator:
+                game.start_spectating.assert_called_once_with(watch_id)
+                game.start.assert_not_called()
+                self.assertTrue(outcome['watch_released'])
+            else:
+                game.start.assert_called_once_with(expected_map='Stonehenge2026', expected_match_id='match')
+            self.assertEqual(outcome['status'], 'finished')
             lobby.close.assert_called_once()
             return observed
 
@@ -109,6 +126,13 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
     def test_proton_bridge_passes_cli_paths_to_the_join_worker(self):
         sync = SimpleNamespace(session_enabled=False, start=Mock(), cancelled=threading.Event())
         self.join(sync, {'mapFileSync': 2, 'mapSessionSync': 3}, through_bridge=True)
+
+    def test_proton_worker_uses_reserved_spectator_grant_and_session(self):
+        session = 'c' * 32
+        sync = SimpleNamespace(session_enabled=False, start=Mock(), cancelled=threading.Event())
+        observed = self.join(sync, {'mapFileSync': 2, 'mapSessionSync': 3}, session=session,
+                             through_bridge=True, spectator=True)
+        self.assertEqual(observed, [session, session])
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'Native Ubuntu tests run on Linux')
@@ -171,6 +195,22 @@ class UbuntuHandoffTest(unittest.TestCase):
         with patch('ubuntu_starter.os.execvp',side_effect=OSError) as execute, self.assertRaises(OSError):
             dispatch(command)
         execute.assert_called_once_with(command[0],command)
+
+    def test_spectator_handoff_retains_the_admission_and_releases_a_cancelled_request(self):
+        watch_id, watch_token = 'fixture-watch-id', 'T' * 32
+        self.lobby._watch_tokens = {watch_id: watch_token}
+        self.lobby.release_spectator = Mock()
+        launch = Mock()
+        handoff = GameHandoff(self.lobby, self.state, launch=launch)
+        with patch('ubuntu_starter.shutil.which', return_value='/usr/bin/steam'):
+            self.assertEqual(handoff.start_spectating(watch_id), 'starting')
+        request = json.loads((handoff.directory/'request.json').read_bytes())
+        self.assertEqual((request['watch_id'], request['watch_token']), (watch_id, watch_token))
+        self.assertEqual(request['direct_session'], 'a' * 32)
+        self.assertNotIn(watch_token, launch.call_args.args[0])
+        handoff.stop_spectating()
+        self.assertFalse((handoff.directory/'request.json').exists())
+        self.lobby.release_spectator.assert_called_once_with(watch_id)
 
     def test_snap_dispatch_finds_the_host_request_after_shaders_and_shares_its_game_lock(self):
         home = Path(self.home.name)

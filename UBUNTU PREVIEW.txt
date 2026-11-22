@@ -34,6 +34,6 @@ install folder as an argument if you installed outside the default folder.
 For a headless check of the server connection, run:
     sh "Start Clan Wars Ubuntu.sh" --check-lobby
 
-Native window, Steam launch, and gameplay qualification require a test
-on an Ubuntu desktop. This preview covers lobby and player joins.
-Spectating and the Windows armor picker are outside this preview.
+Use Lobby Browser to spectate a match that allows it, and Armor to choose
+and preview the suits available from the server. These controls use the
+shared Direct Starter runtime.

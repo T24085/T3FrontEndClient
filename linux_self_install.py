@@ -105,7 +105,8 @@ def install_preview(root):
         if 'linux_update_channel' in PREVIEW_RELEASE:
             manifest.update(linux_starter_update_channel=PREVIEW_RELEASE['linux_update_channel'],
                             linux_starter_update_bootstrap=2,
-                            linux_starter_update_revision=0)
+                            linux_starter_update_revision=PREVIEW_RELEASE.get('linux_revision', 0),
+                            linux_starter_update_files=PREVIEW_RELEASE.get('linux_files', []))
     manifest.update(files=list(rows.values()), build_id=build, revision_id=build)
     compact = json.dumps(manifest,separators=(',',':'),ensure_ascii=True)+'\n'
     if len(compact.encode())>4*1024*1024 or len(rows)>16384:
