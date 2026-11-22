@@ -1,3 +1,9 @@
+# Native Ubuntu join paths
+
+The Proton bridge converts the game and workspace arguments to paths before
+passing them to the Ubuntu join worker, which uses the workspace to locate
+its desktop process-control directory.
+
 # Native Ubuntu auto-join and startup diagnostics
 
 Linux uses the same once-per-match auto-join as the Windows Starter for

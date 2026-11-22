@@ -1,7 +1,10 @@
 """Verify the native Starter does not run Steam during startup."""
 from pathlib import Path
+from hashlib import sha256
 import json
 import os
+import runpy
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -19,12 +22,14 @@ if sys.platform == 'linux':
 
 
 class UbuntuJoinWorkerTest(unittest.TestCase):
-    def join(self, sync, caps, *, session=None):
+    def join(self, sync, caps, *, session=None, through_bridge=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             directory = root/'joins'/'fixture'
             directory.mkdir(parents=True)
-            workspace = root/'game-files'
+            workspace = root/'game files'
+            game_dir = root/'Steam Library' if through_bridge else root
+            package = root
             request = {
                 'connection': {}, 'issued': time.time(), 'code': 'TEST', 'token': 'fixture',
                 'player': 'player', 'role': 'player', 'map': 'Stonehenge2026', 'match': 'match',
@@ -55,10 +60,30 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
             game = SimpleNamespace(start=Mock(side_effect=start), snapshot=lambda: {'status': 'finished'},
                                    thread=None, stop=Mock())
             direct = SimpleNamespace(DirectClient=Lobby, DirectGame=Mock(return_value=game))
-            with patch.dict(sys.modules, direct_client=direct, map_sync=SimpleNamespace(MapSync=lambda *a: sync)):
-                self.assertEqual(serve(directory, root, root, workspace, None), 0)
+            map_sync = Mock(return_value=sync)
+            with patch.dict(sys.modules, direct_client=direct, map_sync=SimpleNamespace(MapSync=map_sync)):
+                if through_bridge:
+                    bridge = Path(__file__).with_name('linux_bootstrap.pyw')
+                    package = bridge.resolve().parent
+                    main = runpy.run_path(str(bridge))['main']
+                    launch_dir = root/'launch'
+                    launch_dir.mkdir()
+                    ca = b'fixture certificate'
+                    (launch_dir/'ca-bundle.pem').write_bytes(ca)
+                    args = [str(bridge), '--game-dir', str(game_dir), '--workspace', str(workspace),
+                            '--launch-dir', str(launch_dir), '--ca-sha256', sha256(ca).hexdigest(),
+                            '--ubuntu-join', str(directory)]
+                    context = SimpleNamespace(check_hostname=True, verify_mode=ssl.CERT_REQUIRED)
+                    with patch.object(sys, 'argv', args), patch.dict(os.environ), \
+                            patch.object(ssl, 'create_default_context', return_value=context), \
+                            patch.dict(main.__globals__, check_proton=Mock(return_value='fixture'),
+                                       check_owned_jobs=Mock()):
+                        self.assertEqual(main(), 0, (launch_dir/'bridge.log').read_text(encoding='utf-8'))
+                else:
+                    self.assertEqual(serve(directory, package, game_dir, workspace, None), 0)
             lobby = direct.DirectGame.call_args.args[0]
-            direct.DirectGame.assert_called_once_with(lobby, root, root, workspace,
+            map_sync.assert_called_once_with(lobby, package, workspace)
+            direct.DirectGame.assert_called_once_with(lobby, package, game_dir, workspace,
                                                     workspace/'direct-desktop-control', map_sync=sync)
             game.start.assert_called_once_with(expected_map='Stonehenge2026', expected_match_id='match')
             self.assertEqual(json.loads((directory/'status.json').read_bytes())['status'], 'finished')
@@ -80,6 +105,10 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
         session = 'c'*32
         observed = self.join(sync, {'mapFileSync': 2, 'mapSessionSync': 3}, session=session)
         self.assertEqual(observed, [session, session])
+
+    def test_proton_bridge_passes_cli_paths_to_the_join_worker(self):
+        sync = SimpleNamespace(session_enabled=False, start=Mock(), cancelled=threading.Event())
+        self.join(sync, {'mapFileSync': 2, 'mapSessionSync': 3}, through_bridge=True)
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'Native Ubuntu tests run on Linux')

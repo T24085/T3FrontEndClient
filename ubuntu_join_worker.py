@@ -13,7 +13,7 @@ def status(directory, phase, *, error=None, progress=None):
     temporary.replace(directory/'status.json')
 
 
-def serve(directory, package, game_dir, workspace, context):
+def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, context):
     from direct_client import DirectClient, DirectGame
     from map_sync import MapSync
 

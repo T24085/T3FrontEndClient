@@ -99,7 +99,7 @@ def main():
             ownership = check_owned_jobs(args.launch_dir)
             if args.ubuntu_join is not None:
                 from ubuntu_join_worker import serve
-                return serve(args.ubuntu_join, ROOT, args.game_dir, args.workspace, context)
+                return serve(args.ubuntu_join, ROOT, Path(args.game_dir), Path(args.workspace), context)
             import tkinter as tk
             probe = tk.Tk()
             probe.withdraw()
