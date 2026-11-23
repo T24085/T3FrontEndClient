@@ -1,6 +1,7 @@
 """Development-only Community Starter lobby and owned game launcher."""
 from array import array
 from collections import deque
+from datetime import datetime
 from operator import itemgetter
 import base64
 import tempfile
@@ -1673,6 +1674,85 @@ class Desktop:
 
         self.run_async(work, complete)
 
+    _retail_import_offered = False
+
+    def offer_retail_import(self, settings_dir, check, apply):
+        """Offer the existing import once per Starter process."""
+        from player_profile import remember_retail_import_prompt, retail_import_prompt_pending
+
+        if Desktop._retail_import_offered or self.closing:
+            return
+        try:
+            if not retail_import_prompt_pending(settings_dir):
+                return
+            modified = check()
+        except (OSError, ValueError):
+            return
+        if modified is None or self.game_status not in ('idle', 'stopped', 'finished', 'failed'):
+            return
+        Desktop._retail_import_offered = True
+        window = tk.Toplevel(self.root, bg=BG, padx=24, pady=20)
+        window.title('Import your Tribes 3 settings?')
+        window.transient(self.root)
+        window.resizable(False, False)
+        self.label(window, 'Import your Tribes 3 settings?', 16, True).pack(anchor='w')
+        detail = self.label(window, 'Copy your key bindings, mouse sensitivity, FOV, audio, and graphics settings '
+                            'from retail Tribes 3.', 11, color=MUTED)
+        detail.configure(wraplength=420, justify='left')
+        detail.pack(anchor='w', pady=(8, 6))
+        date = datetime.fromtimestamp(modified).strftime('%x')
+        self.label(window, f'Retail settings last saved {date}', 10, color=MUTED).pack(anchor='w')
+        notice = tk.StringVar(window)
+        tk.Label(window, textvariable=notice, bg=BG, fg=MUTED, justify='left', wraplength=420).pack(
+            anchor='w', pady=(8, 0))
+
+        def dismiss():
+            try:
+                remember_retail_import_prompt(settings_dir, 'dismissed')
+            except (OSError, ValueError):
+                notice.set('Starter could not save your choice. Try again.')
+                return
+            window.destroy()
+
+        def import_settings():
+            try:
+                result = apply()
+            except (OSError, ValueError) as exc:
+                notice.set(str(exc))
+                return
+            try:
+                remember_retail_import_prompt(settings_dir, 'done')
+            except (OSError, ValueError):
+                result += '\nStarter could not save your prompt preference.'
+            window.destroy()
+            messagebox.showinfo('Import your Tribes 3 settings', result, parent=self.root)
+
+        buttons = tk.Frame(window, bg=BG)
+        buttons.pack(fill='x', pady=(14, 0))
+        self.button(buttons, 'Import', import_settings).pack(side='left')
+        later = self.button(buttons, 'Not now', window.destroy, False)
+        later.pack(side='left', padx=8)
+        self.button(buttons, "Don't ask again", dismiss, False).pack(side='left')
+        window.protocol('WM_DELETE_WINDOW', window.destroy)
+        window.bind('<Escape>', lambda _event: window.destroy())
+        window.grab_set()
+        later.focus_set()
+
+    def offer_windows_retail_import(self, workspace):
+        from player_profile import import_retail_settings, user_profile_root, windows_retail_import_offer
+
+        try:
+            root = user_profile_root()
+        except (OSError, ValueError):
+            return
+
+        def apply():
+            changed = import_retail_settings(root=root, workspaces=(workspace,), first_launch=True)
+            return ('Retail settings imported. They apply the next time you open the game.'
+                    if changed else 'Your community settings already match the saved retail settings.')
+
+        self.offer_retail_import(root, lambda: windows_retail_import_offer(root, (workspace,)), apply)
+
     def show_settings(self):
         if self.settings_window is not None and self.settings_window.winfo_exists():
             self.settings_window.lift()
@@ -2058,6 +2138,7 @@ def main(*, ssl_context=None, on_ready=None):
         root.update_idletasks()
         on_ready()
     root.after_idle(gui.show_connection_info_once)
+    root.after_idle(gui.offer_windows_retail_import, selected_workspace)
     root.mainloop()
 
 

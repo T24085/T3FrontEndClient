@@ -414,6 +414,36 @@ class DesktopTest(unittest.TestCase):
             finish.set()
             app.close()
 
+    def test_first_launch_prompt_choices(self):
+        import player_profile
+
+        for choice in ('Not now', "Don't ask again", 'Import'):
+            with self.subTest(choice=choice), TemporaryDirectory() as folder:
+                root = tk.Tk()
+                root.withdraw()
+                app = Desktop(root, FakeLobby(), lambda _: FakeGame())
+                root.update_idletasks()
+                settings = Path(folder)
+                action = Mock(return_value='Retail settings imported.')
+                try:
+                    with patch.object(Desktop, '_retail_import_offered', False), \
+                            patch('desktop_launcher.messagebox.showinfo') as result:
+                        app.offer_retail_import(settings, lambda: 1_700_000_000, action)
+                        window = next(child for child in root.winfo_children()
+                                      if isinstance(child, tk.Toplevel))
+                        button = next(button for row in window.winfo_children()
+                                      for button in row.winfo_children()
+                                      if isinstance(button, tk.Button) and button.cget('text') == choice)
+                        button.invoke()
+                        self.assertFalse(window.winfo_exists())
+                        app.offer_retail_import(settings, lambda: 1_700_000_000, action)
+                        self.assertFalse(any(isinstance(child, tk.Toplevel) for child in root.winfo_children()))
+                        self.assertEqual(player_profile.retail_import_prompt_pending(settings), choice == 'Not now')
+                        self.assertEqual(action.call_count, int(choice == 'Import'))
+                        self.assertEqual(result.call_count, int(choice == 'Import'))
+                finally:
+                    app.close()
+
     @unittest.skipUnless(sys.platform == 'win32', 'Retail profile import is a Windows Starter control.')
     def test_settings_import_button_uses_saved_profile_only_after_game_exits(self):
         root = tk.Tk()

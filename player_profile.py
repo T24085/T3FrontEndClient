@@ -35,6 +35,7 @@ BOOTSTRAP_SECTION = '/Script/EngineSettings.GameMapsSettings'
 CONFIG_DIRECTORY = 'Saved/Config/Windows'
 RETAIL_INPUT_SECTION = '/Script/Valhalla.ValPlayerInput'
 RETAIL_INPUT_KEYS = {'customactionkeymappings', 'savedsettingsconfig'}
+RETAIL_PROMPT_FILE = "retail-import-prompt.json"
 RETAIL_GAME_SECTIONS = ('/Script/Valhalla.ValGameUserSettings', 'ScalabilityGroups')
 
 
@@ -465,23 +466,79 @@ def _read_existing(path):
         return None
 
 
-def import_retail_settings(*, root=None, workspaces=()):
-    """Copy the selected retail preferences while holding the native profile lock."""
-    root = Path(root) if root is not None else user_profile_root()
-    _require_closed_game()
-    local_app_data = root.parents[1]
+def retail_import_prompt_pending(settings_dir):
+    path = _child(settings_dir, RETAIL_PROMPT_FILE)
+    try:
+        value = json.loads(_read(path, 256))
+    except FileNotFoundError:
+        return True
+    return value == {'retailImportPrompt': 'pending'}
+
+
+def remember_retail_import_prompt(settings_dir, state):
+    if state not in ('dismissed', 'done'):
+        raise ValueError('Invalid retail import prompt state.')
+    path = _child(settings_dir, RETAIL_PROMPT_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic(path, json.dumps({'retailImportPrompt': state}).encode('utf-8'))
+
+
+def _profile_has_game_settings(profile):
+    for name in MIGRATE_FILES:
+        raw = _read_existing(_child(profile, f'{CONFIG_DIRECTORY}/{name}'))
+        if raw is not None and any(key is not None for _, _, key in _ini(raw)[1]):
+            return True
+    return False
+
+
+def community_has_saved_settings(root, workspaces=()):
+    profile = _child(root, 'profile')
+    if profile.exists():
+        return _profile_has_game_settings(profile)
+    return migration_candidate(tuple(workspaces) + (root.parent/'sessions',)) is not None
+
+
+def _retail_sources(local_app_data):
     sources = {}
     for name in ('Input.ini', 'GameUserSettings.ini'):
         path = _child(local_app_data, f'Topaz/{CONFIG_DIRECTORY}/{name}')
         raw = _read_existing(path)
         if raw is not None and _merge_retail_ini(name, raw, None) is not None:
             sources[name] = (path, raw)
+    return sources
+
+
+def retail_settings_modified(local_app_data):
+    sources = _retail_sources(local_app_data)
+    if not sources:
+        return None
+    return max(path.stat().st_mtime for path, _ in sources.values())
+
+
+def windows_retail_import_offer(root, workspaces=()):
+    modified = retail_settings_modified(root.parents[1])
+    if modified is None or community_has_saved_settings(root, workspaces):
+        return None
+    _require_closed_game()
+    return modified
+
+
+def import_retail_settings(*, root=None, workspaces=(), retail_local_app_data=None, first_launch=False):
+    """Copy the selected retail preferences while holding the native profile lock."""
+    root = Path(root) if root is not None else user_profile_root()
+    _require_closed_game()
+    local_app_data = Path(retail_local_app_data) if retail_local_app_data is not None else root.parents[1]
+    sources = _retail_sources(local_app_data)
     if not sources:
         raise ProfileError('No saved retail settings found. Open TRIBES 3 from Steam and save your settings first.')
 
     handle = _acquire_profile_lock(root)
     try:
+        if first_launch and community_has_saved_settings(root, workspaces):
+            raise ProfileError('Your community settings are already in use. Import manually from Settings if you want to replace them.')
         profile = _initialize_profile(root, workspaces)
+        if first_launch and _profile_has_game_settings(profile):
+            raise ProfileError('Your community settings are already in use. Import manually from Settings if you want to replace them.')
         changes = []
         for name, (source, retail) in sources.items():
             path = _child(profile, f'{CONFIG_DIRECTORY}/{name}')

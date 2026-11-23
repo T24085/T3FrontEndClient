@@ -24,6 +24,29 @@ if sys.platform == 'linux':
 
 
 class UbuntuJoinWorkerTest(unittest.TestCase):
+    def test_deferred_first_launch_import_checks_saved_profile(self):
+        from base64 import b64encode
+        from ubuntu_join_worker import IMPORT_FILE, IMPORT_RESULT, apply_retail_import
+
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(sys, 'path', [str(DIRECT_SOURCE), *sys.path]):
+            state = Path(temporary)
+            worker = state/'join'
+            worker.mkdir()
+            retail = b'[/Script/Valhalla.ValPlayerInput]\nSavedSettingsConfig=(Sensitivity=0.8)\n'
+            files = {'Input.ini': b64encode(retail).decode('ascii')}
+            failure = ValueError('Your community settings are already in use.')
+            for first_launch in (True, False):
+                data = {'firstLaunch': True, 'files': files} if first_launch else files
+                (state/IMPORT_FILE).write_text(json.dumps(data), encoding='utf-8')
+                with patch('player_profile.import_retail_settings',
+                           side_effect=failure if first_launch else None, return_value=('Input.ini',)) as importer:
+                    apply_retail_import(state, worker)
+                self.assertEqual(importer.call_args.kwargs['first_launch'], first_launch)
+                self.assertFalse((state/IMPORT_FILE).exists())
+                result = json.loads((state/IMPORT_RESULT).read_bytes())['message']
+                self.assertIn('already in use' if first_launch else 'imported.', result)
+
     def join(self, sync, caps, *, session=None, through_bridge=False, spectator=False,
              public=False, team=None, switch=False):
         with tempfile.TemporaryDirectory() as temporary:
@@ -195,6 +218,33 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'linux', 'Native Ubuntu tests run on Linux')
 class UbuntuHandoffTest(unittest.TestCase):
+    def test_native_offer_skips_active_game_and_existing_community_settings(self):
+        from ubuntu_starter import linux_game_running, ubuntu_retail_import_offer
+
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            local = home/'retail/AppData/Local'
+            retail = local/'Topaz/Saved/Config/Windows'
+            retail.mkdir(parents=True)
+            (retail/'Input.ini').write_text(
+                '[/Script/Valhalla.ValPlayerInput]\nSavedSettingsConfig=(Sensitivity=0.8)\n',
+                encoding='utf-8')
+            state = home/'starter'
+            process = home/'proc/42'
+            process.mkdir(parents=True)
+            (process/'comm').write_bytes(b'TribesRivals.ex\n')
+            self.assertTrue(linux_game_running(home/'proc'))
+            with patch('ubuntu_starter.retail_profiles', return_value=[retail]), \
+                    patch('ubuntu_starter.linux_game_running', return_value=True) as game_running:
+                self.assertIsNone(ubuntu_retail_import_offer(None, home, state))
+                game_running.return_value = False
+                self.assertEqual(ubuntu_retail_import_offer(None, home, state)[0], retail)
+                config = (state/'compatdata/pfx/drive_c/users/steamuser/AppData/Local'
+                          /'Tribes3CommunityStarter/player-settings/profile/Saved/Config/Windows')
+                config.mkdir(parents=True)
+                (config/'Input.ini').write_text('[Community]\nSaved=1\n', encoding='utf-8')
+                self.assertIsNone(ubuntu_retail_import_offer(None, home, state))
+
     def setUp(self):
         self.home = tempfile.TemporaryDirectory()
         self.addCleanup(self.home.cleanup)

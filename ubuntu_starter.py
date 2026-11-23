@@ -169,7 +169,7 @@ def retail_profiles(steam, home):
     return sorted(candidates)
 
 
-def queue_retail_settings(config, storage):
+def queue_retail_settings(config, storage, *, first_launch=False):
     from direct_network import write_json
     from player_profile import INI_LIMIT, _read
     from ubuntu_join_worker import IMPORT_FILE, IMPORT_INIS
@@ -177,7 +177,36 @@ def queue_retail_settings(config, storage):
              if (config/name).is_file()}
     if not files:
         raise ValueError('Choose the retail settings folder containing Input.ini or GameUserSettings.ini.')
-    write_json(storage/IMPORT_FILE, files)
+    write_json(storage/IMPORT_FILE, {'firstLaunch': True, 'files': files} if first_launch else files)
+
+
+def linux_game_running(proc=Path('/proc')):
+    image = b'TribesRivals.exe'
+    for command in proc.glob('[0-9]*/comm'):
+        try:
+            if command.read_bytes().strip().lower() in (image.lower(), image[:15].lower()):
+                return True
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+    return False
+
+
+def ubuntu_retail_import_offer(steam, home, storage):
+    from player_profile import community_has_saved_settings, retail_settings_modified
+    from ubuntu_join_worker import IMPORT_FILE
+
+    if (storage/IMPORT_FILE).exists() or linux_game_running():
+        return None
+    users = storage/'compatdata/pfx/drive_c/users'
+    if any(community_has_saved_settings(root)
+           for root in users.glob('*/AppData/Local/Tribes3CommunityStarter/player-settings')):
+        return None
+    profiles = retail_profiles(steam, home)
+    if len(profiles) != 1:
+        return None
+    config, = profiles
+    modified = retail_settings_modified(config.parents[3])
+    return (config, modified) if modified is not None else None
 
 
 class GameHandoff:
@@ -684,6 +713,21 @@ def show_starter(lobby, state, on_ready=None, *, directory=None):
                   relief='flat', bd=0, padx=0, pady=2, anchor='w', cursor='hand2',
                   font=('Segoe UI', 9)).pack(anchor='w')
     window.protocol('WM_DELETE_WINDOW', app.close)
+
+    def check_retail_import():
+        with exclusive(state/'steam-session.lock'):
+            offer = ubuntu_retail_import_offer(steam, home, storage)
+        return offer[1] if offer is not None else None
+
+    def import_first_launch_settings():
+        with exclusive(state/'steam-session.lock'):
+            offer = ubuntu_retail_import_offer(steam, home, storage)
+            if offer is None:
+                raise ValueError('Retail settings are unavailable for first-launch import. You can try again from Settings.')
+            queue_retail_settings(offer[0], storage, first_launch=True)
+        return 'Retail settings are queued for your next game. Check Settings for the import result.'
+
+    window.after_idle(app.offer_retail_import, storage, check_retail_import, import_first_launch_settings)
     if on_ready is not None:
         window.update_idletasks()
         on_ready()

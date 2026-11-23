@@ -32,6 +32,35 @@ class RetailSettingsImportTests(unittest.TestCase):
         (self.retail / 'Input.ini').write_bytes(self.retail_input)
         (self.retail / 'GameUserSettings.ini').write_bytes(self.retail_game)
 
+    def test_first_launch_offer_is_read_only_and_requires_saved_retail_settings(self):
+        self.assertIsNotNone(profiles.windows_retail_import_offer(self.root))
+        self.assertFalse(self.root.exists())
+        self.game.return_value = True
+        with self.assertRaises(profiles.ProfileBusy):
+            profiles.windows_retail_import_offer(self.root)
+        self.game.return_value = False
+        (self.retail/'Input.ini').write_text('[Other]\nDefault=1\n', encoding='utf-8')
+        (self.retail/'GameUserSettings.ini').unlink()
+        self.assertIsNone(profiles.windows_retail_import_offer(self.root))
+
+    def test_automatic_import_checks_profile_again_before_replacing_saved_settings(self):
+        self.assertIsNotNone(profiles.windows_retail_import_offer(self.root))
+        originals = self.existing()
+        self.assertIsNone(profiles.windows_retail_import_offer(self.root))
+        with self.assertRaisesRegex(profiles.ProfileError, 'already in use'):
+            profiles.import_retail_settings(root=self.root, first_launch=True)
+        for name, raw in originals.items():
+            self.assertEqual((self.profile/name).read_bytes(), raw)
+        result = profiles.import_retail_settings(root=self.root)
+        self.assertIn('Input.ini', result)
+
+    def test_prompt_state_persists_without_changing_game_files(self):
+        self.assertTrue(profiles.retail_import_prompt_pending(self.root))
+        for state in ('dismissed', 'done'):
+            profiles.remember_retail_import_prompt(self.root, state)
+            self.assertFalse(profiles.retail_import_prompt_pending(self.root))
+        self.assertFalse(self.profile.exists())
+
     def existing(self):
         self.profile.mkdir(parents=True)
         retail_section = profiles.RETAIL_INPUT_SECTION

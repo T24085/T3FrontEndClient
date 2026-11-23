@@ -70,6 +70,10 @@ def apply_retail_import(state, directory):
         message = f'Could not read the queued retail settings: {exc}'
     else:
         try:
+            first_launch = (isinstance(data, dict) and data.get('firstLaunch') is True
+                            and data.keys() == {'firstLaunch', 'files'})
+            if first_launch:
+                data = data['files']
             if not isinstance(data, dict) or not data or not data.keys() <= set(IMPORT_INIS):
                 raise ProfileError('Invalid queued retail settings.')
             with TemporaryDirectory(dir=directory) as temporary:
@@ -81,7 +85,7 @@ def apply_retail_import(state, directory):
                     if len(raw) > INI_LIMIT:
                         raise ProfileError('Retail settings exceed their size limit.')
                     (config/name).write_bytes(raw)
-                changed = import_retail_settings(retail_local_app_data=local)
+                changed = import_retail_settings(retail_local_app_data=local, first_launch=first_launch)
             message = ('Retail settings imported.' if changed else 'Community settings already match retail.')
         except (OSError, TypeError, ValueError) as exc:
             message = f'Retail settings were not imported: {exc}'

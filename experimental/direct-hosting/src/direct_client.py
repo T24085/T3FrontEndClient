@@ -1883,6 +1883,7 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
             window.update_idletasks()
             on_ready()
         window.after_idle(gui.show_connection_info_once)
+        window.after_idle(gui.offer_windows_retail_import, workspace)
         window.mainloop()
     finally:
         lobby.close()
