@@ -4,6 +4,9 @@ The client refreshes a partially populated radar canvas once both teams'
 sensors have replicated. This also covers the usual one-sensor-per-team
 layout. A regression fixture pre-populates a single radar, delivers the late
 sensor, and checks that the native binder runs once and keeps both entries.
+A local native join on a cooked map draft with powered shields verified a
+normal zero-to-two bind and a spawned player with client `34d0a57`.
+The fixture covers the partial canvas. Native reconnect recovery remains open.
 
 # Community server browser
 
