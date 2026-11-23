@@ -58,10 +58,15 @@ function loaded()
                  K2_GetScalarParameterValue=function(self) return self.value end})
  end}
 end
-local registry={GetArrayNum=function() return 3 end}
+local registry={GetArrayNum=function(self) return #self end}
 registry[1]={Get=function() return gen3 end}
 registry[2]={Get=function() if replicated then return gen1 end end}
 registry[3]={Get=function() return gen2 end}
+function duplicate_registrations()
+ registry[4]=registry[1]
+ registry[5]=registry[2]
+ registry[6]=registry[3]
+end
 gs=object({r_Generators=registry,GetWorld=function() return world end,
  GetFullName=function() return 'GameState '..package..'PersistentLevel.GameState' end})
 local function provider(group, x)
@@ -82,6 +87,7 @@ tick(gs)
 assert(#events==0 and east.assigned[0].value==nil)
 replicated=true; tick(gs)
 assert(#events==2 and east.assigned[0].value==0 and west.assigned[0].value==0)
+duplicate_registrations()
 gen1.online=false; tick(gs)
 assert(#events==2 and east.assigned[0].value==0)
 gen2.online=false; tick(gs)

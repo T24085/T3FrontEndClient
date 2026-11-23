@@ -238,31 +238,35 @@ local configure_draft_interior_lighting=(function()
  end
  local function read_power(gs,world,state)
   local live=gs.r_Generators
-  if not live or live:GetArrayNum()~=#state.providers then return end
+  local count=live and live:GetArrayNum() or 0
+  if count<#state.providers or count>128 then return end
   local counts,powered,seen={},{},{}
-  for index=1,#state.providers do
+  for index=1,count do
    local weak=live[index]
    local generator=weak and weak:Get()
    if not valid(generator) or not same(generator:GetWorld(),world)
       or generator:GetClass():GetFullName()~=generatorClass then return end
    local id=generator:GetAddress()
-   if seen[id] then return end
-   seen[id]=true
-   local place=generator:K2_GetActorLocation()
-   local group
-   for _,row in ipairs(state.providers) do
-    local dx,dy=place.X-row.point[1],place.Y-row.point[2]
-    if row.team==generator.r_TeamId and dx*dx+dy*dy<=horizontal*horizontal
-       and math.abs(place.Z-row.point[3])<=vertical then
-     if group and group~=row.group then return end
-     group=row.group
+   -- The original client can append a second set of references after warmup.
+   -- Count each native actor once, then require the authored count per circuit.
+   if not seen[id] then
+    seen[id]=true
+    local place=generator:K2_GetActorLocation()
+    local group
+    for _,row in ipairs(state.providers) do
+     local dx,dy=place.X-row.point[1],place.Y-row.point[2]
+     if row.team==generator.r_TeamId and dx*dx+dy*dy<=horizontal*horizontal
+        and math.abs(place.Z-row.point[3])<=vertical then
+      if group and group~=row.group then return end
+      group=row.group
+     end
     end
+    if not group then return end
+    local online=generator:IsOnline()
+    if type(online)~='boolean' then return end
+    counts[group]=(counts[group] or 0)+1
+    powered[group]=powered[group] or online
    end
-   if not group then return end
-   local online=generator:IsOnline()
-   if type(online)~='boolean' then return end
-   counts[group]=(counts[group] or 0)+1
-   powered[group]=powered[group] or online
   end
   for group,count in pairs(state.counts) do if counts[group]~=count then return end end
   return powered
