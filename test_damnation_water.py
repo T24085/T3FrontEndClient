@@ -78,9 +78,11 @@ class DamnationWaterContactTests(unittest.TestCase):
                 PlayerArray={ForEach=function(_,f)f(1,{get=function()return player end})end}}
             local pc={PlayerCameraManager={GetCameraLocation=function()return camera end}}
             local statics={GetTimeSeconds=function()return t end}
+            math.random=function()return 1 end
             function statics:SpawnSoundAtLocation(context,asset,p,rotation,gain,pitch,start,attenuation,concurrency,automatic)
-                assert(context==gs and automatic and start==0 and pitch==1)
-                assert(gain>0 and gain<=1 and asset and attenuation and p.Z==0)
+                assert(context==gs and automatic and start==0 and math.abs(pitch-1.06)<.00001)
+                local base_gain=#sounds==0 and .71 or .42
+                assert(math.abs(gain-base_gain*1.10)<.00001 and asset and attenuation and p.Z==0)
                 sounds[#sounds+1]=asset.path
             end
             function StaticFindObject(path)

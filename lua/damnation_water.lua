@@ -59,11 +59,12 @@ end
 local defaults = {
     minimum=367.5, medium=735, hard=2205, exit=367.5, inner=1500, range=10000,
     cooldown=.20, life=.85, gain={easy=.50, medium=.71, hard=.89, exit=.42},
-    sounds={},
+    sounds={}, pitch_jitter=.06, volume_jitter=.10,
 }
 local bounds = {
     minimum={1,10000}, medium={1,10000}, hard={1,10000}, exit={1,10000},
     inner={0,30000}, range={1,30000}, cooldown={.05,2}, life={.2,3},
+    pitch_jitter={0,.25}, volume_jitter={0,.25},
 }
 local tiers = {easy=true,medium=true,hard=true,exit=true}
 
@@ -243,9 +244,11 @@ local function spatial_audio(valid,report)
         local attenuation=load(profile.attenuation,'/Script/Engine.SoundAttenuation')
         local concurrency=load(profile.concurrency,'/Script/Engine.SoundConcurrency')
         local range_gain=attenuation and 1 or math.min(1,(profile.range-distance)/(profile.range-profile.inner))
+        local volume=profile.gain[tier]*range_gain*(1+profile.volume_jitter*(2*math.random()-1))
+        local pitch=1+profile.pitch_jitter*(2*math.random()-1)
         local ok,reason=pcall(function()
-            gameplay:SpawnSoundAtLocation(context,sound,location,rotation,profile.gain[tier]*range_gain,
-                                          1,0,attenuation,concurrency,true)
+            gameplay:SpawnSoundAtLocation(context,sound,location,rotation,volume,
+                                          pitch,0,attenuation,concurrency,true)
         end)
         if not ok then report('LIQUID_AUDIO_ERROR|'..tostring(reason)) end
     end
