@@ -1,3 +1,10 @@
+# Partial radar binding after join
+
+The client refreshes a partially populated radar canvas once both teams'
+sensors have replicated. This also covers the usual one-sensor-per-team
+layout. A regression fixture pre-populates a single radar, delivers the late
+sensor, and checks that the native binder runs once and keeps both entries.
+
 # Community server browser
 
 A Direct package with a signed seed opens a directory browser with sortable

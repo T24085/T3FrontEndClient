@@ -1407,7 +1407,7 @@ return function(env)
   if teams[1]~=perTeam or teams[2]~=perTeam then return false end
   -- Native initialization can run while only some replicated sensors exist.
   -- Rebuild that partial sensor layer once, after every team ID has arrived.
-  if perTeam>1 and before>0 and before<expected and not record.rebuilt_partial_radars then
+  if before>0 and before<expected and not record.rebuilt_partial_radars then
    local radarClass=StaticFindObject('/Game/UI/Components/Game/UI_Game_Minimap_Radar.UI_Game_Minimap_Radar_C')
    if not valid(radarClass) then return false end
    for index=0,before-1 do
