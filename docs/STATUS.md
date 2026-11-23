@@ -4,8 +4,11 @@ The client reads optional lighting links from the verified map descriptor.
 It matches replicated native generators by team and approved placement,
 then switches a room's baked material slots when its circuit loses or
 regains power. A Lua fixture covers same-team circuit isolation, multiple
-generators on one circuit, and incomplete replication. A native client
-outage and recovery test remains pending.
+generators on one circuit, incomplete replication, and duplicate generator
+references after warmup. Two headless Windows clients read the red room's
+material value through normal, alarm, and restored states. Both kept the
+blue room normal. The isolated host fixture used a 40-second auto-revive.
+The test confirmed material values on a cooked draft.
 
 # Partial radar binding after join
 
