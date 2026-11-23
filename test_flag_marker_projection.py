@@ -39,7 +39,7 @@ function f.newSlot()
  }
 end
 local parent={}
-f.entry={widget={Slot=f.newSlot(),GetParent=function()return parent end,
+f.entry={scale=0.25,widget={Slot=f.newSlot(),GetParent=function()return parent end,
  GetDesiredSize=function()return {X=80,Y=60}end}}
 """
 
@@ -82,12 +82,12 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             fixture.front = front
             self.assertTrue(fixture.project(*target, 0, 40))
             anchor = fixture.entry.widget.Slot.anchor
-            self.assertAlmostEqual(anchor.X * 1920, 1920 - (40+8)*1.5)
+            self.assertAlmostEqual(anchor.X * 1920, 1920 - (10+8)*1.5)
             self.assertAlmostEqual(anchor.Y * 1080, 540)
 
     def test_vertical_lift_keeps_horizontal_alignment_and_respects_the_top_edge(self):
         fixture = self.fixture()
-        for lift, screen_y, expected_y in ((8, 500, 488), (40, 500, 440), (40, 70, 57)):
+        for lift, screen_y, expected_y in ((8, 500, 476.75), (40, 500, 428.75), (40, 70, 23.25)):
             with self.subTest(lift=lift, screen_y=screen_y):
                 self.assertTrue(fixture.project(800, screen_y, 0, lift))
                 anchor = fixture.entry.widget.Slot.anchor
@@ -105,6 +105,8 @@ class FlagMarkerProjectionTest(unittest.TestCase):
                 function a:GetWorld() return world end
                 function a:GetAddress() return self end
                 function a:GetFullName() return tostring(self) end
+                function a:SetRenderTransformPivot(v) self.pivot=v end
+                function a:SetRenderScale(v) self.scale=v end
                 function a:K2_GetActorLocation() return {X=self.x,Y=0,Z=0} end
                 return a
             end
@@ -210,6 +212,9 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             local home,enemy=widgets[1],widgets[2]
             assert(not enemy.shown and enemy.cachedReturned)
             assert(enemy.TickFrequency==0 and enemy.stoppedAnimations)
+            assert(enemy.scale.X==0.25 and enemy.scale.Y==0.25)
+            assert(enemy.pivot.X==0.5 and enemy.pivot.Y==0.5)
+            assert(bases[2].scale.X==0.25)
             assert(enemy.Content:GetParent().Slot.anchors.Minimum.X==0.5)
             assert(enemy.Content.Slot.alignment.Y==0.5)
             assert(enemy.Content.translation.X==0 and enemy.Content.translation.Y==0)
@@ -219,17 +224,24 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             assert(enemy.projectedY==15 and enemy.projectedZ==120 and enemy.lift==8)
             local carrier=actor(1300)
             carrier.Mesh={K2_GetComponentLocation=function()return {X=carrier.x,Y=-35,Z=100}end}
+            carrier.CapsuleComponent={
+                K2_GetComponentLocation=function()return {X=carrier.x,Y=5,Z=208}end,
+                GetScaledCapsuleHalfHeight=function()return 100 end,
+            }
             flags[2].holderInfo.Holder=carrier
             flags[2].owner=carrier
             flags[2].mode=2
             flags[2].x=900
             nextPulse()
-            assert(enemy.shown and enemy.projectedX==1300 and enemy.projectedY==-35)
-            assert(enemy.projectedZ==290 and enemy.lift==40)
+            assert(enemy.shown and enemy.projectedX==1300 and enemy.projectedY==5)
+            assert(enemy.projectedZ==332 and enemy.lift==8)
             carrier.x=1400
             flags[2].x=13000
             nextPulse()
-            assert(enemy.projectedX==1400 and enemy.projectedZ==290 and enemy.lift==24)
+            assert(enemy.projectedX==1400 and enemy.projectedZ==332 and enemy.lift==8)
+            carrier.CapsuleComponent=nil
+            nextPulse()
+            assert(enemy.projectedX==1400 and enemy.projectedY==-35 and enemy.projectedZ==290)
             carrier.Mesh=nil
             nextPulse()
             assert(enemy.projectedX==1400 and enemy.projectedY==0 and enemy.projectedZ==190)

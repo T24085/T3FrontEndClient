@@ -52,6 +52,23 @@ local function same_object(a,b)
     return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
 end
 local function FText(text) return text end
+local function reconcile_score_bar(_,update) update() end
+local borderClass={GetFullName=function()return 'Class /Script/UMG.Border' end}
+local function StaticFindObject(path)
+    assert(path=='/Script/UMG.Border')
+    return borderClass
+end
+local function StaticConstructObject(class,tree)
+    assert(class==borderClass and tree.RootWidget)
+    local border={}
+    function border:SetBrush(brush)
+        assert(brush.DrawAs==4 and brush.TintColor.SpecifiedColor.A==0)
+        assert(brush.OutlineSettings.Width>0 and brush.OutlineSettings.Color.SpecifiedColor.R==1)
+    end
+    function border:SetPadding(padding) assert(padding.Left==0) end
+    function border:SetVisibility(state) self.state=state end
+    return border
+end
 
 function f.flag(team,foreign)
     local flag=object('flag',foreign and elsewhere or world)
@@ -96,6 +113,20 @@ local function icon(class,flag)
     local w=object(class,world)
     w.CachedActor=flag
     w.CachedHolderInfo={bReturned=false}
+    function w:GetParent() return self.parent end
+    if class=='WBP_Game_ScoreBar_CTF_FlagIcon' then
+        local root,overlay=panel(),panel()
+        overlay.GetClass=function() return {GetFullName=function()return 'Class /Script/UMG.Overlay' end} end
+        function overlay:AddChildToOverlay(child)
+            self:add(child)
+            return {SetHorizontalAlignment=function(_,v)assert(v==0)end,
+                    SetVerticalAlignment=function(_,v)assert(v==0)end}
+        end
+        overlay:add({GetClass=function()return {GetFullName=function()return 'Class /Script/UMG.Image' end}end})
+        root:add({GetClass=function()return {GetFullName=function()return 'Class /Script/UMG.CanvasPanel' end}end})
+        root:add(overlay)
+        w.WidgetTree={RootWidget=root}
+    end
     w.Text=label()
     w.visible=false
     function w:IsVisible()return self.visible end
@@ -227,6 +258,39 @@ update(6)
 assert(blueAway.Text.value=='' and redAway.Text.value=='')
 assert(blueHome.Text.value=='' and redHome.Text.value=='')
 assert(blue.binds==1 and red.binds==1)
+return true
+''')
+
+    def test_red_outline_marks_only_the_local_teams_stolen_flag_and_clears_on_drop(self):
+        self.run_lua(r'''
+local blueFlag,redFlag=f.flag(1),f.flag(2)
+local blue,red=f.score(1),f.score(2)
+local blueRunner,redRunner=f.pawn(),f.pawn()
+blueRunner:setName('Blue runner')
+blueRunner.PlayerState.r_TeamId=1
+redRunner:setName('Red runner')
+redRunner.PlayerState.r_TeamId=2
+local function update(now)
+    local flags=assert(hud.prepare(f.pc,f.world))
+    hud.score(blue,flags,1,now)
+    hud.score(red,flags,2,now)
+end
+local function overlay(panel)
+    return panel:GetChildAt(0).WidgetTree.RootWidget:GetChildAt(1)
+end
+update(1)
+local blueHome,redHome=overlay(blue.FriendlyObjectives),overlay(red.FriendlyObjectives)
+local blueAway,redAway=overlay(blue.EnemyObjectives),overlay(red.EnemyObjectives)
+blueFlag:take(redRunner);redFlag:take(blueRunner)
+update(2)
+assert(blueHome:GetChildAt(1).state==4 and redHome:GetChildAt(1).state==4)
+assert(blueAway:GetChildrenCount()==1 and redAway:GetChildrenCount()==1)
+blueFlag:drop(500,true);redFlag:reset()
+update(3)
+assert(blueHome:GetChildAt(1).state==1 and redHome:GetChildAt(1).state==1)
+blueFlag:take(redRunner)
+update(4)
+assert(blueHome:GetChildrenCount()==2 and blueHome:GetChildAt(1).state==4)
 return true
 ''')
 

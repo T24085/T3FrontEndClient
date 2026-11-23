@@ -53,6 +53,7 @@ function f.addWidget(world,controller)
         counter.ScoreText=object('ScoreText')
         counter.ScoreText.value='0'
         function counter.ScoreText:GetText() return {ToString=function() return self.value end} end
+        function counter.ScoreText:SetText(value) self.value=value end
     end
     bar.calls=0
     function bar:GetClass() return object(class) end
@@ -63,12 +64,14 @@ function f.addWidget(world,controller)
         assert((fill==self.FriendlyScoreFill and counter==self.UI_Game_Scorebar_ScoreCount) or
                (fill==self.EnemyScoreFill and counter==self.UI_Game_Scorebar_ScoreCount_1))
         self.calls=self.calls+1
+        local alreadyCached=counter.CachedScore==score
         counter.CachedScore=score
-        counter.ScoreText.value=tostring(score)
+        if not self.skipCachedText or not alreadyCached then counter.ScoreText.value=tostring(score) end
     end
     f.widgets[#f.widgets+1]=bar
     return bar
 end
+local function FText(text) return text end
 local function FindAllOf(className)
     if className=='TopPickup_Flag' then return {} end
     assert(className=='WBP_Game_ScoreBar_CTF_C')
@@ -132,6 +135,7 @@ class DirectPlaytestPresentationTests(unittest.TestCase):
         bar = f.addWidget(f.world, f.pc)
         f.setScores(0, 2)
         bar.UI_Game_Scorebar_ScoreCount_1.CachedScore = 2
+        bar.skipCachedText = True
         f.refresh()
         f.refresh()
         self.assertEqual(bar.UI_Game_Scorebar_ScoreCount_1.ScoreText.value, '2')

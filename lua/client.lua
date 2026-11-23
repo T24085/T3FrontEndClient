@@ -430,6 +430,7 @@ end
 local scoreBarClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_ScoreBar_CTF.WBP_Game_ScoreBar_CTF_C'
 local scoreBars={}
 local scoreBarWorld,scoreBarController,scoreBarState,scoreBarReported
+local ctfScoreBoundaryReported
 local scoreBarScanDelay=0
 local function same_object(a,b)
     return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
@@ -564,6 +565,7 @@ local ctfFlagHud=(function()
     local retry={}
     local mapWidgets={}
     local observedAttachments={}
+    local stolenBorders={}
     local scanDelay=0
 
     local function class_is(widget,expected)
@@ -683,11 +685,71 @@ local ctfFlagHud=(function()
         end
     end
 
+    local function stolen_border(icon,row,team)
+        local player=valid(row.holder) and row.holder.PlayerState or nil
+        local stolen=row.team==team and valid(player) and player.r_TeamId==3-team
+        local key=icon:GetAddress()
+        local entry=stolenBorders[key]
+        if entry and not same_object(entry.icon,icon) then
+            stolenBorders[key]=nil
+            entry=nil
+        end
+        if not entry then
+            if not stolen then return end
+            local tree=icon.WidgetTree
+            local root=valid(tree) and tree.RootWidget or nil
+            if not valid(root) then return end
+            -- The stock score flag has a dedicated one-image overlay, separate from its label.
+            local overlay
+            local count=root:GetChildrenCount()
+            if count>4 then return end
+            for i=0,count-1 do
+                local child=root:GetChildAt(i)
+                if valid(child) and child:GetClass():GetFullName()=='Class /Script/UMG.Overlay'
+                    and child:GetChildrenCount()==1 then
+                    local image=child:GetChildAt(0)
+                    if valid(image) and image:GetClass():GetFullName()=='Class /Script/UMG.Image' then
+                        if overlay then return end
+                        overlay=child
+                    end
+                end
+            end
+            if not overlay then return end
+            local class=StaticFindObject('/Script/UMG.Border')
+            if not valid(class) or class:GetFullName()~='Class /Script/UMG.Border' then return end
+            local border=StaticConstructObject(class,tree)
+            if not valid(border) then return end
+            border:SetBrush({
+                DrawAs=4, -- ESlateBrushDrawType::RoundedBox
+                ImageSize={X=0,Y=0},
+                TintColor={SpecifiedColor={R=0,G=0,B=0,A=0},ColorUseRule=0},
+                OutlineSettings={CornerRadii={X=2,Y=2,Z=2,W=2},Width=1.5,
+                    Color={SpecifiedColor={R=1,G=0.018,B=0.028,A=1},ColorUseRule=0},
+                    bUseBrushTransparency=false},
+            })
+            border:SetPadding({Left=0,Top=0,Right=0,Bottom=0})
+            border:SetVisibility(4)
+            local slot=overlay:AddChildToOverlay(border)
+            if not valid(slot) then border:RemoveFromParent();return end
+            slot:SetHorizontalAlignment(0)
+            slot:SetVerticalAlignment(0)
+            entry={icon=icon,border=border,visible=true}
+            stolenBorders[key]=entry
+        end
+        if entry.visible~=stolen then
+            entry.border:SetVisibility(stolen and 4 or 1)
+            entry.visible=stolen
+        end
+    end
+
     local runtime={}
     function runtime.prepare(pc,world)
         if not same_object(controllerIdentity,pc) or not same_object(worldIdentity,world) then
             controllerIdentity,worldIdentity=pc,world
-            retry,mapWidgets,observedAttachments,scanDelay={},{},{},0
+            retry,mapWidgets,observedAttachments,stolenBorders,scanDelay={},{},{},{},0
+        end
+        for key,entry in pairs(stolenBorders) do
+            if not valid(entry.icon) or not valid(entry.icon:GetParent()) then stolenBorders[key]=nil end
         end
         return snapshot(world)
     end
@@ -701,13 +763,21 @@ local ctfFlagHud=(function()
         for key,row in pairs(flags) do
             local view=row.team==team and friendly or enemy
             local icon=view.icons[key]
-            if icon then score_text(icon,row) else missing=true end
+            if icon then
+                score_text(icon,row)
+                reconcile_score_bar('stolen_flag_border',function() stolen_border(icon,row,team) end)
+            else
+                missing=true
+            end
         end
         if not missing or not retry_binding(widget,now) then return end
         -- BindFlags always appends a fresh set. Remove only the verified flag
         -- icons before rebinding, leaving unrelated objective widgets alone.
         for _,view in ipairs({friendly,enemy}) do
-            for _,icon in pairs(view.icons) do icon:RemoveFromParent() end
+            for _,icon in pairs(view.icons) do
+                stolenBorders[icon:GetAddress()]=nil
+                icon:RemoveFromParent()
+            end
         end
         widget:BindFlags()
         -- Late names and the settled attachment state are read on the next tick.
@@ -770,6 +840,7 @@ local function refresh_ctf_score_bar(pc,ps,gs)
         scoreBarWorld,scoreBarController,scoreBarState=world,pc,gs
         scoreBarScanDelay=0
         scoreBarReported=false
+        ctfScoreBoundaryReported=nil
         generatorIconRepairs={}
         scoreBarErrors={}
     end
@@ -791,8 +862,6 @@ local function refresh_ctf_score_bar(pc,ps,gs)
             ctfFlagHud.minimap(pc,world,flags,gs:GetServerWorldTimeSeconds())
         end)
     end
-    if #scoreBars==0 then return end
-
     local scores,malformed={},false
     reconcile_score_bar('replication',function()
         local rows=gs.r_CurrentTeamScores
@@ -829,6 +898,10 @@ local function refresh_ctf_score_bar(pc,ps,gs)
                     -- Use the original fill and counter update with the absolute
                     -- replicated score for this side, independent of the delta.
                     widget:UpdateScore(score,fill,counter)
+                    if tonumber(counter.ScoreText:GetText():ToString())~=score then
+                        -- A widget rebuild can restore the cache before the text binding.
+                        counter.ScoreText:SetText(FText(string.format('%d',score)))
+                    end
                     updated=true
                 end
             end
@@ -844,6 +917,33 @@ local function refresh_ctf_score_bar(pc,ps,gs)
             end
         end
     end
+    if havePair then reconcile_score_bar('round_boundary',function()
+        local info=gs.r_GameplayPhaseInfo
+        if not info then return end
+        local tag=info.Phase.TagName:ToString()
+        local now=gs:GetServerWorldTimeSeconds()
+        local remaining=info.PhaseTimeRemaining-now
+        local boundary
+        if tag=='GamePhase.GameplayEndedPhase' then boundary='result'
+        elseif tag=='GamePhase.OvertimePhase' or tag=='GamePhase.SuddenDeath' then boundary='overtime'
+        elseif tag=='GamePhase.GameplayStartPhase' and remaining<=2 then boundary='time_limit' end
+        if not boundary or boundary==ctfScoreBoundaryReported then return end
+        local shownFriendly,shownEnemy='unavailable','unavailable'
+        for _,bar in ipairs(scoreBars) do
+            if valid(bar) and bar:IsVisible() then
+                local friendlyCounter,enemyCounter=bar.UI_Game_Scorebar_ScoreCount,bar.UI_Game_Scorebar_ScoreCount_1
+                if valid(friendlyCounter) and valid(enemyCounter)
+                    and valid(friendlyCounter.ScoreText) and valid(enemyCounter.ScoreText) then
+                    shownFriendly=friendlyCounter.ScoreText:GetText():ToString()
+                    shownEnemy=enemyCounter.ScoreText:GetText():ToString()
+                    break
+                end
+            end
+        end
+        ctfScoreBoundaryReported=boundary
+        report(('CTF_CLIENT_ROUND_SCORE|boundary=%s|phase=%s|team=%d|team1=%d|team2=%d|hudFriendly=%s|hudEnemy=%s|worldTime=%.3f'):format(
+            boundary,tag,team,scores[1],scores[2],shownFriendly,shownEnemy,now))
+    end) end
 end
 -- END_DIRECT_PLAYTEST_PRESENTATION
 
@@ -880,13 +980,14 @@ local function flag_marker_projection(valid)
   local offscreen=not front or math.abs(x)>cx or math.abs(y)>cy
   if offscreen or lift then
    local desired=widget:GetDesiredSize()
-   local edgeX,edgeY=cx-(desired.X/2+8)*dpi,cy-(desired.Y/2+8)*dpi
+   local halfWidth,halfHeight=desired.X*entry.scale/2,desired.Y*entry.scale/2
+   local edgeX,edgeY=cx-(halfWidth+8)*dpi,cy-(halfHeight+8)*dpi
    if edgeX<=0 or edgeY<=0 then return end
    if offscreen then
     local scale=math.min(edgeX/math.max(math.abs(x),0.0001),edgeY/math.max(math.abs(y),0.0001))
     x,y=x*scale,y*scale
    else
-    y=math.max(-edgeY,math.min(edgeY,y-lift*dpi))
+    y=math.max(-edgeY,math.min(edgeY,y-(lift+halfHeight)*dpi))
    end
   end
   local anchor={X=(cx+x)/viewport.X,Y=(cy+y)/viewport.Y}
@@ -908,6 +1009,8 @@ end
 local function enabled_flag_markers(env)
  local valid,report=env.valid,env.report
  local project=flag_marker_projection(valid)
+ local markerScale=0.25
+ local center={X=0.5,Y=0.5}
  env.signature('/Script/Topaz.TopPickup_Flag:GetFlagState',{{'Querier','ObjectProperty',0},{'ReturnValue','EnumProperty',8}})
  env.signature('/Script/Engine.SceneComponent:K2_GetComponentLocation',{{'ReturnValue','StructProperty',0}})
  env.signature('/Script/Engine.KismetSystemLibrary:GetComponentBounds',{{'Component','ObjectProperty',0},
@@ -948,6 +1051,24 @@ local function enabled_flag_markers(env)
   end
   return {X=root.X,Y=root.Y,Z=root.Z+150}
  end
+ local function carrier_anchor(holder)
+  local capsule=holder.CapsuleComponent
+  if valid(capsule) then
+   local center=capsule:K2_GetComponentLocation()
+   local halfHeight=capsule:GetScaledCapsuleHalfHeight()
+   if type(halfHeight)=='number' and halfHeight>0 and halfHeight<math.huge then
+    return {X=center.X,Y=center.Y,Z=center.Z+halfHeight+24}
+   end
+  end
+  -- Match the retail mesh lift when a remote pawn has no replicated capsule yet.
+  local mesh=holder.Mesh
+  local origin=valid(mesh) and mesh:K2_GetComponentLocation() or holder:K2_GetActorLocation()
+  return {X=origin.X,Y=origin.Y,Z=origin.Z+190}
+ end
+ local function compact(widget)
+  widget:SetRenderTransformPivot(center)
+  widget:SetRenderScale({X=markerScale,Y=markerScale})
+ end
  local function pulse()
   local s=state
   if not s then return end
@@ -985,7 +1106,10 @@ local function enabled_flag_markers(env)
      for _,base in ipairs(FindAllOf('UI_Game_Overlay_FlagBase_C') or {}) do
       if valid(base) and same(base:GetWorld(),s.pc:GetWorld()) and same(base:GetOwningPlayer(),s.pc) then
        base:OnFlagHeldChanged(flag,holderInfo,holderInfo)
-       if same(base.CachedFlag,flag) then e.nativeBase=base end
+       if same(base.CachedFlag,flag) then
+        compact(base)
+        e.nativeBase=base
+       end
       end
      end
      e.returned=returned
@@ -1013,12 +1137,9 @@ local function enabled_flag_markers(env)
      w.DistanceText:SetText(FText(string.format('%dm',math.floor(distance/100+0.5))))
      local anchor,lift
      if holder then
-      -- Retail uses the carrier's Character.Mesh origin and a 190 cm lift.
-      local mesh=holder.Mesh
-      local origin=valid(mesh) and mesh:K2_GetComponentLocation() or holder:K2_GetActorLocation()
-      anchor={X=origin.X,Y=origin.Y,Z=origin.Z+190}
-      -- The retail glyph rises by 40 Slate units nearby and 24 at range.
-      lift=40-16*math.max(0,math.min(1,(distance-1000)/11500))
+      anchor=carrier_anchor(holder)
+      -- Position the bottom of the scaled marker clear of the carrier.
+      lift=8
      else
       anchor=returned and e.homeAnchor or loose_flag_anchor(flag,b)
       lift=8
@@ -1089,13 +1210,13 @@ local function enabled_flag_markers(env)
      -- tracks it. Clear native translations so they cannot apply a second lift.
      local content=widget.Content
      local container=content:GetParent()
-     local center={X=0.5,Y=0.5}
      container.Slot:SetAnchors({Minimum=center,Maximum=center})
      container.Slot:SetAlignment(center)
      content.Slot:SetAlignment(center)
      content:SetRenderTranslation({X=0,Y=0})
      widget:SetRenderTranslation({X=0,Y=0})
-     state.entries[key]={flag=flag,widget=widget,owned=owned}
+     compact(widget)
+     state.entries[key]={flag=flag,widget=widget,owned=owned,scale=markerScale}
      report('FLAG_MARKER_BOUND|team='..flag.r_TeamId..'|created='..tostring(owned))
     end
    end
