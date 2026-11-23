@@ -800,6 +800,58 @@ class DesktopTest(unittest.TestCase):
             app.close()
             app.close_worker.join(2)
 
+    def test_exit_lobby_clears_local_membership_after_connection_failure(self):
+        from threading import RLock
+        from community_transport import CommunityConnectionError
+
+        root = tk.Tk()
+        root.withdraw()
+        lobby, game = FakeLobby(), FakeGame()
+        lobby.lock = RLock()
+        lobby.code, lobby.token, lobby.player_id = lobby.room['code'], 'fixture-token', 'one'
+        lobby.live_matches = Mock(return_value={'matches': []})
+        app = Desktop(root, lobby, lambda _: game)
+        release, refreshing, leaving = Event(), Event(), Event()
+
+        def action(operation, **_params):
+            if operation == 'state':
+                refreshing.set()
+                release.wait(2)
+                return lobby.room
+            leaving.set()
+            raise CommunityConnectionError('Connection to the lobby timed out.')
+
+        def wait_for(predicate):
+            deadline = time.monotonic() + 3
+            while not predicate() and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            self.assertTrue(predicate())
+
+        try:
+            root.update_idletasks()
+            wait_for(lambda: not app.busy)
+            app.game = game
+            game.started = True
+            app.render(lobby.room)
+            lobby.action = action
+            if app.refresh_handle is not None:
+                root.after_cancel(app.refresh_handle)
+            app.refresh()
+            self.assertTrue(refreshing.wait(1))
+            app.exit_lobby()
+            self.assertIsNone(app.room)
+            self.assertEqual(app.current_panel, 'live')
+            release.set()
+            wait_for(lambda: leaving.is_set() and not app.busy)
+            self.assertIsNone(app.room)
+            self.assertEqual((lobby.code, lobby.token, lobby.player_id), (None, None, None))
+            self.assertTrue(game.stopped)
+            self.assertIn('Server confirmation is unavailable', app.status.get())
+        finally:
+            release.set()
+            app.close()
+
     def test_previous_preparation_failure_does_not_return_after_map_change(self):
         root = tk.Tk()
         root.withdraw()

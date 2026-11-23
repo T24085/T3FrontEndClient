@@ -503,7 +503,7 @@ class Desktop:
         self.stop_button = self.button(actions,'Stop match',lambda:self.call_action('stop'),False);self.stop_button.pack(side='left',padx=(0,8))
         self.restart_button = self.button(actions, 'Restart match', self.restart_match, False)
         self.reset_button = self.button(actions,'New setup',lambda:self.call_action('reset'),False);self.reset_button.pack(side='left',padx=(0,8))
-        self.leave_button = self.button(actions,'Leave',lambda:self.call_action('leave'),False);self.leave_button.pack(side='left')
+        self.leave_button = self.button(actions,'Exit lobby',self.exit_lobby,False);self.leave_button.pack(side='left')
         tk.Label(main,textvariable=self.status,bg=BG,fg=MUTED,font=('Segoe UI',10),anchor='w',wraplength=700).pack(side='bottom',before=actions,anchor='w',pady=(12,0))
         self.live_panel=tk.Frame(root,bg=BG)
         self.label(self.live_panel,'Lobby Browser',27,True).pack(anchor='w')
@@ -1137,16 +1137,16 @@ class Desktop:
             return
         self.run_async(lambda: operation(name), success or self.render)
     def call_action(self,operation,**data):
+        if operation == 'leave':
+            return self.exit_lobby()
         if operation == 'start' and self.pending_map is not None:
             self.status.set('Wait for the selected map to be confirmed.')
             return
         def work():
-            if operation == 'leave' and self.game and self.game.snapshot()['status'] in ('starting','playing','stopping'):
-                self.game.stop()
             return self.lobby.action(operation,**data)
         messages = {
             'start': 'Starting match…', 'stop': 'Stopping match…',
-            'reset': 'Setting up the lobby…', 'leave': 'Leaving lobby…',
+            'reset': 'Setting up the lobby…',
             'restart': 'Scheduling the match restart…',
         }
         if operation not in messages:
@@ -1155,11 +1155,46 @@ class Desktop:
 
         def completed(room):
             self.render(room)
-            self.status.set('Left lobby.' if operation == 'leave' else match_phase_text(room))
+            self.status.set(match_phase_text(room))
 
         if self.run_async(work, completed):
             self.clear_match_messages()
             self.status.set(messages[operation])
+
+    def exit_lobby(self):
+        if self.room is None or self.controls_busy or self.closing:
+            return
+        code = self.room['code']
+        game = self.game
+
+        def leave():
+            cleanup_error = None
+            if game is not None:
+                try:
+                    state = game.snapshot()
+                    if (state.get('role', 'player') == 'player'
+                            and state['status'] in ('starting', 'playing', 'stopping')):
+                        game.stop()
+                except (OSError, CommunityError) as exc:
+                    cleanup_error = str(exc)
+            try:
+                self.lobby.action('leave')
+                confirmed = True
+            except (OSError, CommunityError) as exc:
+                confirmed = getattr(exc, 'code', None) in ('lobby_missing', 'session_invalid')
+            finally:
+                # The wire membership is best effort. Clear only this client
+                # session, under the same lock as a request that could update it.
+                with self.lobby.lock:
+                    if self.lobby.code == code:
+                        self.lobby.code = self.lobby.token = self.lobby.player_id = None
+            message = 'Left lobby.' if confirmed else 'Lobby closed on this device. Server confirmation is unavailable.'
+            return f'{message} Game cleanup: {cleanup_error}' if cleanup_error else message
+
+        if self.run_async(leave, self.status.set):
+            self.render(None)
+            self.show_panel('live')
+            self.status.set('Closing lobby on this device…')
 
     def move(self,team):
         player = self.selected_player()
@@ -1870,8 +1905,14 @@ class Desktop:
     def refresh(self):
         self.refresh_handle=None
         if self.closing: return
-        if self.room and not self.busy and not self.closing:
-            self.run_async(lambda:self.lobby.action('state'),self.render,background=True)
+        if self.room and not self.busy:
+            code = self.room['code']
+
+            def update(room):
+                if self.room is not None and self.room['code'] == code:
+                    self.render(room)
+
+            self.run_async(lambda: self.lobby.action('state'), update, background=True)
         if not self.closing: self.refresh_handle=self.root.after(2000,self.refresh)
 
     def show_connection_info(self):
