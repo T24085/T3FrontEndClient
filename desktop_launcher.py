@@ -1,7 +1,6 @@
 """Development-only Community Starter lobby and owned game launcher."""
 from array import array
 from collections import deque
-from datetime import datetime
 from operator import itemgetter
 import base64
 import tempfile
@@ -427,6 +426,8 @@ class Desktop:
             bg=PANEL, fg=TEXT, selectcolor='#20374a', activebackground=PANEL, activeforeground=TEXT)
         self.backdrop.attach(entry, .83)
         self.entry_panel = entry
+        self.retail_import_row = None
+        self.retail_import_complete = None
         self.entry_map_label = self.label(entry, 'STARTING MAP', 9, color=ACCENT, bg=PANEL)
         self.entry_map = ttk.Combobox(entry, width=18, state='disabled')
         entry.columnconfigure(2, weight=1)
@@ -596,6 +597,11 @@ class Desktop:
         if self.lobby_layout == in_room:
             return
         self.lobby_layout = in_room
+        if self.retail_import_row is not None:
+            if in_room:
+                self.retail_import_row.grid_remove()
+            else:
+                self.retail_import_row.grid()
         self.hero.configure(height=56 if in_room else 180)
         self.hero.pack_configure(expand=not in_room)
         if in_room:
@@ -1674,37 +1680,38 @@ class Desktop:
 
         self.run_async(work, complete)
 
-    _retail_import_offered = False
-
     def offer_retail_import(self, settings_dir, check, apply):
-        """Offer the existing import once per Starter process."""
+        """Offer the retail import inline without interrupting lobby setup."""
         from player_profile import remember_retail_import_prompt, retail_import_prompt_pending
 
-        if Desktop._retail_import_offered or self.closing:
+        if self.retail_import_row is not None or self.closing:
             return
         try:
-            if not retail_import_prompt_pending(settings_dir):
+            if not retail_import_prompt_pending(settings_dir) or check() is None:
                 return
-            modified = check()
         except (OSError, ValueError):
             return
-        if modified is None or self.game_status not in ('idle', 'stopped', 'finished', 'failed'):
-            return
-        Desktop._retail_import_offered = True
-        window = tk.Toplevel(self.root, bg=BG, padx=24, pady=20)
-        window.title('Import your Tribes 3 settings?')
-        window.transient(self.root)
-        window.resizable(False, False)
-        self.label(window, 'Import your Tribes 3 settings?', 16, True).pack(anchor='w')
-        detail = self.label(window, 'Copy your key bindings, mouse sensitivity, FOV, audio, and graphics settings '
-                            'from retail Tribes 3.', 11, color=MUTED)
-        detail.configure(wraplength=420, justify='left')
-        detail.pack(anchor='w', pady=(8, 6))
-        date = datetime.fromtimestamp(modified).strftime('%x')
-        self.label(window, f'Retail settings last saved {date}', 10, color=MUTED).pack(anchor='w')
-        notice = tk.StringVar(window)
-        tk.Label(window, textvariable=notice, bg=BG, fg=MUTED, justify='left', wraplength=420).pack(
-            anchor='w', pady=(8, 0))
+        row = self.retail_import_row = tk.Frame(self.entry_panel, bg=PANEL)
+        row.grid(row=4, column=0, columnspan=3, sticky='ew', pady=(10, 0))
+        if self.lobby_layout:
+            row.grid_remove()
+        actions = tk.Frame(row, bg=PANEL)
+        actions.pack(fill='x')
+        notice = tk.StringVar(row)
+        message = tk.Label(row, textvariable=notice, bg=PANEL, fg=MUTED, justify='left', anchor='w')
+        row.bind('<Configure>', lambda event: message.configure(wraplength=max(1, event.width)))
+        message.pack(fill='x')
+
+        def complete(result):
+            try:
+                remember_retail_import_prompt(settings_dir, 'done')
+            except (OSError, ValueError):
+                result += ' Starter could not save your import preference.'
+            actions.destroy()
+            self.retail_import_complete = None
+            notice.set(result)
+
+        self.retail_import_complete = complete
 
         def dismiss():
             try:
@@ -1712,31 +1719,23 @@ class Desktop:
             except (OSError, ValueError):
                 notice.set('Starter could not save your choice. Try again.')
                 return
-            window.destroy()
+            self.retail_import_complete = None
+            row.destroy()
+            self.retail_import_row = None
 
         def import_settings():
+            if self.controls_busy or self.game_status not in ('idle', 'stopped', 'finished', 'failed'):
+                notice.set('Close TRIBES 3 and wait for Starter to finish its current action.')
+                return
             try:
                 result = apply()
             except (OSError, ValueError) as exc:
                 notice.set(str(exc))
                 return
-            try:
-                remember_retail_import_prompt(settings_dir, 'done')
-            except (OSError, ValueError):
-                result += '\nStarter could not save your prompt preference.'
-            window.destroy()
-            messagebox.showinfo('Import your Tribes 3 settings', result, parent=self.root)
+            complete(result)
 
-        buttons = tk.Frame(window, bg=BG)
-        buttons.pack(fill='x', pady=(14, 0))
-        self.button(buttons, 'Import', import_settings).pack(side='left')
-        later = self.button(buttons, 'Not now', window.destroy, False)
-        later.pack(side='left', padx=8)
-        self.button(buttons, "Don't ask again", dismiss, False).pack(side='left')
-        window.protocol('WM_DELETE_WINDOW', window.destroy)
-        window.bind('<Escape>', lambda _event: window.destroy())
-        window.grab_set()
-        later.focus_set()
+        self.button(actions, 'Import retail settings', import_settings).pack(side='left')
+        self.button(actions, 'Dismiss', dismiss, False).pack(side='left', padx=(8, 0))
 
     def offer_windows_retail_import(self, workspace):
         from player_profile import import_retail_settings, user_profile_root, windows_retail_import_offer
@@ -1789,7 +1788,7 @@ class Desktop:
             tk.Frame(window, bg=PANEL, height=1).pack(fill='x', pady=(0, 14))
         self.label(window, 'Game settings', 16, True).pack(anchor='w')
         description = self.label(
-            window, 'Copy your retail key bindings, sensitivity, and game options. '
+            window, 'Copy your retail key bindings, weapon inheritance, and other game settings. '
             'Starter backs up any community settings files it replaces.', 11, color=MUTED)
         description.configure(wraplength=420, justify='left')
         description.pack(anchor='w', pady=(8, 14))
@@ -1804,8 +1803,11 @@ class Desktop:
             except (OSError, ProfileError) as exc:
                 status.set(str(exc))
                 return
-            status.set('Retail settings imported. They apply the next time you open the game.'
-                       if changed else 'Your community settings already match the saved retail settings.')
+            result = ('Retail settings imported. They apply the next time you open the game.'
+                      if changed else 'Your community settings already match the saved retail settings.')
+            status.set(result)
+            if self.retail_import_complete is not None:
+                self.retail_import_complete(result)
 
         self.button(window, 'Import settings from retail', import_settings).pack(anchor='w')
         tk.Label(window, textvariable=status, bg=BG, fg=MUTED, font=('Segoe UI', 10),

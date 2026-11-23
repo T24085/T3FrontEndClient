@@ -34,9 +34,8 @@ MIGRATE_FILES = ('GameUserSettings.ini', 'Input.ini', 'EnhancedInput.ini', 'Scal
 BOOTSTRAP_SECTION = '/Script/EngineSettings.GameMapsSettings'
 CONFIG_DIRECTORY = 'Saved/Config/Windows'
 RETAIL_INPUT_SECTION = '/Script/Valhalla.ValPlayerInput'
-RETAIL_INPUT_KEYS = {'customactionkeymappings', 'savedsettingsconfig'}
 RETAIL_PROMPT_FILE = "retail-import-prompt.json"
-RETAIL_GAME_SECTIONS = ('/Script/Valhalla.ValGameUserSettings', 'ScalabilityGroups')
+RETAIL_GAME_SECTIONS = ('/Script/Valhalla.ValGameUserSettings', '/Script/Engine.GameUserSettings', 'ScalabilityGroups')
 
 
 def user_profile_root():
@@ -402,11 +401,9 @@ def _merge_retail_ini(name, retail, current):
     updates = {}
     for section, header, rows in retail_sections:
         if section in owned:
-            selected = ([(line, key) for line, key in rows
-                         if key and key.lstrip('+-!.').casefold() in RETAIL_INPUT_KEYS] if input_file else rows)
-            if any(key is not None for _, key in selected):
+            if any(key is not None for _, key in rows):
                 update = updates.setdefault(section, (header, []))
-                update[1].extend(selected)
+                update[1].extend(rows)
     if not updates:
         return None
 

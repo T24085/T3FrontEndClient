@@ -414,35 +414,55 @@ class DesktopTest(unittest.TestCase):
             finish.set()
             app.close()
 
-    def test_first_launch_prompt_choices(self):
+    def test_first_launch_import_is_inline_and_hides_only_after_success_or_dismissal(self):
         import player_profile
 
-        for choice in ('Not now', "Don't ask again", 'Import'):
+        for choice in ('Dismiss', 'Import retail settings'):
             with self.subTest(choice=choice), TemporaryDirectory() as folder:
                 root = tk.Tk()
                 root.withdraw()
                 app = Desktop(root, FakeLobby(), lambda _: FakeGame())
-                root.update_idletasks()
                 settings = Path(folder)
-                action = Mock(return_value='Retail settings imported.')
+                action = Mock(side_effect=[ValueError('Try again.'), 'Retail settings imported.'])
                 try:
-                    with patch.object(Desktop, '_retail_import_offered', False), \
-                            patch('desktop_launcher.messagebox.showinfo') as result:
-                        app.offer_retail_import(settings, lambda: 1_700_000_000, action)
-                        window = next(child for child in root.winfo_children()
-                                      if isinstance(child, tk.Toplevel))
-                        button = next(button for row in window.winfo_children()
-                                      for button in row.winfo_children()
-                                      if isinstance(button, tk.Button) and button.cget('text') == choice)
+                    deadline = time.monotonic() + 2
+                    while app.controls_busy and time.monotonic() < deadline:
+                        root.update()
+                        time.sleep(.01)
+                    app.offer_retail_import(settings, lambda: None, action)
+                    self.assertIsNone(app.retail_import_row)
+                    app.offer_retail_import(settings, lambda: 1_700_000_000, action)
+                    row = app.retail_import_row
+                    self.assertIs(row.master, app.entry_panel)
+                    self.assertEqual(row.winfo_manager(), 'grid')
+                    self.assertFalse(any(isinstance(child, tk.Toplevel) for child in root.winfo_children()))
+                    app.show_lobby_controls(True)
+                    self.assertEqual(row.winfo_manager(), '')
+                    app.show_lobby_controls(False)
+                    self.assertEqual(row.winfo_manager(), 'grid')
+
+                    actions, notice = row.winfo_children()
+                    button = next(item for item in actions.winfo_children() if item.cget('text') == choice)
+                    if choice == 'Import retail settings':
+                        app.game_status = 'playing'
                         button.invoke()
-                        self.assertFalse(window.winfo_exists())
-                        app.offer_retail_import(settings, lambda: 1_700_000_000, action)
-                        self.assertFalse(any(isinstance(child, tk.Toplevel) for child in root.winfo_children()))
-                        self.assertEqual(player_profile.retail_import_prompt_pending(settings), choice == 'Not now')
-                        self.assertEqual(action.call_count, int(choice == 'Import'))
-                        self.assertEqual(result.call_count, int(choice == 'Import'))
+                        self.assertIn('Close TRIBES 3', notice.cget('text'))
+                        action.assert_not_called()
+                        app.game_status = 'idle'
+                        button.invoke()
+                        self.assertTrue(button.winfo_exists())
+                        self.assertEqual(notice.cget('text'), 'Try again.')
+                        self.assertTrue(player_profile.retail_import_prompt_pending(settings))
+                    button.invoke()
+                    self.assertFalse(button.winfo_exists())
+                    if choice == 'Import retail settings':
+                        self.assertEqual(notice.cget('text'), 'Retail settings imported.')
+                    self.assertFalse(player_profile.retail_import_prompt_pending(settings))
+                    app.offer_retail_import(settings, lambda: 1_700_000_000, action)
+                    self.assertEqual(action.call_count, 2 if choice == 'Import retail settings' else 0)
                 finally:
                     app.close()
+                    app.close_worker.join(2)
 
     @unittest.skipUnless(sys.platform == 'win32', 'Retail profile import is a Windows Starter control.')
     def test_settings_import_button_uses_saved_profile_only_after_game_exits(self):

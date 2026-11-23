@@ -22,11 +22,14 @@ class RetailSettingsImportTests(unittest.TestCase):
             '[/Script/Valhalla.ValPlayerInput]\r\n!CustomActionKeyMappings=ClearArray\r\n'
             '+CustomActionKeyMappings=(Ski,LeftShift)\r\n'
             '+CustomActionKeyMappings=(Jet,RightMouseButton)\r\n'
-            'SavedSettingsConfig=(Sensitivity=0.8)\r\nUnrelatedRetail=Ignore\r\n'
+            'SavedSettingsConfig=(Sensitivity=0.8)\r\n'
+            'SpinfusorLateralInheritance=0.67\r\nOtherSavedInputOption=True\r\n'
         ).encode()
         self.retail_game = (
             '[ScalabilityGroups]\nsg.TextureQuality=2\n'
             '[/Script/Valhalla.ValGameUserSettings]\nDesiredFOV=105\nVolume=0.5\n'
+            'SpinfusorForwardInheritance=0.73\nHonorfusorLateralInheritance=0.91\n'
+            '[/Script/Engine.GameUserSettings]\nbUseVSync=True\n'
             '[Other]\nOnlyInRetail=Ignore\n'
         ).encode()
         (self.retail / 'Input.ini').write_bytes(self.retail_input)
@@ -89,13 +92,17 @@ class RetailSettingsImportTests(unittest.TestCase):
                       '+CustomActionKeyMappings=(Jet,RightMouseButton)\r\n', text)
         self.assertIn('SavedSettingsConfig=(Sensitivity=0.8)\r\n', text)
         self.assertIn('CommunityKey=Keep\r\n', text)
+        self.assertIn('SpinfusorLateralInheritance=0.67\r\n', text)
+        self.assertIn('OtherSavedInputOption=True\r\n', text)
         self.assertIn('[Other]\r\nCustomActionKeyMappings=Keep\r\n', text)
         self.assertNotIn('Ignore', text)
         self.assertNotIn('Old', text)
         game = (self.profile / 'GameUserSettings.ini').read_bytes().decode('utf-16')
         self.assertIn('DesiredFOV=105\r\nVolume=0.5\r\n', game)
         self.assertIn('[ScalabilityGroups]\r\nsg.TextureQuality=2\r\n', game)
+        self.assertIn('SpinfusorForwardInheritance=0.73\r\nHonorfusorLateralInheritance=0.91\r\n', game)
         self.assertIn('[Other]\r\nUnicode=Déjà\r\n', game)
+        self.assertIn('[/Script/Engine.GameUserSettings]\r\nbUseVSync=True\r\n', game)
         self.assertNotIn('OnlyInRetail', game)
         self.assertEqual((self.profile / 'Engine.ini').read_bytes(), original['Engine.ini'])
         backups = list((self.root / 'backups').glob('*.bak'))

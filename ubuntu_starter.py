@@ -538,7 +538,7 @@ def show_starter(lobby, state, on_ready=None, *, directory=None):
             note(name_status)
 
             self.label(settings, 'Game settings', 16, True).pack(anchor='w')
-            detail = self.label(settings, 'Import your retail key bindings, sensitivity, and game options. '
+            detail = self.label(settings, 'Import your retail key bindings, weapon inheritance, and other game settings. '
                                 'The import runs before your next match and backs up replaced settings.', color=MUTED)
             detail.configure(wraplength=420, justify='left')
             detail.pack(anchor='w', pady=(5, 8))
@@ -571,7 +571,10 @@ def show_starter(lobby, state, on_ready=None, *, directory=None):
                 except (OSError, ValueError) as exc:
                     import_status.set(str(exc))
                     return
-                import_status.set('Retail settings are queued for your next game.')
+                result = 'Retail settings are queued for your next game.'
+                import_status.set(result)
+                if self.retail_import_complete is not None:
+                    self.retail_import_complete(result)
 
             self.button(settings, 'Import settings from retail', import_settings).pack(anchor='w')
             note(import_status)
