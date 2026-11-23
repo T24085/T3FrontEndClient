@@ -187,6 +187,169 @@ local configure_base_lighting=(function()
  end
 end)()
 local configure_water=assert(loadfile(@@DAMNATION_WATER@@))()({valid=valid,report=report,descriptors=mapDefinitions})
+local configure_draft_interior_lighting=(function()
+ local current
+ local generatorClass='BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_Generator.BP_Objective_Generator_C'
+ -- Native placement can move a reviewed marker horizontally. Never choose
+ -- a circuit from an ambiguous or incompletely replicated registry.
+ local horizontal,vertical=425,650
+ local function same(a,b)
+  return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
+ end
+ local function position(value)
+  return type(value)=='table' and #value==3 and math.abs(value[1])<=2e6
+   and math.abs(value[2])<=2e6 and math.abs(value[3])<=2e6
+ end
+ local function prepare(descriptor)
+  local source=descriptor.interior_power
+  assert(type(source.interiors)=='table' and #source.interiors>=1 and #source.interiors<=128
+         and type(source.groups)=='table' and type(source.entries)=='table' and #source.entries<=60,
+         'draft_interior_lighting_contract')
+  local providers,counts,rooms,total={}, {}, {}, 0
+  for _,entry in ipairs(source.entries) do
+   if entry.role=='generator' then
+    local id=entry.power_group
+    local group=source.groups[id]
+    assert(type(id)=='string' and id:match('^T2Group[1-9]%d*$') and group and group.mode=='generators'
+           and (entry.team==1 or entry.team==2) and group.team==entry.team
+           and position(entry.anchor_position_cm),'draft_interior_lighting_generator')
+    providers[#providers+1]={team=entry.team,group=id,point=entry.anchor_position_cm}
+    counts[id]=(counts[id] or 0)+1
+   end
+  end
+  for _,room in ipairs(source.interiors) do
+   assert(type(room.actor)=='string' and room.actor:match('^[%w_]+$') and #room.actor<=128 and not rooms[room.actor]
+          and type(room.asset)=='string' and room.asset:match('^/Game/Community/[%w_/]+%.[%w_]+$')
+          and counts[room.power_group] and type(room.materials)=='table' and #room.materials>0,
+          'draft_interior_lighting_room')
+   local seen={}
+   for _,row in ipairs(room.materials) do
+    assert(math.type(row.slot)=='integer' and row.slot>=0 and row.slot<=1023 and not seen[row.slot]
+           and type(row.asset)=='string'
+           and row.asset:match('^/Game/Community/T2ModelTextures/(M_T2Baked_%x+)%.%1$'),
+           'draft_interior_lighting_material')
+    seen[row.slot]=true
+    total=total+1
+    assert(total<=256,'draft_interior_lighting_slot_limit')
+   end
+   rooms[room.actor]=room
+  end
+  return {providers=providers,counts=counts,rooms=rooms,powered={}}
+ end
+ local function read_power(gs,world,state)
+  local live=gs.r_Generators
+  if not live or live:GetArrayNum()~=#state.providers then return end
+  local counts,powered,seen={},{},{}
+  for index=1,#state.providers do
+   local weak=live[index]
+   local generator=weak and weak:Get()
+   if not valid(generator) or not same(generator:GetWorld(),world)
+      or generator:GetClass():GetFullName()~=generatorClass then return end
+   local id=generator:GetAddress()
+   if seen[id] then return end
+   seen[id]=true
+   local place=generator:K2_GetActorLocation()
+   local group
+   for _,row in ipairs(state.providers) do
+    local dx,dy=place.X-row.point[1],place.Y-row.point[2]
+    if row.team==generator.r_TeamId and dx*dx+dy*dy<=horizontal*horizontal
+       and math.abs(place.Z-row.point[3])<=vertical then
+     if group and group~=row.group then return end
+     group=row.group
+    end
+   end
+   if not group then return end
+   local online=generator:IsOnline()
+   if type(online)~='boolean' then return end
+   counts[group]=(counts[group] or 0)+1
+   powered[group]=powered[group] or online
+  end
+  for group,count in pairs(state.counts) do if counts[group]~=count then return end end
+  return powered
+ end
+ local function bind_rooms(descriptor,world,state)
+  local prefix=descriptor.world..'PersistentLevel.'
+  local found={}
+  for _,actor in ipairs(FindAllOf('StaticMeshActor') or {}) do
+   if valid(actor) and same(actor:GetWorld(),world) then
+    local name=actor:GetFullName()
+    local start=name:find(prefix,1,true)
+    if start then
+     local key=name:sub(start+#prefix)
+     if state.rooms[key] then
+      assert(not found[key],'draft_interior_lighting_duplicate_actor')
+      found[key]=actor
+     end
+    end
+   end
+  end
+  for key in pairs(state.rooms) do if not found[key] then return false end end
+  local library=loaded('/Script/Engine.Default__KismetMaterialLibrary',
+                       'KismetMaterialLibrary /Script/Engine.Default__KismetMaterialLibrary')
+  local bindings={}
+  for key,room in pairs(state.rooms) do
+   local component=found[key].StaticMeshComponent
+   assert(valid(component) and same(component:GetOwner(),found[key]) and valid(component.StaticMesh)
+          and component.StaticMesh:GetFullName()=='StaticMesh '..room.asset,'draft_interior_lighting_mesh_identity')
+   for _,row in ipairs(room.materials) do
+    local parent=component:GetMaterial(row.slot)
+    assert(valid(parent) and parent:GetFullName()=='Material '..row.asset,'draft_interior_lighting_material_identity')
+    local clone=library:CreateDynamicMaterialInstance(component,parent,FName('None'),0)
+    assert(valid(clone),'draft_interior_lighting_material_instance')
+    bindings[#bindings+1]={component=component,index=row.slot,clone=clone,group=room.power_group}
+   end
+  end
+  for _,row in ipairs(bindings) do row.component:SetMaterial(row.index,row.clone) end
+  state.assets=bindings
+  return true
+ end
+ return function(gs)
+  local world=gs:GetWorld()
+  if not valid(world) then return end
+  if not current or not same(current.world,world) or not same(current.gs,gs) then
+   current={world=world,gs=gs}
+   local prefix=gs:GetFullName():match(' (/Game/.+:)PersistentLevel%.')
+   for _,descriptor in pairs(mapDefinitions) do
+    if descriptor.world==prefix and descriptor.interior_power then current.descriptor=descriptor;break end
+   end
+  end
+  local descriptor=current.descriptor
+  if not descriptor or current.failed then return end
+  local ok,why=pcall(function()
+   if not current.state then current.state=prepare(descriptor) end
+   local state=current.state
+   local power=read_power(gs,world,state)
+   if not power then return end
+   if not state.assets then
+    local now=os.time()
+    if current.lastScan==now then return end
+    current.lastScan=now
+    if not bind_rooms(descriptor,world,state) then return end
+   end
+   local changed={}
+   local parameter=FName('T2 Alarm Blend')
+   for _,row in ipairs(state.assets) do
+    local powered=power[row.group]
+    if state.powered[row.group]~=powered then
+     assert(valid(row.component) and same(row.component:GetMaterial(row.index),row.clone),
+            'draft_interior_lighting_material_replaced')
+     local value=powered and 0 or 1
+     row.clone:SetScalarParameterValue(parameter,value)
+     assert(row.clone:K2_GetScalarParameterValue(parameter)==value,'draft_interior_lighting_readback')
+     changed[row.group]=powered
+    end
+   end
+   for group,value in pairs(changed) do
+    state.powered[group]=value
+    report('DRAFT_INTERIOR_LIGHTING|group='..group..'|alarm='..tostring(not value))
+   end
+  end)
+  if not ok then
+   current.failed=true
+   report('DRAFT_INTERIOR_LIGHTING_UNAVAILABLE|'..tostring(why):sub(1,300))
+  end
+ end
+end)()
 local allowedMaps={}
 for name,row in pairs(mapDefinitions)do
  assert(name==row.name,"map_descriptor_identity_disagreement");allowedMaps[#allowedMaps+1]=row
@@ -2153,6 +2316,7 @@ local function client_tick(sys)
     if not valid(pc.PlayerState) then return end
     configure_weather(gs,pc)
     configure_base_lighting(gs)
+    configure_draft_interior_lighting(gs)
     configure_water(gs,pc)
     local ps=pc.PlayerState
     if SPECTATOR_ROLE=="spectator" then

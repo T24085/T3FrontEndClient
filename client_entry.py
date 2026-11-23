@@ -160,6 +160,9 @@ local function apply_weather(id,path)
  local adapter, metadata=assert(loadfile(path,'t',env))()
  if type(adapter)=='function' and type(metadata)=='table' then adapter=metadata end
  if type(adapter)~='table' then return end
+ if id:match('^DraftT2%d%d%d$') and type(adapter.editor_layout)=='table' then
+  adapter=adapter.editor_layout
+ end
  local authored,layout=adapter.descriptor
  if type(authored)=='function' then
   authored=authored({name=id,package=row.package,world=row.world})
@@ -196,6 +199,9 @@ local function apply_weather(id,path)
  if authored.emergency_lighting~=nil then
   assert(type(authored.emergency_lighting)=='boolean','emergency_lighting_setting_required')
   row.emergency_lighting=authored.emergency_lighting
+ end
+ if id:match('^DraftT2%d%d%d$') and type(layout)=='table' and layout.powered_interiors~=nil then
+  row.interior_power={interiors=layout.powered_interiors,groups=layout.power_groups,entries=layout.entries}
  end
  row.music_route=music_route(authored.music)
 end

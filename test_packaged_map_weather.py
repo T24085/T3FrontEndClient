@@ -140,6 +140,21 @@ class PackagedMapWeatherTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'failed package verification'):
             self.catalog([row])
 
+    def test_verified_draft_adapter_loads_its_interior_circuits(self):
+        draft = MapDefinition('DraftT2001', 'Converted', 'DraftT2001', 'Arena_DraftT2001_P')
+        self.definitions[draft.id] = draft
+        source = f'''return setmetatable({{editor_layout={{format=1,map_id={draft.id!r},
+          package={draft.package!r},world={(draft.package+'.'+draft.level+':')!r},
+          layout={{radars_per_team=1, powered_interiors={{{{actor="Room"}}}},
+                power_groups={{T2Group1={{mode="generators"}}}}, entries={{{{role="generator"}}}}}} }} }},
+          {{__call=function() return nil end}})'''
+        row = self.add_adapter(source, draft)
+        path = write_map_definitions(self.root, self.run, self.definitions, draft, {'files': [row]})
+        data = self.lua.execute(path.read_text(encoding='utf-8'))[draft.id]
+        self.assertEqual(data.interior_power.interiors[1].actor, 'Room')
+        self.assertEqual(data.interior_power.groups.T2Group1.mode, 'generators')
+        self.assertEqual(data.radars_per_team, 1)
+
     def test_downloaded_objectives_override_bundled_and_signed_runtime_is_independent(self):
         module = (ROOT / 'lua/weather.lua').read_bytes()
         with patch('client_entry._SIGNED_WEATHER_MODULE', module):

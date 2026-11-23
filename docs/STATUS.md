@@ -1,3 +1,12 @@
+# Generator-linked interior lighting in portable drafts
+
+The client reads optional lighting links from the verified map descriptor.
+It matches replicated native generators by team and approved placement,
+then switches a room's baked material slots when its circuit loses or
+regains power. A Lua fixture covers same-team circuit isolation, multiple
+generators on one circuit, and incomplete replication. A native client
+outage and recovery test remains pending.
+
 # Partial radar binding after join
 
 The client refreshes a partially populated radar canvas once both teams'
