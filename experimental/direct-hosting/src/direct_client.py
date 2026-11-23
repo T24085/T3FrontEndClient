@@ -1153,12 +1153,13 @@ class PublicCTFPanel:
             self.team_buttons[team] = button
         self.leave = desktop.button(actions, 'Leave game', self.stop, False)
         self.leave.pack(side='left')
-        self.nav = desktop.button(desktop.sidebar, 'Public CTF', lambda: desktop.show_panel('public'), False)
-        self.nav.pack(fill='x', padx=18, pady=(6, 0))
         if lobby.public_only:
-            desktop.lobbies_nav.pack_forget()
+            desktop.lobbies_nav.configure(command=lambda: desktop.show_panel('public'))
             desktop.live_nav.pack_forget()
-        desktop.show_panel('public')
+        else:
+            self.nav = desktop.button(desktop.entry_panel, 'Play Public CTF',
+                                      lambda: desktop.show_panel('public'), False)
+            self.nav.grid(row=2, column=2, sticky='e', padx=(12, 0))
         self.root.after(150, self.tick)
 
     def submit(self, action, work):

@@ -351,7 +351,9 @@ class Desktop:
                         borderwidth=0, highlightthickness=0, bg='#0d1927')
         logo.pack(pady=(12, 14))
         self.backdrop.logo(logo, self.emblem)
-        self.lobbies_nav=self.button(side,'Create Lobby',lambda:self.show_panel('lobbies'),False)
+        self.lobbies_nav = self.button(side, 'PLAY', lambda: self.show_panel('lobbies'), False)
+        self.lobbies_nav.configure(anchor='center', bg='#237939', fg=TEXT, activebackground='#19632d',
+                                   activeforeground=TEXT, font=('Segoe UI', 11, 'bold'))
         self.lobbies_nav.pack(fill='x',padx=18,pady=(0,6))
         self.live_nav=self.button(side,'Lobby Browser',lambda:self.show_panel('live'),False)
         self.live_nav.pack(fill='x',padx=18)
@@ -388,12 +390,9 @@ class Desktop:
         self.lobby_layout = None
         entry = tk.Frame(main, bg=PANEL, padx=18, pady=14)
         entry.pack(fill='x')
-        self.label(entry, 'PLAYER NAME' if steam_name_loader else 'YOUR PLAYER NAME', 9, color=ACCENT, bg=PANEL).grid(row=0,column=0,sticky='w')
-        self.label(entry, 'LOBBY CODE', 9, color=ACCENT, bg=PANEL).grid(row=0,column=1,sticky='w',padx=(12,0))
-        self.name_entry = tk.Entry(entry,textvariable=self.name,font=('Segoe UI',12),bg='#20374a',fg=TEXT,insertbackground=TEXT,relief='flat')
-        self.name_entry.grid(row=1,column=0,sticky='ew',ipady=7,pady=(4,8))
+        self.label(entry, 'LOBBY CODE', 9, color=ACCENT, bg=PANEL).grid(row=0, column=0, sticky='w')
         code_field = tk.Frame(entry, bg=PANEL)
-        code_field.grid(row=1, column=1, sticky='ew', padx=(12,0), pady=(4,8))
+        code_field.grid(row=1, column=0, sticky='ew', pady=(4, 8))
         self.code_entry = tk.Entry(code_field, textvariable=self.code, font=('Segoe UI',12), bg='#20374a',
                                    fg=TEXT, insertbackground=TEXT, relief='flat', width=8)
         self.code_entry.pack(side='left', fill='both', expand=True, ipady=7)
@@ -407,9 +406,16 @@ class Desktop:
         self.code_menu.add_command(label='Copy', command=lambda: self.code_entry.event_generate('<<Copy>>'))
         self.code_menu.add_command(label='Select All', command=lambda: self.code_entry.selection_range(0, tk.END))
         self.code_menu.add_command(label='Clear', command=lambda: self.code.set(''))
-        entry.columnconfigure(0,weight=1);entry.columnconfigure(1,weight=1)
+        self.label(entry, 'PLAYER NAME' if steam_name_loader else 'YOUR PLAYER NAME', 9,
+                   color=ACCENT, bg=PANEL).grid(row=0, column=1, sticky='w', padx=(12, 0))
+        self.name_entry = tk.Entry(entry, textvariable=self.name, width=23, font=('Segoe UI', 12),
+                                   bg='#20374a', fg=TEXT, insertbackground=TEXT, relief='flat')
+        self.name_entry.grid(row=1, column=1, sticky='ew', padx=(12, 0), ipady=7, pady=(4, 8))
+        self.join_button = self.button(entry, 'Join lobby', self.join, False)
+        self.join_button.grid(row=2, column=0, sticky='w')
         self.lobby_create_button = self.button(entry, 'Create lobby', self.create)
-        self.lobby_create_button.grid(row=2, column=0, sticky='w')
+        self.lobby_create_button.grid(row=2, column=1, sticky='w', padx=(12, 0))
+        entry.columnconfigure(1, weight=2)
         self.lock_lobby = tk.BooleanVar(value=False)
         self.lobby_match_type = tk.StringVar(value='Standard')
         self.lobby_type_row = tk.Frame(entry, bg=PANEL)
@@ -418,8 +424,6 @@ class Desktop:
         self.lobby_type_picker.pack(side='left')
         self.lobby_lock = tk.Checkbutton(entry, text='Lock lobby after start', variable=self.lock_lobby,
             bg=PANEL, fg=TEXT, selectcolor='#20374a', activebackground=PANEL, activeforeground=TEXT)
-        self.join_button = self.button(entry,'Join lobby',self.join,False)
-        self.join_button.grid(row=2,column=1,sticky='w',padx=(12,0))
         self.backdrop.attach(entry, .83)
         self.entry_panel = entry
         self.entry_map_label = self.label(entry, 'STARTING MAP', 9, color=ACCENT, bg=PANEL)
@@ -976,7 +980,7 @@ class Desktop:
                                            'readonly' if self.steam_name_loader else 'normal'),
                                     readonlybackground='#20374a')
         if self.caps.get('privateLobbyAdmission') is True:
-            self.lobby_lock.grid(row=3, column=0, sticky='w', pady=(4, 0))
+            self.lobby_lock.grid(row=3, column=2, sticky='w', padx=(12, 0), pady=(4, 0))
             self.browser_lock.pack(side='right', before=self.create_button, padx=(0, 6))
             for checkbox in (self.lobby_lock, self.browser_lock):
                 checkbox.configure(state='disabled' if in_room or self.controls_busy else 'normal')

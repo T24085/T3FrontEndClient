@@ -44,10 +44,15 @@ class PublicNameTest(unittest.TestCase):
         root.attributes('-alpha', 0)
         self.addCleanup(root.destroy)
         from desktop_launcher import Desktop
-        desktop = SimpleNamespace(root=root, sidebar=tk.Frame(root), closing=True, show_panel=lambda _: None)
+        tabs = []
+        desktop = SimpleNamespace(root=root, sidebar=tk.Frame(root), entry_panel=tk.Frame(root),
+                                  closing=True, show_panel=tabs.append)
         desktop.label = lambda *args, **kwargs: Desktop.label(desktop, *args, **kwargs)
         desktop.button = lambda *args, **kwargs: Desktop.button(desktop, *args, **kwargs)
         panel = PublicCTFPanel(tk, desktop, SimpleNamespace(public_only=False))
+        self.assertIs(panel.nav.master, desktop.entry_panel)
+        panel.nav.invoke()
+        self.assertEqual(tabs, ['public'])
         panel.panel.pack(fill='both', expand=True)
         state = {'teams': {'blue': ['Alice'], 'red': ['Bob', 'Carol']},
                  'joinChoices': {'auto': None, 'blue': None, 'red': 'Joining Team B would unbalance the teams.'}}
@@ -71,6 +76,26 @@ class PublicNameTest(unittest.TestCase):
         self.assertEqual(panel.team_buttons['red'].cget('text'), 'Switch to B (2)')
         self.assertEqual(panel.team_buttons['red'].cget('state'), 'normal')
         self.assertEqual(panel.team_buttons['auto'].cget('state'), 'disabled')
+
+    def test_public_only_play_opens_public_match_view(self):
+        root = tk.Tk()
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        from desktop_launcher import Desktop
+        tabs = []
+        sidebar = tk.Frame(root)
+        desktop = SimpleNamespace(root=root, sidebar=sidebar, closing=True, show_panel=tabs.append)
+        desktop.label = lambda *args, **kwargs: Desktop.label(desktop, *args, **kwargs)
+        desktop.button = lambda *args, **kwargs: Desktop.button(desktop, *args, **kwargs)
+        desktop.lobbies_nav = desktop.button(sidebar, 'PLAY', lambda: tabs.append('lobbies'))
+        desktop.live_nav = desktop.button(sidebar, 'Lobby Browser', lambda: tabs.append('live'))
+        desktop.lobbies_nav.pack()
+        desktop.live_nav.pack()
+        PublicCTFPanel(tk, desktop, SimpleNamespace(public_only=True))
+        self.assertEqual(desktop.lobbies_nav.winfo_manager(), 'pack')
+        self.assertEqual(desktop.live_nav.winfo_manager(), '')
+        desktop.lobbies_nav.invoke()
+        self.assertEqual(tabs, ['public'])
 
     def test_explicit_team_uses_the_new_request_and_auto_uses_the_legacy_shape(self):
         lobby = SimpleNamespace(_public=lambda action, **request: (action, request))
