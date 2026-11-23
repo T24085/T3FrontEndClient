@@ -103,7 +103,8 @@ return {
         runtime.spectator_ready()
         runtime.tick()
         runtime.tick()
-        self.assertEqual(runtime.observed.applied, 2)
+        self.assertEqual(runtime.observed.applied, 3)
+        self.assertEqual(list(runtime.observed.events.values()).count('SAVED_SOUND_SETTINGS_APPLIED_READY'), 1)
 
     def test_retries_failed_application_until_success_without_reapplying_afterward(self):
         runtime = self.runtime

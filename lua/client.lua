@@ -1974,12 +1974,17 @@ local function ensure_flag_release_handoff(gs)
  if ok then flagReleaseService=service
  else report('FLAG_RELEASE_HANDOFF_UNAVAILABLE|'..tostring(service)) end
 end
-local soundSettingsWorld, soundSettingsAttempts, soundSettingsApplied
+local soundSettingsWorld, soundSettingsAttempts, soundSettingsApplied, soundSettingsReady
 local SOUND_SETTINGS_MAX_ATTEMPTS = 10
-local function apply_saved_sound_settings(world)
+local function apply_saved_sound_settings(world, sessionReady)
     if not valid(world) then return end
     if not same_object(soundSettingsWorld, world) then
-        soundSettingsWorld, soundSettingsAttempts, soundSettingsApplied = world, 0, false
+        soundSettingsWorld, soundSettingsAttempts, soundSettingsApplied, soundSettingsReady = world, 0, false, false
+    end
+    -- ApplySoundSettings has no return value. A successful early call does not
+    -- establish that the audio state survives player initialization.
+    if sessionReady and not soundSettingsReady then
+        soundSettingsReady, soundSettingsAttempts, soundSettingsApplied = true, 0, false
     end
     if soundSettingsApplied or soundSettingsAttempts >= SOUND_SETTINGS_MAX_ATTEMPTS then return end
     soundSettingsAttempts = soundSettingsAttempts + 1
@@ -1995,7 +2000,7 @@ local function apply_saved_sound_settings(world)
     end)
     if ok then
         soundSettingsApplied = true
-        report('SAVED_SOUND_SETTINGS_APPLIED')
+        report(soundSettingsReady and 'SAVED_SOUND_SETTINGS_APPLIED_READY' or 'SAVED_SOUND_SETTINGS_APPLIED')
     elseif soundSettingsAttempts == SOUND_SETTINGS_MAX_ATTEMPTS then
         report('SAVED_SOUND_SETTINGS_UNAVAILABLE|'..tostring(why):sub(1,300))
     end
@@ -2285,7 +2290,9 @@ local function client_tick(sys)
     local pcs=FindAllOf("ValPlayerController") or {};if #pcs~=1 or not valid(pcs[1]) then return end
     local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() then return end
     local world=pc:GetWorld()
-    local settingsApplied=same_object(world,gs:GetWorld()) and apply_saved_sound_settings(world)
+    local pawnReady=SPECTATOR_ROLE=="player" and valid(pc.Pawn) and pc.Pawn.bInitialized==true
+    local sessionReady=pawnReady or (SPECTATOR_ROLE=="spectator" and valid(pc.PlayerState))
+    local settingsApplied=same_object(world,gs:GetWorld()) and apply_saved_sound_settings(world,sessionReady)
     if not valid(pc.PlayerState) then return end
     configure_weather(gs,pc)
     configure_base_lighting(gs)
@@ -2312,7 +2319,6 @@ local function client_tick(sys)
             report('NATIVE_SPECTATOR_PRESENTATION_ERROR|'..tostring(why))
         end
     end
-    local pawnReady=valid(pc.Pawn) and pc.Pawn.bInitialized==true
     update_match_music(pc,gs,settingsApplied)
     configure_shield_wall_preview()
     reconcile_score_bar('refresh',function()
