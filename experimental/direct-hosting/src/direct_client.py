@@ -356,6 +356,7 @@ class DirectClient(CommunityClient):
         self.proximity_status = proximity_prompt(self.proximity_key)
         self.public_supported = self.public_only = False
         self.armor_supported = False
+        self.pug_supported = False
         self.public_transport_state = None
 
     def capabilities(self):
@@ -364,10 +365,25 @@ class DirectClient(CommunityClient):
         self.public_supported = caps.get('publicCTF') is True
         self.public_only = self.public_supported and caps.get('publicOnly') is True
         self.armor_supported = caps.get('armorSuits') == 1
+        self.pug_supported = caps.get('rankedPug') == 1 and not self.public_only
         return caps
 
     def armor_suits(self, **data):
         return self._request('armor-suits', data, use_lobby_token=False)
+
+    def pug(self, action, **data):
+        response = self._request('pug-' + action, data, use_lobby_token=False)
+        if action == 'stats':
+            return response
+        state = response.get('pug')
+        if not isinstance(state, dict) or state.get('requiredPlayers') != 14:
+            raise CommunityError('The host returned invalid ranked PUG status.')
+        return state
+
+    def pug_target(self, room_id, game):
+        response = self._request('pug-target', {'room': room_id}, use_lobby_token=False)
+        target = response.get('target')
+        return self._validated_target(target, game['map'])
 
     def _public(self, action, **data):
         response = self._request('public-' + action, data, use_lobby_token=False)
@@ -1376,6 +1392,300 @@ class PublicCTFPanel:
             self.submit('poll', lambda: self.lobby.public_state(renew=public))
         self.root.after(150, self.tick)
 
+class RankedPugPanel:
+    """Launcher views for the current ranked room and its published statistics."""
+
+    def __init__(self, tk, desktop, lobby):
+        from tkinter import ttk
+        from desktop_launcher import BG, MUTED, PANEL
+
+        self.ui, self.lobby = desktop, lobby
+        self.state, self.ranked_rows = {}, {}
+        self.responses = queue.Queue()
+        self.pending = set()
+        self.poll_at = 0
+        self.offset = 0
+        self.board_query = ''
+        self.board_sort = 'mu'
+        self.queue_revision = 0
+        self.panel = panel = tk.Frame(desktop.root, bg=BG)
+        self.stats_panel = stats = tk.Frame(desktop.root, bg=BG)
+        desktop.button(desktop.entry_panel, 'Ranked PUG 7v7', lambda: desktop.show_panel('pug'), False).grid(
+            row=5, column=2, sticky='e', padx=(12, 0), pady=(8, 0))
+        desktop.button(desktop.sidebar, 'Stats', lambda: desktop.show_panel('stats'), False).pack(
+            fill='x', padx=18, pady=(6, 0))
+
+        desktop.label(panel, 'Ranked PUG', 26, True).pack(anchor='w')
+        self.status = tk.StringVar()
+        status = desktop.label(panel, '', 11, color=MUTED)
+        status.configure(textvariable=self.status, justify='left', wraplength=550)
+        status.pack(anchor='w', pady=(5, 12))
+        controls = tk.Frame(panel, bg=BG)
+        controls.pack(fill='x', pady=(0, 12))
+        self.join = desktop.button(controls, 'Join 7v7 queue', self.join_queue)
+        self.leave = desktop.button(controls, 'Leave queue', lambda: self.action('leave'), False)
+        self.launch = desktop.button(controls, 'Launch game', self.launch_game)
+        for button in (self.join, self.leave, self.launch):
+            button.pack(side='left', padx=(0, 8))
+
+        self.ballot = tk.Frame(panel, bg=BG)
+        self.ballot.pack(fill='x', pady=(0, 14))
+        self.votes = []
+        for col in range(3):
+            self.ballot.columnconfigure(col, weight=1, uniform='ballot')
+            button = desktop.button(self.ballot, '', lambda index=col: self.vote(index), False)
+            button.configure(anchor='center', justify='center', wraplength=155)
+            button.grid(row=0, column=col, sticky='nsew', padx=(0, 7))
+            self.votes.append(button)
+        self.roster = tk.Frame(panel, bg=PANEL, padx=12, pady=10)
+        self.roster.pack(fill='both', expand=True)
+        self.teams = {}
+        for column, (side, label, color) in enumerate((('blue', 'Blue team', '#80c8ff'),
+                                                       ('red', 'Red team', '#ff9a9a'))):
+            self.roster.columnconfigure(column, weight=1, uniform='teams')
+            card = tk.Frame(self.roster, bg=PANEL)
+            card.grid(row=0, column=column, sticky='nsew')
+            desktop.label(card, label, 12, True, color=color, bg=PANEL).pack(anchor='w')
+            names = desktop.label(card, '', 10, bg=PANEL)
+            names.configure(justify='left', anchor='nw')
+            names.pack(fill='both', expand=True, pady=(5, 0))
+            self.teams[side] = names
+
+        desktop.label(stats, 'Ranked stats', 26, True).pack(anchor='w')
+        search = tk.Frame(stats, bg=BG)
+        search.pack(fill='x', pady=(10, 8))
+        self.query = tk.StringVar()
+        entry = ttk.Entry(search, textvariable=self.query, width=22)
+        entry.pack(side='left')
+        entry.bind('<Return>', lambda _event: self.filter_board())
+        desktop.button(search, 'Search players', self.filter_board, False).pack(side='left', padx=6)
+        desktop.button(search, 'My stats', lambda: self.load_stats(profile=None), False).pack(side='left')
+        self.back = desktop.button(search, 'Previous', lambda: self.page(-25), False)
+        self.next = desktop.button(search, 'Next', lambda: self.page(25), False)
+        self.next.pack(side='right')
+        self.back.pack(side='right', padx=6)
+        headings = (('rank', 'Rank', 50), ('name', 'Player', 150), ('mu', 'μ', 56),
+                    ('record', 'W–L–D', 80), ('grabs', 'Grabs', 57), ('held', 'Flag time', 75))
+        board = tk.Frame(stats, bg=BG)
+        board.pack(fill='both', expand=True)
+        self.table = ttk.Treeview(board, columns=[item[0] for item in headings],
+                                  show='headings', style='Live.Treeview', selectmode='browse', height=8)
+        scroll = ttk.Scrollbar(board, orient='vertical', command=self.table.yview)
+        self.table.configure(yscrollcommand=scroll.set)
+        self.table.pack(side='left', fill='both', expand=True)
+        scroll.pack(side='right', fill='y')
+        sorts = {'rank': 'mu', 'mu': 'mu', 'record': 'wins', 'grabs': 'flagGrabs', 'held': 'flagHeldSeconds'}
+        for key, title, width in headings:
+            self.table.heading(key, text=title)
+            if key in sorts:
+                self.table.heading(key, command=lambda sort=sorts[key]: self.sort_board(sort))
+            self.table.column(key, width=width, minwidth=width, stretch=key == 'name')
+        self.table.bind('<<TreeviewSelect>>', self.select_ranked_player)
+        self.profile = tk.StringVar()
+        ttk.Label(stats, textvariable=self.profile, wraplength=575, justify='left').pack(
+            anchor='w', fill='x', pady=(8, 0))
+        profile_box = tk.Frame(stats, bg=BG)
+        profile_box.pack(fill='both', pady=(4, 0))
+        self.detail = ttk.Treeview(profile_box, columns=('stat', 'total'), show='headings',
+                                   style='Live.Treeview', height=5)
+        self.detail.heading('stat', text='Statistic')
+        self.detail.heading('total', text='Career total')
+        detail_scroll = ttk.Scrollbar(profile_box, orient='vertical', command=self.detail.yview)
+        self.detail.configure(yscrollcommand=detail_scroll.set)
+        self.detail.pack(side='left', fill='both', expand=True)
+        detail_scroll.pack(side='right', fill='y')
+        self.render()
+        desktop.root.after(150, self.tick)
+
+    def submit(self, kind, work):
+        if kind in self.pending:
+            return
+        self.pending.add(kind)
+
+        def request():
+            try:
+                self.responses.put((kind, work(), None))
+            except (CommunityError, OSError, ValueError, KeyError, TypeError) as exc:
+                self.responses.put((kind, None, str(exc)))
+
+        threading.Thread(target=request, name='ranked-' + kind, daemon=True).start()
+
+    def action(self, action, **data):
+        if 'queue' not in self.pending:
+            self.queue_revision += 1
+            self.submit('queue', lambda: self.lobby.pug(action, **data))
+            self.render()
+
+    def poll(self):
+        revision = self.queue_revision
+        if 'queue' not in self.pending:
+            self.submit('poll', lambda: (revision, self.lobby.pug('state')))
+
+    def open(self, page):
+        if page == 'pug':
+            self.poll()
+        else:
+            self.load_stats()
+
+    def join_queue(self):
+        try:
+            name = self.ui.player_name_for_action()
+        except (ValueError, RuntimeError) as exc:
+            self.status.set(str(exc))
+            return
+        self.action('join', name=name)
+
+    def vote(self, index):
+        room = self.state.get('room')
+        if room and room['phase'] == 'voting':
+            self.action('vote', room=room['id'], map=room['options'][index]['id'])
+
+    def launch_game(self):
+        room = self.state.get('room')
+        if room and room.get('game') and self.idle_game():
+            if self.ui.game is None:
+                self.ui.game = self.ui.game_factory(self.lobby)
+            game = self.ui.game
+            self.submit('launch', lambda: game.start_pug(room['id'], room['game']))
+            self.render()
+
+    def idle_game(self):
+        return (self.ui.game_status in ('idle', 'stopped', 'finished', 'failed')
+                and not self.ui.controls_busy and 'launch' not in self.pending)
+
+    def render(self):
+        state = self.state
+        room = state.get('room')
+        queued = state.get('queued') is True
+        idle = self.idle_game()
+        busy = 'queue' in self.pending
+        self.join.configure(state='normal' if idle and not (room or queued or busy) else 'disabled')
+        self.leave.configure(text='Withdraw from match' if room else 'Leave queue',
+                             state='normal' if not busy and
+                             (queued or (room and room['phase'] != 'playing' and idle)) else 'disabled')
+        self.launch.configure(state='normal' if idle and room and room.get('game') else 'disabled')
+        if room:
+            phase = room['phase']
+            self.roster.pack(fill='both', expand=True)
+            for side, label in self.teams.items():
+                label.configure(text='\n'.join(room[side]))
+            if phase == 'voting':
+                self.ballot.pack(fill='x', pady=(0, 14), before=self.roster)
+                for button, choice in zip(self.votes, room['options']):
+                    picked = ' ✓' if room.get('myVote') == choice['id'] else ''
+                    button.configure(text=f"{choice['label']}{picked}\n{choice['votes']} votes",
+                                     state='normal' if not busy else 'disabled')
+                message = f"Vote for a map · {room['seconds']}s left · You’re on {room['team'].title()}"
+            else:
+                self.ballot.pack_forget()
+                label = self.lobby.map_label(room['map']) or room['map']
+                message = f"{label} · You’re on {room['team'].title()}"
+                if room.get('progress'):
+                    message += '\n' + room['progress']
+                elif phase == 'allocating':
+                    message += '\nWaiting for a game slot.'
+                else:
+                    message += '\nPreparing the game server.'
+        else:
+            self.ballot.pack_forget()
+            self.roster.pack_forget()
+            message = f"{state.get('queuedPlayers', 0)}/14 queued · Random teams · Three-map vote"
+            if state.get('notice'):
+                message += '\n' + state['notice']
+        if 'launch' in self.pending:
+            message += '\nPreparing your game…'
+        self.status.set(message)
+
+    def filter_board(self):
+        self.offset, self.board_query = 0, self.query.get().strip()
+        self.load_stats()
+
+    def page(self, change):
+        if 'stats' not in self.pending:
+            self.offset = max(0, self.offset + change)
+            self.load_stats()
+
+    def sort_board(self, sort):
+        if 'stats' not in self.pending:
+            self.offset, self.board_sort = 0, sort
+            self.load_stats()
+
+    def load_stats(self, profile=None):
+        data = dict(query=self.board_query, offset=self.offset, sort=self.board_sort)
+        if profile is not None:
+            data['profile'] = profile
+        self.submit('stats', lambda: self.lobby.pug('stats', **data))
+
+    @staticmethod
+    def duration(seconds):
+        minutes, rest = divmod(int(seconds), 60)
+        return f'{minutes}:{rest:02d}'
+
+    def render_stats(self, result):
+        self.table.delete(*self.table.get_children())
+        self.ranked_rows = {str(row['id']): row for row in result['players']}
+        for identity, row in self.ranked_rows.items():
+            stats = row['stats']
+            self.table.insert('', 'end', iid=identity, values=(
+                row['rank'], row['name'], f"{row['mu']:.2f}", f"{row['wins']}–{row['losses']}–{row['draws']}",
+                f"{stats.get('flagGrabs', 0):g}", self.duration(stats.get('flagHeldSeconds', 0))))
+        self.back.configure(state='normal' if self.offset else 'disabled')
+        self.next.configure(state='normal' if result['hasMore'] else 'disabled')
+        self.render_profile(result['profile'])
+
+    def select_ranked_player(self, _event):
+        selected = self.table.selection()
+        if selected:
+            self.render_profile(self.ranked_rows.get(selected[0]))
+
+    def render_profile(self, row):
+        self.detail.delete(*self.detail.get_children())
+        if row is None:
+            self.profile.set('No completed ranked matches for this player yet. Starting μ is 25.')
+            return
+        self.profile.set(f"#{row['rank']}  {row['name']}   ·   μ {row['mu']:.2f}   ·   σ {row['sigma']:.2f}")
+        for key, value in sorted(row['stats'].items()):
+            if key == 'flagHeldSeconds':
+                label, total = 'Flag time', self.duration(value)
+            else:
+                label = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', key.removeprefix('native.').split('.')[-1])
+                label, total = label[:1].upper() + label[1:], f'{value:,.3f}'.rstrip('0').rstrip('.') if value % 1 else f'{int(value):,}'
+            self.detail.insert('', 'end', values=(label, total))
+
+    def tick(self):
+        if self.ui.closing:
+            return
+        try:
+            while True:
+                kind, value, error = self.responses.get_nowait()
+                self.pending.remove(kind)
+                if kind == 'stats':
+                    if error:
+                        self.profile.set(error)
+                    else:
+                        self.render_stats(value)
+                else:
+                    if kind == 'queue' and error is None:
+                        self.state = value
+                    if kind == 'poll' and error is None:
+                        revision, view = value
+                        if revision != self.queue_revision:
+                            continue
+                        self.state = view
+                    self.render()
+                    if error:
+                        self.status.set(error)
+        except queue.Empty:
+            pass
+        self.launch.configure(state='normal' if self.idle_game() and
+                              (self.state.get('room') or {}).get('game') else 'disabled')
+        now = time.monotonic()
+        if now >= self.poll_at and (self.ui.current_panel == 'pug'
+                                    or self.state.get('queued') or self.state.get('room')):
+            self.poll_at = now + 2
+            self.poll()
+        self.ui.root.after(150, self.tick)
+
 class LauncherTips:
     """Present optional host messages without blocking the launcher event loop."""
 
@@ -1757,6 +2067,7 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
     class DirectDesktop(Desktop):
         public_panel = None
         armor_panel = None
+        pug_panel = None
 
         def show_panel(self, name):
             if self.closing:
@@ -1770,6 +2081,17 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
                 self.public_panel.panel.pack_forget()
             if self.maps_panel is not None:
                 self.maps_panel.pack_forget()
+            if self.pug_panel is not None:
+                self.pug_panel.panel.pack_forget()
+                self.pug_panel.stats_panel.pack_forget()
+                if name in ('pug', 'stats'):
+                    self.current_panel = name
+                    self.lobby_panel.pack_forget()
+                    self.live_panel.pack_forget()
+                    panel = self.pug_panel.panel if name == 'pug' else self.pug_panel.stats_panel
+                    panel.pack(side='left', fill='both', expand=True, padx=32, pady=24)
+                    self.pug_panel.open(name)
+                    return
             if name == 'armor' and self.armor_panel is not None:
                 self.current_panel = 'armor'
                 self.lobby_panel.pack_forget()
@@ -1852,6 +2174,8 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
         if lobby.public_supported:
             gui.public_panel = PublicCTFPanel(tk, gui, lobby)
             gui.show_panel('public' if lobby.public_only else 'lobbies')
+        if lobby.pug_supported:
+            gui.pug_panel = RankedPugPanel(tk, gui, lobby)
         if lobby.armor_supported:
             gui.armor_panel = ArmorPanel(tk, gui, lobby, model_directory=root/'armor-models',
                                          weapon_directory=weapon_directory or local/'weapon-library')
