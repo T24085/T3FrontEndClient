@@ -6,6 +6,7 @@ return function(env)
  local prefix='T3MissionWarning'
  local max_vertices=32
  local out_of_bounds='OUT OF BOUNDS  ·  RETURN TO THE PLAY AREA'
+ local flag_grace='RETURN TO THE FLAG AREA  ·  FLAG RETURN TIMER ACTIVE'
  local flag_messages={
   t3flagboundarydrop='FLAG DROPPED AT THE MISSION BOUNDARY',
   t3flagboundaryreturn='FLAG RETURNED HOME  ·  OUT OF BOUNDS',
@@ -200,7 +201,7 @@ return function(env)
   end
   local pawn=pc.Pawn
   if not valid(pawn) or not same(pawn:GetWorld(),row.world) or ps.r_bDead==true then
-   row.pawn,row.warning_actor,row.last,row.hold,row.notice=nil,nil,nil,nil,nil
+   row.pawn,row.warning_actor,row.last,row.hold,row.notice,row.grace=nil,nil,nil,nil,nil,nil
    detach(row);return true
   end
   if not same(row.pawn,pawn)then
@@ -226,6 +227,7 @@ return function(env)
     if not inside or row.hold and now()<row.hold then warning=out_of_bounds end
    end
   end
+  if row.grace then warning=flag_grace end
   local notice=row.notice
   if notice and now()<notice.expires then warning=notice.text else row.notice=nil end
   if warning then show(row,warning) else detach(row)end
@@ -253,10 +255,19 @@ return function(env)
       local pc=context:get()
       if not same(pc,row.pc) or not same(pc:GetWorld(),row.world) or not pc:IsLocalPlayerController()
          or not same(pc.PlayerState,row.ps) then return end
-      local text=flag_messages[kind:get():ToString():lower()]
+      local tag=kind:get():ToString():lower()
+      local text=flag_messages[tag]
       if text then
+       row.grace=nil
        row.notice={text=text,expires=now()+4}
        report('MISSION_FLAG_LIMIT_NOTICE_RECEIVED')
+      elseif tag=='t3flagboundarygrace' then
+       row.grace=true
+       row.notice=nil
+       report('MISSION_FLAG_LIMIT_GRACE_NOTICE_RECEIVED')
+      elseif tag=='t3flagboundarygracecleared' then
+       row.grace=nil
+       report('MISSION_FLAG_LIMIT_GRACE_NOTICE_CLEARED')
       end
      end)
      if not ok then report('MISSION_FLAG_LIMIT_HUD_UNAVAILABLE|'..tostring(problem):sub(1,260)) end

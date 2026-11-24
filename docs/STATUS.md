@@ -12,6 +12,10 @@ boundary-related flag drop or return, including on a map with only a
 flag boundary. The client ignores notifications for another controller
 and clears its label after four seconds, on death or on travel.
 
+The flag carrier receives a private HUD warning while the host's
+out-of-bounds return timer runs. It clears on reentry, flag loss,
+death or travel.
+
 Maps can target the general HUD warning and sound at characters on foot
 or occupied vehicles. The filtered cue uses a separate marker from the
 original all-player warning. The signed Lua matches the shared module,
