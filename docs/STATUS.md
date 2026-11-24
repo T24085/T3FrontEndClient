@@ -12,6 +12,12 @@ boundary-related flag drop or return, including on a map with only a
 flag boundary. The client ignores notifications for another controller
 and clears its label after four seconds, on death or on travel.
 
+Maps can target the general HUD warning and sound at characters on foot
+or occupied vehicles. The filtered cue uses a separate marker from the
+original all-player warning. The signed Lua matches the shared module,
+including its exclusion of spectator pawns and its handling of mount
+and dismount. Native vehicle qualification remains open.
+
 # Filtered mission perimeter collision
 
 The client reapplies an authored map's native Pawn and Vehicle collision
