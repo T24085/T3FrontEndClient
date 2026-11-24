@@ -1153,6 +1153,207 @@ end
 
 local clientWorld=nil
 local lastJoin=0
+-- Embedded in the signed client script so an update needs no new package path.
+local warn_mission_boundary=(function()
+-- BEGIN SHARED mission_boundary_warning.lua
+-- Local presentation for an authored boundary. No match state is changed.
+return function(env)
+ local valid,scope,report=assert(env.valid),assert(env.scope),assert(env.report)
+ local now=env.now or os.time
+ local state
+ local prefix='T3MissionWarning'
+ local max_vertices=32
+ local function same(a,b)
+  return a~=nil and b~=nil and valid(a) and valid(b)
+     and a:GetAddress()==b:GetAddress() and a:GetFullName()==b:GetFullName()
+ end
+ local function tagged(actor,name)return actor:ActorHasTag(FName(prefix..name))end
+ local function numbered(actor,prefix,min)
+  local number
+  for i=min,max_vertices do
+   if tagged(actor,prefix..i)then
+    assert(not number,'ambiguous_boundary_warning_marker')
+    number=i
+   end
+  end
+  return assert(number,'missing_boundary_warning_marker')
+ end
+ local function point(actor)
+  local p=actor:K2_GetActorLocation()
+  for _,axis in ipairs({'X','Y','Z'})do
+   assert(type(p[axis])=='number' and math.abs(p[axis])<=1e7,'invalid_boundary_warning_location')
+  end
+  return {X=p.X,Y=p.Y,Z=p.Z}
+ end
+ local function cross(ax,ay,bx,by)return ax*by-ay*bx end
+ local function next_index(i,vertices)return i%#vertices+1 end
+ local function contains(zone,p)
+  if (zone.floor and p.Z<zone.floor) or (zone.ceiling and p.Z>zone.ceiling) then return false end
+  local vertices,inside=zone.vertices,false
+  for i,a in ipairs(vertices)do
+   local b=vertices[next_index(i,vertices)]
+   local side=cross(b.X-a.X,b.Y-a.Y,p.X-a.X,p.Y-a.Y)
+   if side==0 and p.X>=math.min(a.X,b.X) and p.X<=math.max(a.X,b.X)
+      and p.Y>=math.min(a.Y,b.Y) and p.Y<=math.max(a.Y,b.Y) then return true end
+   if (a.Y>p.Y)~=(b.Y>p.Y) and (side>0)==(b.Y>a.Y) then inside=not inside end
+  end
+  return inside
+ end
+ local function crossed_notch(zone,a,b)
+  -- The endpoints may both be in bounds on a fast pass through a concave notch.
+  local dx,dy=b.X-a.X,b.Y-a.Y
+  if dx==0 and dy==0 then return false end
+  local vertices,cuts=zone.vertices,{0,1}
+  for i,c in ipairs(vertices) do
+   local d=vertices[next_index(i,vertices)]
+   local ex,ey=d.X-c.X,d.Y-c.Y
+   local denominator=cross(dx,dy,ex,ey)
+   if denominator~=0 then
+    local t=cross(c.X-a.X,c.Y-a.Y,ex,ey)/denominator
+    local u=cross(c.X-a.X,c.Y-a.Y,dx,dy)/denominator
+    if t>0 and t<1 and u>=0 and u<=1 then cuts[#cuts+1]=t end
+   end
+  end
+  table.sort(cuts)
+  for i=2,#cuts do
+   if cuts[i]-cuts[i-1]>1e-7 then
+    local t=(cuts[i-1]+cuts[i])/2
+    if not contains(zone,{X=a.X+t*dx,Y=a.Y+t*dy,Z=a.Z+t*(b.Z-a.Z)}) then return true end
+   end
+  end
+  return false
+ end
+ local function read_zone(world)
+  local cue
+  for _,actor in ipairs(FindAllOf('AmbientSound') or {})do
+   if valid(actor) and same(actor:GetWorld(),world) and tagged(actor,'Cue')then
+    assert(not cue,'duplicate_boundary_warning_cue')
+    cue=actor
+   end
+  end
+  if not cue then return end
+  local component=cue.AudioComponent
+  assert(valid(component) and same(component:GetOwner(),cue) and valid(component.Sound),
+         'boundary_warning_cue_required')
+  local size=numbered(cue,'Count',3)
+  local zone={vertices={},cue=cue,audio=component}
+  for _,actor in ipairs(FindAllOf('TargetPoint') or {})do
+   if valid(actor) and same(actor:GetWorld(),world) and tagged(actor,'')then
+    if tagged(actor,'Floor') or tagged(actor,'Ceiling')then
+     local cap=tagged(actor,'Floor') and 'floor' or 'ceiling'
+     assert(not zone[cap],'duplicate_boundary_warning_cap')
+     zone[cap]=point(actor).Z
+    else
+     local i=numbered(actor,'Vertex',1)
+     assert(i<=size and not zone.vertices[i],'duplicate_boundary_warning_vertex')
+     zone.vertices[i]=point(actor)
+    end
+   end
+  end
+  for i=1,size do assert(zone.vertices[i],'missing_boundary_warning_vertex') end
+  assert(tagged(cue,'Floor')==(zone.floor~=nil) and tagged(cue,'Ceiling')==(zone.ceiling~=nil),
+         'missing_boundary_warning_cap')
+  assert(not zone.floor or not zone.ceiling or zone.floor<zone.ceiling,'invalid_boundary_warning_height')
+  return zone
+ end
+ local function detach(row)
+  if row and row.label and valid(row.label)then row.label:RemoveFromParent()end
+  if row then row.label=nil end
+ end
+ local function canvas(world)
+  local cls=StaticFindObject('/Script/UMG.CanvasPanel')
+  if not valid(cls)then return end
+  for _,overlay in ipairs(FindAllOf('UI_Game_Overlays_C') or {})do
+   if valid(overlay) and overlay:GetFullName():find('/Engine/Transient.',1,true)
+      and same(overlay:GetWorld(),world) and valid(overlay.Flags)then
+    local parent=overlay.Flags:GetParent()
+    for _=1,12 do
+     if not valid(parent)then break end
+     if parent:IsA(cls)then return parent,overlay end
+     parent=parent:GetParent()
+    end
+   end
+  end
+ end
+ local function show(row)
+  local panel,overlay=canvas(row.world)
+  if not panel then detach(row);return end
+  if valid(row.label) and same(row.label:GetParent(),panel)then return end
+  detach(row)
+  local cls=StaticFindObject('/Script/UMG.TextBlock')
+  assert(valid(cls),'boundary_warning_text_block_required')
+  local label=StaticConstructObject(cls,overlay)
+  assert(valid(label),'boundary_warning_create_failed')
+  row.label=label
+  label:SetText(FText('OUT OF BOUNDS  ·  RETURN TO THE PLAY AREA'))
+  label:SetColorAndOpacity({SpecifiedColor={R=1,G=0.65,B=0.19,A=1},ColorUseRule=0})
+  label:SetShadowColorAndOpacity({R=0,G=0,B=0,A=0.95})
+  label:SetShadowOffset({X=2,Y=2})
+  label:SetVisibility(4) -- SelfHitTestInvisible
+  local slot=panel:AddChildToCanvas(label)
+  assert(valid(slot),'boundary_warning_canvas_slot_required')
+  local anchor={X=0.5,Y=0.26}
+  slot:SetAnchors({Minimum=anchor,Maximum=anchor})
+  slot:SetAlignment({X=0.5,Y=0.5})
+  slot:SetAutoSize(true)
+  slot:SetPosition({X=0,Y=0})
+  slot:SetZOrder(50)
+ end
+ local function tick(row)
+  local pc,ps,zone=row.pc,row.ps,row.zone
+  if not valid(pc) or not valid(ps) or not pc:IsLocalPlayerController() or not same(pc.PlayerState,ps)
+     or not same(pc:GetWorld(),row.world) or not valid(zone.cue) or not same(zone.cue:GetWorld(),row.world)then
+   detach(row);return false
+  end
+  local pawn=pc.Pawn
+  if not valid(pawn) or not same(pawn:GetWorld(),row.world) or ps.r_bDead==true then
+   row.pawn,row.last,row.hold=nil,nil,nil
+   detach(row);return true
+  end
+  if not same(row.pawn,pawn)then
+   row.pawn,row.last,row.hold=pawn,nil,nil
+   detach(row)
+  end
+  local at=point(pawn)
+  local inside=contains(zone,at)
+  if row.last and row.inside and (not inside or crossed_notch(zone,row.last,at))then
+   if inside then row.hold=now()+3 end
+   assert(valid(zone.audio) and same(zone.audio:GetOwner(),zone.cue),'boundary_warning_cue_changed')
+   zone.audio:Play(0)
+   report('MISSION_BOUNDARY_WARNING|crossed=true')
+  end
+  row.last,row.inside=at,inside
+  if not inside or row.hold and now()<row.hold then show(row) else detach(row)end
+  return true
+ end
+ local function schedule(row)
+  local handle=ExecuteInGameThreadWithDelay(100,function()
+   if state~=row then return end
+   local ok,why=pcall(function()
+    scope()
+    if tick(row)then schedule(row)end
+   end)
+   if not ok then detach(row);report('MISSION_BOUNDARY_WARNING_UNAVAILABLE|'..tostring(why):sub(1,300))end
+  end)
+  assert(type(handle)=='number','boundary_warning_timer_required')
+ end
+ return function(pc,ps)
+  if not valid(pc) or not valid(ps) or not pc:IsLocalPlayerController() or not same(pc.PlayerState,ps)then return end
+  local world=pc:GetWorld()
+  if not valid(world)then return end
+  if state and same(state.pc,pc) and same(state.ps,ps) and same(state.world,world)then return end
+  detach(state)
+  state={pc=pc,ps=ps,world=world}
+  local ok,why=pcall(function()
+   scope()
+   state.zone=read_zone(world)
+   if state.zone then schedule(state);report('MISSION_BOUNDARY_WARNING_READY')end
+  end)
+  if not ok then report('MISSION_BOUNDARY_WARNING_UNAVAILABLE|'..tostring(why):sub(1,300))end
+ end
+end
+-- END SHARED mission_boundary_warning.lua
+end)()({valid=valid,scope=scope,report=report})
 local function community_radar_group(descriptor)
  local package=descriptor and descriptor.package
  return type(package)=='string' and package:match('^/Game/Maps/Community/([^/]+)/') or nil
@@ -2025,6 +2226,7 @@ local function client_tick(sys)
         spectatorRuntime.tick(pc,ps,gs);return
     end
     assert(SPECTATOR_ROLE=="player","unknown_client_role")
+    warn_mission_boundary(pc,ps)
     if nativeSpectatorPresentation~=false and (nativeSpectatorPresentation or ps.r_bDead==true) then
         local ok,why=pcall(function()
             if not nativeSpectatorPresentation then
