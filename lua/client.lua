@@ -1304,6 +1304,12 @@ return function(env)
  local state
  local prefix='T3MissionWarning'
  local max_vertices=32
+ local out_of_bounds='OUT OF BOUNDS  ·  RETURN TO THE PLAY AREA'
+ local flag_messages={
+  t3flagboundarydrop='FLAG DROPPED AT THE MISSION BOUNDARY',
+  t3flagboundaryreturn='FLAG RETURNED HOME  ·  OUT OF BOUNDS',
+ }
+ local hook_attempted=false
  local function same(a,b)
   return a~=nil and b~=nil and valid(a) and valid(b)
      and a:GetAddress()==b:GetAddress() and a:GetFullName()==b:GetFullName()
@@ -1399,7 +1405,7 @@ return function(env)
  end
  local function detach(row)
   if row and row.label and valid(row.label)then row.label:RemoveFromParent()end
-  if row then row.label=nil end
+  if row then row.label,row.text=nil,nil end
  end
  local function canvas(world)
   local cls=StaticFindObject('/Script/UMG.CanvasPanel')
@@ -1416,17 +1422,20 @@ return function(env)
    end
   end
  end
- local function show(row)
+ local function show(row,text)
   local panel,overlay=canvas(row.world)
   if not panel then detach(row);return end
-  if valid(row.label) and same(row.label:GetParent(),panel)then return end
+  if valid(row.label) and same(row.label:GetParent(),panel)then
+   if row.text~=text then row.label:SetText(FText(text));row.text=text end
+   return
+  end
   detach(row)
   local cls=StaticFindObject('/Script/UMG.TextBlock')
   assert(valid(cls),'boundary_warning_text_block_required')
   local label=StaticConstructObject(cls,overlay)
   assert(valid(label),'boundary_warning_create_failed')
-  row.label=label
-  label:SetText(FText('OUT OF BOUNDS  ·  RETURN TO THE PLAY AREA'))
+  row.label,row.text=label,text
+  label:SetText(FText(text))
   label:SetColorAndOpacity({SpecifiedColor={R=1,G=0.65,B=0.19,A=1},ColorUseRule=0})
   label:SetShadowColorAndOpacity({R=0,G=0,B=0,A=0.95})
   label:SetShadowOffset({X=2,Y=2})
@@ -1443,28 +1452,80 @@ return function(env)
  local function tick(row)
   local pc,ps,zone=row.pc,row.ps,row.zone
   if not valid(pc) or not valid(ps) or not pc:IsLocalPlayerController() or not same(pc.PlayerState,ps)
-     or not same(pc:GetWorld(),row.world) or not valid(zone.cue) or not same(zone.cue:GetWorld(),row.world)then
+     or not same(pc:GetWorld(),row.world)then
    detach(row);return false
   end
   local pawn=pc.Pawn
   if not valid(pawn) or not same(pawn:GetWorld(),row.world) or ps.r_bDead==true then
-   row.pawn,row.last,row.hold=nil,nil,nil
+   row.pawn,row.last,row.hold,row.notice=nil,nil,nil,nil
    detach(row);return true
   end
   if not same(row.pawn,pawn)then
    row.pawn,row.last,row.hold=pawn,nil,nil
    detach(row)
   end
-  local at=point(pawn)
-  local inside=contains(zone,at)
-  if row.last and row.inside and (not inside or crossed_notch(zone,row.last,at))then
-   if inside then row.hold=now()+3 end
-   assert(valid(zone.audio) and same(zone.audio:GetOwner(),zone.cue),'boundary_warning_cue_changed')
-   zone.audio:Play(0)
-   report('MISSION_BOUNDARY_WARNING|crossed=true')
+  local warning
+  if zone and valid(zone.cue) and same(zone.cue:GetWorld(),row.world)then
+   local at=point(pawn)
+   local inside=contains(zone,at)
+   if row.last and row.inside and (not inside or crossed_notch(zone,row.last,at))then
+    if inside then row.hold=now()+3 end
+    assert(valid(zone.audio) and same(zone.audio:GetOwner(),zone.cue),'boundary_warning_cue_changed')
+    zone.audio:Play(0)
+    report('MISSION_BOUNDARY_WARNING|crossed=true')
+   end
+   row.last,row.inside=at,inside
+   if not inside or row.hold and now()<row.hold then warning=out_of_bounds end
   end
-  row.last,row.inside=at,inside
-  if not inside or row.hold and now()<row.hold then show(row) else detach(row)end
+  local notice=row.notice
+  if notice and now()<notice.expires then warning=notice.text else row.notice=nil end
+  if warning then show(row,warning) else detach(row)end
+  return true
+ end
+ local function hook_flag_notices(world)
+  local found=false
+  for _,marker in ipairs(FindAllOf('TargetPoint') or {})do
+   if valid(marker) and same(marker:GetWorld(),world)
+      and (marker:ActorHasTag(FName('T3MissionFlagMin')) or marker:ActorHasTag(FName('T3MissionFlagPolygon')))then
+    found=true;break
+   end
+  end
+  if not found then return false end
+  if not hook_attempted then
+   hook_attempted=true
+   local installed,why=pcall(function()
+    local path='/Script/Engine.PlayerController:ClientMessage'
+    local fn=StaticFindObject(path)
+    assert(valid(fn) and fn:GetFullName()=='Function '..path,'boundary_flag_notice_function_required')
+    local fields={{'S','StrProperty',0},{'Type','NameProperty',16},{'MsgLifeTime','FloatProperty',24}}
+    local n=0
+    fn:ForEachProperty(function(prop)
+     n=n+1
+     local item=assert(fields[n],'boundary_flag_notice_signature_changed')
+     assert(prop:GetFullName()==item[2]..' '..path..':'..item[1] and prop:GetOffset_Internal()==item[3],
+            'boundary_flag_notice_signature_changed')
+    end)
+    assert(n==#fields,'boundary_flag_notice_signature_changed')
+    local pre,post=RegisterHook(path,function()end,function(context,_,kind)
+     local row=state
+     if not row or not row.flag_notices then return end
+     local ok,problem=pcall(function()
+      scope()
+      local pc=context:get()
+      if not same(pc,row.pc) or not same(pc:GetWorld(),row.world) or not pc:IsLocalPlayerController()
+         or not same(pc.PlayerState,row.ps) then return end
+      local text=flag_messages[kind:get():ToString():lower()]
+      if text then
+       row.notice={text=text,expires=now()+4}
+       report('MISSION_FLAG_LIMIT_NOTICE_RECEIVED')
+      end
+     end)
+     if not ok then report('MISSION_FLAG_LIMIT_HUD_UNAVAILABLE|'..tostring(problem):sub(1,260)) end
+    end)
+    assert(type(pre)=='number' and type(post)=='number','boundary_flag_notice_hook_required')
+   end)
+   if not installed then report('MISSION_FLAG_LIMIT_HUD_UNAVAILABLE|'..tostring(why):sub(1,260)) end
+  end
   return true
  end
  local function schedule(row)
@@ -1488,7 +1549,9 @@ return function(env)
   local ok,why=pcall(function()
    scope()
    state.zone=read_zone(world)
-   if state.zone then schedule(state);report('MISSION_BOUNDARY_WARNING_READY')end
+   state.flag_notices=hook_flag_notices(world)
+   if state.zone or state.flag_notices then schedule(state)end
+   if state.zone then report('MISSION_BOUNDARY_WARNING_READY')end
   end)
   if not ok then report('MISSION_BOUNDARY_WARNING_UNAVAILABLE|'..tostring(why):sub(1,300))end
  end

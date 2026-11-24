@@ -7,6 +7,11 @@ clears its own label on reentry, death or travel. Source verification
 checks that the signed runtime embeds the same code as the offline
 preview. Retail runtime HUD and audio qualification remains open.
 
+The same HUD service displays an explicit host notification for a
+boundary-related flag drop or return, including on a map with only a
+flag boundary. The client ignores notifications for another controller
+and clears its label after four seconds, on death or on travel.
+
 # Filtered mission perimeter collision
 
 The client reapplies an authored map's native Pawn and Vehicle collision
