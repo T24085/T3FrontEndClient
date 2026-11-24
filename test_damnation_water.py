@@ -90,7 +90,7 @@ class DamnationWaterContactTests(unittest.TestCase):
                 if path:find('KismetMaterialLibrary') then return {CreateDynamicMaterialInstance=function()return material end} end
                 if path=='/Script/Engine.SoundBase' then return sound_class end
                 if path=='/Script/Engine.SoundAttenuation' then return attenuation_class end
-                return {}
+                if path=='/Script/Valhalla.ValCharacter' then return {} end
             end
             function LoadAsset(path)
                 local kind=path==prefix..'A.A' and attenuation_class or sound_class
@@ -112,4 +112,78 @@ class DamnationWaterContactTests(unittest.TestCase):
             local joined=table.concat(events,string.char(10))
             assert(joined:find('LIQUID_READY|map=TestMap',1,true) and joined:find('LIQUID_ENTRY_SKIPPED',1,true))
             assert(not joined:find('LIQUID_ERROR',1,true) and not joined:find('LIQUID_AUDIO_ERROR',1,true))
+        ''')
+
+    def test_community_water_uses_stock_sound_and_effect_without_a_descriptor(self):
+        self.lua.execute('''
+            local factory=assert(loadfile(liquid_runtime))()
+            local water='/Game/Community/Stonehenge/Wildlands2026/Materials/M_Lake.M_Lake'
+            local acid='/Game/Community/HighOctane/Toxic2026/Materials/M_Acid.M_Acid'
+            local world={GetAddress=function()return 1 end}
+            local function fromWorld()return world end
+            local function mesh(path,collision,offset,wet)
+                return {GetCollisionEnabled=function()return collision end,offset=offset,
+                        GetMaterial=function()return {GetFullName=function()return 'Material '..path end}end,
+                        K2_LineTraceComponent=function(_,p)return wet and p.X>offset end}
+            end
+            local actors={}
+            for _,component in ipairs({mesh(water,0,300,true),mesh(acid,1,600,true),mesh(water,1,0,true)}) do
+                actors[#actors+1]={GetWorld=fromWorld,StaticMeshComponent=component}
+            end
+            function FindAllOf(kind)assert(kind=='StaticMeshActor');return actors end
+            function FName(value)return value end
+            local now,x,z,update=0,-30,150,nil
+            local pawn={GetAddress=function()return 2 end,bInitialized=true,IsA=function()return true end,
+                K2_GetActorLocation=function()return {X=x,Y=0,Z=z+80}end,
+                CapsuleComponent={GetScaledCapsuleHalfHeight=function()return 80 end}}
+            local player={GetWorld=fromWorld,GetPawn=function()return pawn end}
+            local gs={GetFullName=function()return 'Class /Game/Maps/Community/Map.Test:PersistentLevel.State' end,
+                GetWorld=fromWorld,PlayerArray={ForEach=function(_,f)f(1,{get=function()return player end})end}}
+            local pc={PlayerCameraManager={GetCameraLocation=function()return {X=x,Y=0,Z=z+80}end}}
+            local events,sounds,effects={},{},{}
+            local sound_class,fx_class,character_class={},{},{}
+            local statics={GetTimeSeconds=function()return now end}
+            function statics:SpawnSoundAtLocation(context,asset,point)
+                assert(context==gs and point.Z==100)
+                sounds[#sounds+1]=asset.path
+                return {}
+            end
+            local niagara={}
+            function niagara:SpawnSystemAtLocation(context,asset,point,rotation,size,destroy,activate,pool)
+                assert(context==gs and point.Z==106 and destroy and activate and pool==0)
+                effects[#effects+1]=asset.path
+                return {}
+            end
+            local system={}
+            function system:GetComponentBounds(component,origin,extent)
+                origin.Origin={X=component.offset,Y=0,Z=99}
+                extent.BoxExtent={X=100,Y=100,Z=1}
+            end
+            function StaticFindObject(path)
+                if path:find('GameplayStatics') then return statics end
+                if path:find('KismetSystemLibrary') then return system end
+                if path:find('NiagaraFunctionLibrary') then return niagara end
+                if path=='/Script/Engine.SoundBase' then return sound_class end
+                if path=='/Script/Niagara.NiagaraSystem' then return fx_class end
+                if path=='/Script/Valhalla.ValCharacter' then return character_class end
+            end
+            function LoadAsset(path)
+                local expected=path:find('/Game/Audio/',1,true) and sound_class or fx_class
+                return {path=path,IsA=function(_,class)return class==expected end}
+            end
+            function ExecuteInGameThreadWithDelay(ms,cb)assert(ms==50);update=cb end
+            local tick=factory({valid=function(v)return v~=nil end,report=function(e)events[#events+1]=e end})
+            tick(gs,pc)
+            assert(events[1]=='WATER_SPLASH_READY|surfaces=1|splash_pool=0')
+            local function sample(at,height)
+                now=now+.05;x=at;z=height;update()
+            end
+            sample(-30,150);sample(-30,102)
+            sample(300,150);sample(300,102)
+            sample(600,150);sample(600,102)
+            assert(#sounds==0 and #effects==0)
+            sample(50,150);sample(50,102)
+            assert(#sounds==1 and sounds[1]:find('Land_Water_02.Land_Water_02',1,true))
+            assert(#effects==1 and effects[1]:find('NS_Sprint_Footstep_WaterSplash_A',1,true))
+            assert(events[2]=='WATER_SPLASH|tier=medium|fx=true|audio=true')
         ''')
