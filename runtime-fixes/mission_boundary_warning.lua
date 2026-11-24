@@ -186,7 +186,8 @@ return function(env)
   label:SetVisibility(4) -- SelfHitTestInvisible
   local slot=panel:AddChildToCanvas(label)
   assert(valid(slot),'boundary_warning_canvas_slot_required')
-  local anchor={X=0.5,Y=0.26}
+  -- Keep the boundary text below the native match-start announcement.
+  local anchor={X=0.5,Y=0.36}
   slot:SetAnchors({Minimum=anchor,Maximum=anchor})
   slot:SetAlignment({X=0.5,Y=0.5})
   slot:SetAutoSize(true)

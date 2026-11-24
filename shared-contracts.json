@@ -19,6 +19,6 @@
     "server_directory.py": "f921bd3e5711a5128bd4ca7d17391841f66c15507cf85c47fcdf9f6812be045a",
     "directory_transport.py": "38fd92b2185cb26aa1c4ace5652370b91f24bb25fe1fb536f413df7e93335714",
     "runtime-fixes/mission_perimeter_collision.lua": "0ef2d97d38ec565e20a682695f62e3a5f55fcd1cb5623ec8a8ede05cf096f94a",
-    "runtime-fixes/mission_boundary_warning.lua": "ba0a380250eb8f891b301d1209eb46750c819886af052bd2cb5ee43abed259c5"
+    "runtime-fixes/mission_boundary_warning.lua": "d8829227885eb4d6051ca4c9704b8c233a4d6a95c8d8d9773986d8f9f69bfe35"
   }
 }
