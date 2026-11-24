@@ -43,6 +43,15 @@ class CompleteReleaseBuildTests(unittest.TestCase):
  def test_source_cannot_replace_frozen_content(self):
   destination='content/Community/Snowblind/fixture.uasset'
   with self.assertRaisesRegex(ValueError,'payload is frozen'):self.build(source_members={destination:'client_entry.py'})
+ def test_release_adds_and_verifies_the_shared_perimeter_module(self):
+  destination='lua/mission_perimeter_collision.lua'
+  module=self.source/SOURCE_MEMBERS[destination]
+  module.parent.mkdir()
+  module.write_bytes(b'return function() return function() end end\n')
+  archive=self.build(source_members={destination:SOURCE_MEMBERS[destination]})
+  self.assertTrue(verify(archive,self.fixture.server,self.fixture.root/'verification')['passed'])
+  with zipfile.ZipFile(archive)as z:
+   self.assertEqual(z.read('TRIBES3-Community-Starter/'+destination),module.read_bytes())
  def test_wrong_current_server_catalog_is_rejected(self):
   self.fixture.server.write_text(json.dumps({'verified_map_catalog':{'Snowblind':'f'*64}}))
   with self.assertRaisesRegex(ValueError,'differ from the verified server'):self.build()

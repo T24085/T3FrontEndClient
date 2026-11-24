@@ -1294,6 +1294,18 @@ end
 
 local clientWorld=nil
 local lastJoin=0
+local configure_perimeter=(function()
+ local apply=assert(loadfile(@@MISSION_PERIMETER_COLLISION@@))()({valid=valid,scope=scope,report=report})
+ local previousAddress,previousName
+ return function(gs)
+  local world=gs:GetWorld()
+  if not valid(world)then return end
+  local address,name=world:GetAddress(),world:GetFullName()
+  if address~=previousAddress or name~=previousName then
+   apply(gs);previousAddress,previousName=address,name
+  end
+ end
+end)()
 local function community_radar_group(descriptor)
  local package=descriptor and descriptor.package
  return type(package)=='string' and package:match('^/Game/Maps/Community/([^/]+)/') or nil
@@ -2309,6 +2321,7 @@ local function client_tick(sys)
         return
     end
     local gs=state();if not gs or gs:HasAuthority() then return end
+    configure_perimeter(gs)
     configure_geometry(gs)
     configure_community_lighting(gs)
     configure_stock_clouds(gs,sys)

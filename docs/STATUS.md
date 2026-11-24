@@ -1,3 +1,11 @@
+# Filtered mission perimeter collision
+
+The client reapplies an authored map's native Pawn and Vehicle collision
+responses once in each remote world. The shared Direct Host module scopes
+changes to marked perimeter actors with valid native components.
+The desktop, dynamic and Windows release builders include the module.
+Cooked multiplayer qualification remains open.
+
 # Generator-linked interior lighting in portable drafts
 
 The client reads optional lighting links from the verified map descriptor.
