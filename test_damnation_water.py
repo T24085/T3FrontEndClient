@@ -38,21 +38,33 @@ class DamnationWaterContactTests(unittest.TestCase):
         self.assertEqual(self.contact(a, b, self.surface, .05), (300, 200, 760, "enter"))
         self.assertIsNone(self.contact(b, a, self.surface, .05))
 
-    def test_authored_profiles_use_pack_and_map_overrides_through_native_effect_calls(self):
+    def test_authored_river_keeps_its_map_sounds_without_a_separate_profile_pack(self):
+        self.lua.execute('''
+            local _,_,surface,profiles=assert(loadfile(liquid_runtime))()
+            local sound='/Game/Community/ReversionTWLT2/Edition2026/Audio/SW_RVT2_Splash_Medium.SW_RVT2_Splash_Medium'
+            local row=surface({
+                id='ReversionWater',liquid_type='river_water',splash_pool_tag='CwSplash',
+                box_min_cm={-100,-100,-100},box_max_cm={100,100,100},surface_z_cm=0,
+                proposed_global_assets={sounds={medium=sound}},
+            },profiles(nil,function()end))
+            assert(row.profile.sounds.medium==sound and row.tag=='CwSplash')
+        ''')
+
+    def test_authored_water_uses_stock_audio_when_a_wave_is_missing(self):
         self.lua.execute('''
             local factory,contact,surface,profiles,tier=assert(loadfile(liquid_runtime))()
             local prefix='/Game/Community/Water/Audio/'
-            local packs={{format=1,profiles={pool={minimum=500,medium=800,hard=2000,
+            local packs={{format=1,profiles={river_water={minimum=500,medium=800,hard=2000,
                    sounds={medium=prefix..'S.S',exit=prefix..'E.E'},attenuation=prefix..'A.A'}}},
-                   {format=2,profiles={pool={minimum=2000}}}}
-            local liquid={id='TestPool',liquid_type='pool',splash_pool_tag='CwSplash',
+                   {format=2,profiles={river_water={minimum=2000}}}}
+            local liquid={id='TestPool',liquid_type='river_water',splash_pool_tag='CwSplash',
                           box_min_cm={-1000,-1000,-100},box_max_cm={1000,1000,0},surface_z_cm=0,
                           overrides={minimum=600},tint={.2,.3,.4}}
             local row=surface(liquid,profiles(packs,function()end))
             assert(row.profile.minimum==600 and row.profile.medium==800)
             assert(tier(row.profile,700,'enter')=='easy' and tier(row.profile,1400,'enter')=='medium')
             assert(tier(row.profile,2205,'enter')=='hard' and tier(row.profile,2205,'exit')=='exit')
-            assert(not pcall(surface,{id='bad',liquid_type='pool',splash_pool_tag='CwSplash',
+            assert(not pcall(surface,{id='bad',liquid_type='river_water',splash_pool_tag='CwSplash',
                 box_min_cm={-1000,-1000,-100},box_max_cm={1000,1000,0},surface_z_cm=20},profiles(packs,function()end)))
             local t,nextTick,z,camera=0,nil,35,{X=20,Y=20,Z=150}
             local world={GetAddress=function()return 1 end}
@@ -93,6 +105,7 @@ class DamnationWaterContactTests(unittest.TestCase):
                 if path=='/Script/Valhalla.ValCharacter' then return {} end
             end
             function LoadAsset(path)
+                if path==prefix..'S.S' then return nil end
                 local kind=path==prefix..'A.A' and attenuation_class or sound_class
                 return {path=path,IsA=function(_,class)return class==kind end}
             end
@@ -102,7 +115,7 @@ class DamnationWaterContactTests(unittest.TestCase):
                 report=function(line)events[#events+1]=line end})
             tick(gs,pc);nextTick()
             z=-35;t=.05;nextTick()
-            assert(sounds[1]==prefix..'S.S' and actor.impact.Z==23 and actor.hidden==false)
+            assert(sounds[1]:find('Land_Water_02.Land_Water_02',1,true) and actor.impact.Z==23 and actor.hidden==false)
             t=.20;nextTick()
             z=35;t=.26;nextTick()
             assert(sounds[2]==prefix..'E.E')
@@ -119,15 +132,19 @@ class DamnationWaterContactTests(unittest.TestCase):
             local factory=assert(loadfile(liquid_runtime))()
             local water='/Game/Community/Stonehenge/Wildlands2026/Materials/M_Lake.M_Lake'
             local acid='/Game/Community/HighOctane/Toxic2026/Materials/M_Acid.M_Acid'
+            local rain='/Game/Community/RaindanceT2/Edition2026/Water/'
             local world={GetAddress=function()return 1 end}
             local function fromWorld()return world end
-            local function mesh(path,collision,offset,wet)
+            local function mesh(path,collision,offset,sheet)
                 return {GetCollisionEnabled=function()return collision end,offset=offset,
+                        StaticMesh=sheet and {GetFullName=function()return 'StaticMesh '..sheet end} or nil,
                         GetMaterial=function()return {GetFullName=function()return 'Material '..path end}end,
-                        K2_LineTraceComponent=function(_,p)return wet and p.X>offset end}
+                        K2_LineTraceComponent=function(_,p)assert(collision~=0);return p.X>offset end}
             end
             local actors={}
-            for _,component in ipairs({mesh(water,0,300,true),mesh(acid,1,600,true),mesh(water,1,0,true)}) do
+            for _,component in ipairs({mesh(water,0,300),mesh(acid,1,600),mesh(water,1,0),
+                                       mesh(rain..'M_RT2_Water.M_RT2_Water',0,900,rain..'SM_RT2_WaterSurface.SM_RT2_WaterSurface'),
+                                       mesh(rain..'M_RT2_Water.M_RT2_Water',0,1200)}) do
                 actors[#actors+1]={GetWorld=fromWorld,StaticMeshComponent=component}
             end
             function FindAllOf(kind)assert(kind=='StaticMeshActor');return actors end
@@ -174,16 +191,27 @@ class DamnationWaterContactTests(unittest.TestCase):
             function ExecuteInGameThreadWithDelay(ms,cb)assert(ms==50);update=cb end
             local tick=factory({valid=function(v)return v~=nil end,report=function(e)events[#events+1]=e end})
             tick(gs,pc)
-            assert(events[1]=='WATER_SPLASH_READY|surfaces=1|splash_pool=0')
+            assert(events[1]=='WATER_SPLASH_READY|surfaces=2|splash_pool=0')
             local function sample(at,height)
                 now=now+.05;x=at;z=height;update()
             end
             sample(-30,150);sample(-30,102)
             sample(300,150);sample(300,102)
             sample(600,150);sample(600,102)
+            sample(1200,150);sample(1200,90)
+            sample(1010,150);sample(1010,90)
             assert(#sounds==0 and #effects==0)
+            sample(1010,150)
             sample(50,150);sample(50,102)
             assert(#sounds==1 and sounds[1]:find('Land_Water_02.Land_Water_02',1,true))
             assert(#effects==1 and effects[1]:find('NS_Sprint_Footstep_WaterSplash_A',1,true))
             assert(events[2]=='WATER_SPLASH|tier=medium|fx=true|audio=true')
+            for _=1,5 do sample(900,150) end
+            sample(900,102)
+            assert(#sounds==1 and #effects==1)
+            sample(900,92)
+            assert(events[3]=='WATER_SPLASH|tier=easy|fx=true|audio=true')
+            for _=1,5 do sample(900,92) end
+            sample(900,150)
+            assert(events[4]=='WATER_SPLASH|tier=exit|fx=true|audio=true')
         ''')
