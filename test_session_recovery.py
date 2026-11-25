@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 from community_transport import CommunityClient,CommunityError,CommunityConnectionError
 
 class SessionRecoveryTests(unittest.TestCase):
@@ -21,6 +21,28 @@ class SessionRecoveryTests(unittest.TestCase):
   with patch.object(c,'_request',side_effect=CommunityError('offline')):
    with self.assertRaises(CommunityError):c.create('One')
   self.assertEqual(c.code,'ABC234')
+ def test_leave_retries_a_lost_request_with_the_original_session(self):
+  c=self.client();c._remember(self.response())
+  with patch.object(c,'_request',side_effect=[CommunityConnectionError('not delivered'),{'left':True}])as request:
+   self.assertIsNone(c.action('leave'))
+   self.assertEqual(request.call_args_list,[call('leave',{'code':'ABC234'})]*2)
+  self.assertEqual((c.code,c.token,c.player_id),(None,None,None))
+ def test_leave_recovers_when_the_server_applied_it_but_the_reply_was_lost(self):
+  for code in ('session_invalid','lobby_missing'):
+   with self.subTest(code=code):
+    c=self.client();c._remember(self.response())
+    with patch.object(c,'_request',side_effect=[CommunityConnectionError('reply lost'),CommunityError('gone',code)]):
+     self.assertIsNone(c.action('leave'))
+    self.assertEqual((c.code,c.token,c.player_id),(None,None,None))
+ def test_leave_does_not_confirm_an_unreachable_server_or_repeat_other_actions(self):
+  c=self.client();c._remember(self.response())
+  with patch.object(c,'_request',side_effect=CommunityConnectionError('offline'))as request:
+   with self.assertRaises(CommunityConnectionError):c.action('leave')
+   self.assertEqual(request.call_count,2)
+  self.assertEqual((c.code,c.token,c.player_id),('ABC234','t'*32,'one'))
+  with patch.object(c,'_request',side_effect=CommunityConnectionError('offline'))as request:
+   with self.assertRaises(CommunityConnectionError):c.action('start')
+   request.assert_called_once_with('start',{'code':'ABC234'})
  def test_resume_recovers_membership_without_storing_tokens_on_disk(self):
   c=self.client()
   with patch.object(c,'_request',return_value=self.response()):self.assertEqual(c.resume()['code'],'ABC234')

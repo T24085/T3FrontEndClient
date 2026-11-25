@@ -221,11 +221,21 @@ class CommunityClient:
                 raise CommunityError('No valid lobby action is available.')
             if 'code' in data:
                 raise CommunityError('Invalid lobby action.')
+            payload = {'code': self.code, **data}
             try:
-                result = self._request(operation, {'code':self.code, **data})
+                try:
+                    result = self._request(operation, payload)
+                except CommunityConnectionError:
+                    if operation != 'leave':
+                        raise
+                    # A retry authenticates the same seat. If the first call
+                    # already removed it, the server confirms it is now gone.
+                    result = self._request(operation, payload)
             except CommunityError as exc:
                 if exc.code in ('lobby_missing', 'session_invalid'):
                     self.code = self.token = self.player_id = None
+                    if operation == 'leave':
+                        return None
                 raise
             if operation == 'leave':
                 if result.get('left') is not True:
