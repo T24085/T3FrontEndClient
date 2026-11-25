@@ -1401,7 +1401,68 @@ local function update_flag_markers(pc,ps,gs)
  markerService(pc,ps,gs)
 end
 
+local bind_blink_movement=(function()
+ local blink='BlueprintGeneratedClass /Game/Topaz/Abilities/Packs/Blink/GA_Pack_Blink.GA_Pack_Blink_C'
+ local commit='/Script/GameplayAbilities.GameplayAbility:K2_CommitAbility'
+ local move='/Script/Engine.Actor:K2_SetActorLocation'
+ local controller,pending,installed,failed
+
+ local function same(a,b)
+  return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
+ end
+
+ local function local_pawn(pawn)
+  return valid(pawn) and valid(controller) and controller:IsLocalPlayerController()
+   and not pawn:HasAuthority() and same(controller.Pawn,pawn) and same(pawn.Controller,controller)
+ end
+
+ local function on_commit(context)
+  local ability=context:get()
+  if not valid(ability) or ability:GetClass():GetFullName()~=blink or ability:K2_HasAuthority() then return end
+  pending=nil
+  local pawn=ability.CharCached
+  if not local_pawn(pawn) or not same(pawn,ability:GetAvatarActorFromActorInfo()) then return end
+  local target=ability.CurrentStepLocation
+  if not target or type(target.X)~='number' or type(target.Y)~='number' or type(target.Z)~='number' then return end
+  pending={pawn=pawn,x=target.X,y=target.Y,z=target.Z,expires=os.clock()+.1}
+ end
+
+ local function on_move(context,destination,sweep,_,teleport)
+  local attempt=pending
+  if not attempt then return end
+  if os.clock()>attempt.expires then pending=nil;return end
+  local pawn=context:get()
+  if not same(pawn,attempt.pawn) or not local_pawn(pawn) or sweep:get()~=false or teleport:get()~=true then return end
+  local target=destination:get()
+  if target.X~=attempt.x or target.Y~=attempt.y or target.Z~=attempt.z then return end
+  pending=nil
+  -- Blink already submitted its target. Let the owning client's normal
+  -- movement channel apply the authoritative result instead of jumping twice.
+  local origin=pawn:K2_GetActorLocation()
+  destination:set({X=origin.X,Y=origin.Y,Z=origin.Z})
+  teleport:set(false)
+ end
+
+ local function install()
+  signature(commit,{{'ReturnValue','BoolProperty',0}})
+  signature(move,{{'NewLocation','StructProperty',0},{'bSweep','BoolProperty',24},
+   {'SweepHitResult','StructProperty',32},{'bTeleport','BoolProperty',264},{'ReturnValue','BoolProperty',265}})
+  local pre,post=RegisterHook(move,on_move,function()end)
+  local ok,reason=pcall(RegisterHook,commit,on_commit,function()end)
+  if not ok then UnregisterHook(move,pre,post);error(reason) end
+ end
+
+ return function(pc)
+  if not same(pc,controller) then controller,pending=pc,nil end
+  if installed or failed then return end
+  local ok,reason=pcall(install)
+  installed,failed=ok,not ok
+  if not ok then report('BLINK_MOVEMENT_UNAVAILABLE|'..tostring(reason):sub(1,400)) end
+ end
+end)()
+
 local function observe_markers(pc,ps,gs)
+ bind_blink_movement(pc)
  weaponInput(pc,ps)
  if not inputService then inputService=assert(loadfile(@@JETPACK_INPUT@@))()({valid=valid,report=report,signature=signature,scope=scope}) end
  inputService(pc,ps)
