@@ -11,6 +11,7 @@ from direct_network import VOICE_AUDIO, VOICE_FRAME_BYTES, VOICE_KEEPALIVE, VOIC
 
 class PushToTalkTests(unittest.TestCase):
     def test_ptt_needs_focused_press_and_releases_on_focus_loss(self):
+        key = 0x05  # Mouse 4
         states = [(False, True), (True, True), (True, False),
                   (True, True), (False, True), (True, True), (True, False)]
         sample = b'\x22' * VOICE_FRAME_BYTES
@@ -22,12 +23,12 @@ class PushToTalkTests(unittest.TestCase):
             return VOICE_KEEPALIVE if index < len(states) else b''
 
         focus = Mock(alive=lambda: True, focused=lambda: states[index][0],
-                     pressed=lambda _key: states[index][1])
+                     pressed=Mock(side_effect=lambda selected: selected == key and states[index][1]))
         connection = Mock(recv=receive)
         status = Mock()
         with patch('direct_client.WindowsVoiceDevice') as device:
             device.return_value.recorded.return_value = [sample]
-            run_proximity_voice(connection, focus, lambda: True, status, lambda: DEFAULT_PTT_KEY)
+            run_proximity_voice(connection, focus, lambda: True, status, lambda: key)
             device.assert_called_once_with(capture=True)
             device.return_value.close.assert_called_once_with()
         self.assertEqual([call.args[0] for call in connection.sendall.call_args_list],
@@ -47,7 +48,7 @@ class PushToTalkTests(unittest.TestCase):
         connection.sendall.assert_called_once_with(VOICE_KEEPALIVE)
 
     def test_rebinding_releases_old_key_and_waits_for_a_fresh_press(self):
-        old, new = DEFAULT_PTT_KEY, ord('K')
+        old, new = DEFAULT_PTT_KEY, 0x06  # Mouse 5
         steps = [(old, set()), (old, {old}), (new, {old, new}),
                  (new, {old, new}), (new, {old}), (new, {old, new})]
         index = 0
@@ -82,9 +83,14 @@ class PushToTalkTests(unittest.TestCase):
             self.assertEqual(first.proximity_key, DEFAULT_PTT_KEY)
             first.bind_proximity_key(ord('K'))
             self.assertEqual(client().proximity_status, 'Hold K to talk')
+            for button, code in enumerate((0x01, 0x02, 0x04, 0x05, 0x06), start=1):
+                with self.subTest(button=button):
+                    first.bind_proximity_key(code)
+                    self.assertEqual(client().proximity_key, code)
+                    self.assertEqual(client().proximity_status, f'Hold Mouse {button} to talk')
             with self.assertRaises(ValueError):
                 first.bind_proximity_key(0x1b)
-            self.assertEqual(client().proximity_key, ord('K'))
+            self.assertEqual(client().proximity_key, 0x06)
             path.write_text('{"key": 27}', encoding='utf-8')
             self.assertEqual(client().proximity_key, DEFAULT_PTT_KEY)
 
@@ -105,3 +111,27 @@ class PushToTalkTests(unittest.TestCase):
             parent.update()
             self.assertFalse(dialog.winfo_exists())
         saved.assert_called_once_with(ord('K'))
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Uses the Windows Starter dialog')
+    def test_key_picker_offers_all_five_mouse_buttons(self):
+        import tkinter as tk
+        from tkinter import ttk
+
+        parent = tk.Tk()
+        self.addCleanup(parent.destroy)
+        parent.update()
+        for number, code in enumerate((0x01, 0x02, 0x04, 0x05, 0x06), start=1):
+            with self.subTest(button=number):
+                saved = Mock()
+                choose_proximity_key(parent, saved)
+                dialog = next(child for child in parent.winfo_children() if isinstance(child, tk.Toplevel))
+                try:
+                    group = next(child for child in dialog.winfo_children() if isinstance(child, ttk.Frame))
+                    button = next(widget for widget in group.winfo_children()
+                                  if widget.cget('text') == f'Mouse {number}')
+                    button.invoke()
+                    saved.assert_called_once_with(code)
+                    self.assertFalse(dialog.winfo_exists())
+                finally:
+                    if dialog.winfo_exists():
+                        dialog.destroy()

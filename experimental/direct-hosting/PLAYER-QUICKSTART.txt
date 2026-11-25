@@ -13,10 +13,10 @@ If your host shares a Clan Wars Maps.zip, put it next to the Starter launcher
 without extracting it. Reopen Starter. It checks the host's map list and uses
 matching files from the ZIP before downloading updates.
 
-If your host supports proximity voice, hold your proximity key while the
+If your host supports proximity voice, hold your push-to-talk binding while the
 game is in the foreground to talk to enemy players within 100 meters.
-The default is F9. Use Change key in Starter to pick another keyboard
-key. Turn off Proximity voice in Starter to mute transmission and playback.
+The default is F9. Open Settings and select Change binding to use a keyboard
+key or Mouse 1–5. Turn off Proximity voice to mute transmission and playback.
 
 If Starter asks for a JSON, it is using the unconfigured template. Ask for
 the player ZIP prepared by your host. Individual invitations can still be

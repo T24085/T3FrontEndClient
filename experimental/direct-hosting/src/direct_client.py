@@ -27,7 +27,11 @@ from dynamic_destination import DIRECT_BRIDGE_POLICY
 
 ROOT=pathlib.Path(__file__).resolve().parent
 DEFAULT_PTT_KEY = 0x78  # F9
+PTT_MOUSE_NAMES = {
+    0x01: 'Mouse 1', 0x02: 'Mouse 2', 0x04: 'Mouse 3', 0x05: 'Mouse 4', 0x06: 'Mouse 5',
+}
 PTT_KEY_NAMES = {
+    **PTT_MOUSE_NAMES,
     **{key: chr(key) for key in (*range(0x30, 0x3a), *range(0x41, 0x5b))},
     **{0x70 + i: f'F{i + 1}' for i in range(24)},
     **{0x60 + i: f'Numpad {i}' for i in range(10)},
@@ -66,25 +70,33 @@ def choose_proximity_key(parent, save):
     from tkinter import ttk
 
     dialog = tk.Toplevel(parent)
-    dialog.title('Proximity voice key')
+    dialog.title('Push-to-talk binding')
     dialog.transient(parent)
     dialog.resizable(False, False)
-    prompt = tk.StringVar(dialog, 'Press a key to bind. Esc cancels.')
+    prompt = tk.StringVar(dialog, 'Press a keyboard key or choose a mouse button. Esc cancels.')
     ttk.Label(dialog, textvariable=prompt, wraplength=300, padding=16).pack()
+
+    def apply_binding(key):
+        try:
+            save(key)
+        except OSError:
+            prompt.set('Could not save the binding. Choose it again to retry.')
+        else:
+            dialog.destroy()
 
     def capture(event):
         if event.keysym == 'Escape':
             dialog.destroy()
         elif event.keycode not in PTT_KEY_NAMES:
-            prompt.set('Choose a keyboard key such as a letter, Space, or F9.')
+            prompt.set('Press a key such as Space or F9, or choose a mouse button.')
         else:
-            try:
-                save(event.keycode)
-            except OSError:
-                prompt.set('Could not save the key. Press it again to retry.')
-            else:
-                dialog.destroy()
+            apply_binding(event.keycode)
         return 'break'
+
+    mouse_buttons = ttk.Frame(dialog, padding=(16, 0, 16, 16))
+    mouse_buttons.pack()
+    for key, label in PTT_MOUSE_NAMES.items():
+        ttk.Button(mouse_buttons, text=label, width=8, command=lambda key=key: apply_binding(key)).pack(side='left')
 
     dialog.bind('<KeyPress>', capture)
     dialog.wait_visibility()
@@ -2165,7 +2177,7 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
             row = tk.Frame(window, bg=BG)
             row.pack(anchor='w')
             enabled = tk.BooleanVar(window, value=lobby.proximity_enabled.is_set())
-            key = tk.StringVar(window, value=f'Change key ({PTT_KEY_NAMES[lobby.proximity_key]})')
+            key = tk.StringVar(window, value=f'Change binding ({PTT_KEY_NAMES[lobby.proximity_key]})')
 
             def toggle():
                 lobby.set_proximity_voice(enabled.get())
@@ -2175,12 +2187,12 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
 
             def save_key(value):
                 lobby.bind_proximity_key(value)
-                key.set(f'Change key ({PTT_KEY_NAMES[lobby.proximity_key]})')
+                key.set(f'Change binding ({PTT_KEY_NAMES[lobby.proximity_key]})')
 
             tk.Checkbutton(row, text='Enable proximity voice', variable=enabled, command=toggle,
                            bg=BG, fg=TEXT, activebackground=BG, activeforeground=TEXT,
                            selectcolor='#20374a').pack(side='left')
-            button = self.button(row, 'Change key', lambda: choose_proximity_key(window, save_key), False)
+            button = self.button(row, 'Change binding', lambda: choose_proximity_key(window, save_key), False)
             button.configure(textvariable=key)
             button.pack(side='left', padx=(12, 0))
             detail = tk.Label(window, bg=BG, fg=MUTED, anchor='w')
