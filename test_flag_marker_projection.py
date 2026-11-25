@@ -96,7 +96,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
 
     def test_hud_pulse_updates_pickup_toss_and_return_without_a_native_widget_tick(self):
         start = SOURCE.index('local function enabled_flag_markers(env)')
-        end = SOURCE.index('local scoreBarFailed', start)
+        end = SOURCE.index('local shockLanceVisualFailed', start)
         result = LuaRuntime().execute(r"""
             local function valid(o) return type(o)=='table' and not o.destroyed end
             local world={GetAddress=function(self)return self end}
