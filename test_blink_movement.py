@@ -17,6 +17,7 @@ function RegisterHook(path, before, after)
 end
 local time = 5
 os.clock = function() return time end
+local function loaded() return {GetTimeSeconds=function() return time end} end
 local function entity(authority)
  local object = { valid=true, authority=authority, origin={X=1,Y=2,Z=3} }
  function object:HasAuthority() return self.authority end

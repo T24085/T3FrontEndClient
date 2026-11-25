@@ -1416,6 +1416,151 @@ local bind_blink_movement=(function()
    and not pawn:HasAuthority() and same(controller.Pawn,pawn) and same(pawn.Controller,controller)
  end
 
+ local visuals=(function()
+  local ability='/Script/GameplayAbilities.GameplayAbility:'
+  local add=ability..'K2_AddGameplayCueWithParams'
+  local execute=ability..'K2_ExecuteGameplayCueWithParams'
+  local alpha='/Script/Valhalla.ValCharacter:GetThirdPersonCameraAlpha'
+  local remote='/Script/GameplayAbilities.AbilitySystemComponent:NetMulticast_InvokeGameplayCueExecuted_WithParams'
+  local startCue,endCue='GameplayCue.Blink.Start','GameplayCue.Blink.End'
+  local active,replaying,installed,failed,gameplay
+
+  local function point(value)
+   return {X=value.X,Y=value.Y,Z=value.Z}
+  end
+
+  local function distance(a,b)
+   return math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)
+  end
+
+  local function along(value,axis)
+   return value.X*axis.X+value.Y*axis.Y+value.Z*axis.Z
+  end
+
+  local function current()
+   local cast=active
+   if cast and os.clock()<cast.expires and local_pawn(cast.pawn)
+    and same(cast.pawn.AbilitySystemComponent,cast.asc) then return cast end
+   active=nil
+  end
+
+  local function hide_cue(tag)
+   tag:set({TagName=FName('None')})
+  end
+
+  local function outgoing(context,tag,executed)
+   local cast=replaying or active
+   if not cast or not same(context:get(),cast.ability) or (not replaying and current()~=cast) then return end
+   local name=tag:get().TagName:ToString()
+   if name~=startCue and name~=endCue then return end
+   hide_cue(tag)
+   if executed and name==endCue and cast.predictionFrame and not replaying then cast.skipFlash=true end
+  end
+
+  local function pulse(cast)
+   if current()~=cast or cast.finished then return end
+   local pawn=cast.pawn
+   local position=point(pawn:K2_GetActorLocation())
+   local now=gameplay:GetTimeSeconds(pawn)
+   local speed=along(pawn:GetVelocity(),cast.axis)
+   local progress=along(position,cast.axis)
+   local elapsed=math.max(0,now-cast.sampleTime)
+   -- Movement replay can carry a skier many meters beyond the host's cue
+   -- position. Count the Blink step after accounting for ordinary motion.
+   local ordinary=math.max(0,speed,cast.speed)*elapsed
+   cast.warp=math.max(cast.warp,progress-cast.progress-ordinary)
+   cast.progress,cast.speed,cast.sampleTime=progress,speed,now
+   local span=cast.departure and cast.landing and distance(cast.departure,cast.landing)
+   if span and span<25 then cast.finished=true;return end
+   if not span or cast.warp<span*.55 then
+    ExecuteInGameThreadWithDelay(16,function()pulse(cast)end)
+    return
+   end
+   cast.finished=true
+   replaying=cast
+   local ok,reason=pcall(function()
+    local params={Location=position,GameplayEffectLevel=1,AbilityLevel=1}
+    cast.asc:NetMulticast_InvokeGameplayCueExecuted_WithParams({TagName=FName(endCue)},{Current=0},params)
+    if valid(cast.ability) and pawn:IsLocallyViewed() then cast.ability:PlayFX(cast.departure,position) end
+    report('BLINK_LOCAL_ARRIVAL|source=host')
+   end)
+   replaying=nil
+   if not ok then report('BLINK_VISUAL_REPLAY_ERROR|'..tostring(reason):sub(1,400)) end
+  end
+
+  local function incoming(context,tag,_,params)
+   if replaying or not active or not same(context:get(),active.asc) then return end
+   local cast=current()
+   if not cast then return end
+   local name=tag:get().TagName:ToString()
+   if name==startCue then
+    if cast.departure then hide_cue(tag);return end
+    cast.departure=point(params:get().Location)
+   elseif name==endCue then
+    hide_cue(tag)
+    if cast.landing then return end
+    cast.landing=point(params:get().Location)
+   else
+    return
+   end
+  end
+
+  local function defer_flash(context)
+   if not active or not active.skipFlash then return end
+   local cast=current()
+   if cast and same(context:get(),cast.pawn) then
+    cast.skipFlash=false
+    return 1
+   end
+  end
+
+  local function install()
+   gameplay=loaded('/Script/Engine.Default__GameplayStatics','GameplayStatics /Script/Engine.Default__GameplayStatics')
+   signature(add,{{'GameplayCueTag','StructProperty',0},{'GameplayCueParameter','StructProperty',8},
+    {'bRemoveOnAbilityEnd','BoolProperty',224}})
+   signature(execute,{{'GameplayCueTag','StructProperty',0},{'GameplayCueParameters','StructProperty',8}})
+   signature(alpha,{{'ReturnValue','FloatProperty',0}})
+   signature(remote,{{'GameplayCueTag','StructProperty',0},{'PredictionKey','StructProperty',8},
+    {'GameplayCueParameters','StructProperty',32}})
+   local hooks={}
+   local function hook(path,before,after)
+    local pre,post=RegisterHook(path,before,after)
+    hooks[#hooks+1]={path,pre,post}
+   end
+   local function noop()end
+   local ok,why=pcall(function()
+    hook(add,outgoing,noop)
+    hook(execute,function(context,tag)outgoing(context,tag,true)end,noop)
+    hook(alpha,noop,defer_flash)
+    hook(remote,incoming,noop)
+   end)
+   if ok then return end
+   for _,entry in ipairs(hooks)do UnregisterHook(table.unpack(entry))end
+   error(why)
+  end
+
+  return {
+   bind=function()
+    if installed or failed then return end
+    local ok,reason=pcall(install)
+    installed,failed=ok,not ok
+    if not ok then report('BLINK_VISUAL_HOOKS_UNAVAILABLE|'..tostring(reason):sub(1,400)) end
+   end,
+   hold=function(pawn,instance,origin,target)
+    if not installed or not valid(pawn.AbilitySystemComponent) then return end
+    local length=math.max(1,distance(target,origin))
+    local axis={X=(target.X-origin.X)/length,Y=(target.Y-origin.Y)/length,Z=(target.Z-origin.Z)/length}
+    local cast={pawn=pawn,asc=pawn.AbilitySystemComponent,ability=instance,
+     expires=os.clock()+2.5,predictionFrame=true,axis=axis,warp=0,progress=along(origin,axis),
+     speed=along(pawn:GetVelocity(),axis),sampleTime=gameplay:GetTimeSeconds(pawn)}
+    active=cast
+    ExecuteInGameThreadWithDelay(1,function()cast.predictionFrame,cast.skipFlash=false,false end)
+    ExecuteInGameThreadWithDelay(1,function()pulse(cast)end)
+   end,
+   clear=function()active=nil end,
+  }
+ end)()
+
  local function on_commit(context)
   local ability=context:get()
   if not valid(ability) or ability:GetClass():GetFullName()~=blink or ability:K2_HasAuthority() then return end
@@ -1424,7 +1569,7 @@ local bind_blink_movement=(function()
   if not local_pawn(pawn) or not same(pawn,ability:GetAvatarActorFromActorInfo()) then return end
   local target=ability.CurrentStepLocation
   if not target or type(target.X)~='number' or type(target.Y)~='number' or type(target.Z)~='number' then return end
-  pending={pawn=pawn,x=target.X,y=target.Y,z=target.Z,expires=os.clock()+.1}
+  pending={pawn=pawn,ability=ability,x=target.X,y=target.Y,z=target.Z,expires=os.clock()+.1}
  end
 
  local function on_move(context,destination,sweep,_,teleport)
@@ -1441,6 +1586,7 @@ local bind_blink_movement=(function()
   local origin=pawn:K2_GetActorLocation()
   destination:set({X=origin.X,Y=origin.Y,Z=origin.Z})
   teleport:set(false)
+  visuals.hold(pawn,attempt.ability,origin,{X=attempt.x,Y=attempt.y,Z=attempt.z})
  end
 
  local function install()
@@ -1453,7 +1599,8 @@ local bind_blink_movement=(function()
  end
 
  return function(pc)
-  if not same(pc,controller) then controller,pending=pc,nil end
+  if not same(pc,controller) then controller,pending=pc,nil;visuals.clear() end
+  visuals.bind()
   if installed or failed then return end
   local ok,reason=pcall(install)
   installed,failed=ok,not ok
