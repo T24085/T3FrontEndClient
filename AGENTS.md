@@ -9,6 +9,8 @@ Edit this checkout for new work. Legacy research directories and installed packa
 - Before editing, check [active work in this repo](https://github.com/T24085/T3FrontEndClient/issues?q=is%3Aissue+is%3Aopen+label%3A%22in+progress%22) and the [paired repo](https://github.com/T24085/T3BackEndServer/issues?q=is%3Aissue+is%3Aopen+label%3A%22in+progress%22). Reuse the relevant issue or open one if needed. Coordinate overlapping work on the issue before editing the same area.
 - Claim the issue with the `in progress` label. Post the owner or agent identifier, scope, branch, and start date and time in Central Time. Link the paired issue for work that spans both repos.
 - Update the issue when the scope or status changes, when blocked, and at handoff. Include the branch, commit or PR, verification results, and what is still pending. Remove `in progress` when active work stops. Match the visibility of the repo when sharing details, and keep credentials out of issues.
+- When a tested fix is in a PR, apply `fix ready` and post a plain-language status such as **Fix ready, pending server deployment**. Link the PR, name the target server or client update feed, and state what passed and which symptoms still need verification.
+- For issues that require rollout, keep the issue open through release. Update it when the fix ships, record the deployed revision and live verification result, and close it once the reported symptoms are resolved. If rollout or verification is blocked, record the blocker and next action on the issue.
 
 ## Live server approval
 
