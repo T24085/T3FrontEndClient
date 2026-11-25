@@ -906,7 +906,7 @@ class DirectGame(CommunityGame):
 
 class PublicCTFPanel:
     def __init__(self, tk, desktop, lobby):
-        from desktop_launcher import BG, MUTED
+        from desktop_launcher import BG, MUTED, match_result_for
         self.tk, self.desktop, self.lobby = tk, desktop, lobby
         self.root = desktop.root
         self.results = queue.Queue()
@@ -928,6 +928,8 @@ class PublicCTFPanel:
         self.join.pack(side='left')
         self.leave = desktop.button(actions, 'Leave game', self.stop, False)
         self.leave.pack(side='left', padx=(8, 0))
+        self.result_button = desktop.button(actions, 'Match results',
+                                            lambda: desktop.show_match_result(match_result_for(self.state)), False)
         self.nav = desktop.button(desktop.sidebar, 'Public CTF', lambda: desktop.show_panel('public'), False)
         self.nav.pack(fill='x', padx=18, pady=(6, 0))
         if lobby.public_only:
@@ -1027,6 +1029,8 @@ class PublicCTFPanel:
             self.center_ballot(self.ballot)
 
     def tick(self):
+        from desktop_launcher import match_result_for
+
         ui = self.desktop
         if ui.closing:
             return
@@ -1041,6 +1045,10 @@ class PublicCTFPanel:
                     self.status.set(error)
                 elif isinstance(state, dict):
                     self.state = state
+                    if match_result_for(state):
+                        self.result_button.pack(side='left', padx=(8, 0))
+                    else:
+                        self.result_button.pack_forget()
                     label = self.lobby.map_label(state['map']) or state['map']
                     phase = state['phase']
                     summary = {'loading': 'Preparing the server', 'playing': label,
