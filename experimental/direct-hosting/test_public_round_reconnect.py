@@ -76,6 +76,11 @@ class PublicNameTest(unittest.TestCase):
         self.assertEqual(panel.team_buttons['red'].cget('text'), 'Switch to B (2)')
         self.assertEqual(panel.team_buttons['red'].cget('state'), 'normal')
         self.assertEqual(panel.team_buttons['auto'].cget('state'), 'disabled')
+        preview = {'teamCounts': {'blue': 1, 'red': 2}, 'joinChoices': state['joinChoices']}
+        panel.render_teams(preview, True)
+        self.assertEqual(panel.team_lists['red'][2].get(0, 'end'), ())
+        self.assertEqual(panel.team_lists['blue'][1].cget('text'), 'Team A (1)')
+        self.assertEqual((button.cget('text'), button.cget('state')), ('Join B (2)', 'disabled'))
 
     def test_public_only_play_opens_public_match_view(self):
         root = tk.Tk()
