@@ -32,6 +32,13 @@ function f.pc:GetWorld() return f.world end
 f.ps={r_TeamId=1}
 f.gs=object('gamestate')
 function f.gs:GetWorld() return f.world end
+function f.setPhase(tag, deadline, now)
+    f.gs.r_GameplayPhaseInfo={
+        Phase={TagName={ToString=function() return tag end}},
+        PhaseTimeRemaining=deadline,
+    }
+    f.gs.GetServerWorldTimeSeconds=function() return now end
+end
 function f.setScores(one,two,duplicate)
     f.team1,f.team2=one,two
     local rows={{TeamNum=2,Score=two},{TeamNum=1,Score=one}}
@@ -224,6 +231,25 @@ class DirectPlaytestPresentationTests(unittest.TestCase):
         f.setPartialScore(8)
         f.refresh()
         self.assertEqual(result.ScoreText_Enemy.value, '1')
+
+    def test_tie_logs_overtime_and_sudden_death_with_the_same_displayed_score(self):
+        f = self.fixture()
+        f.addWidget(f.world, f.pc)
+        f.setScores(1, 1)
+        phases = (
+            ('time_limit', 'GameplayStartPhase', 900, 899),
+            ('overtime', 'OvertimePhase', 1200, 901),
+            ('overtime', 'SuddenDeath', 1500, 1201),
+        )
+        for _, tag, deadline, now in phases:
+            f.setPhase(f'GamePhase.{tag}', deadline, now)
+            f.refresh()
+            f.refresh()
+        observed = [line for line in f.events.values() if line.startswith('CTF_CLIENT_ROUND_SCORE|')]
+        self.assertEqual(len(observed), len(phases))
+        for line, (boundary, tag, _, _) in zip(observed, phases):
+            self.assertIn(f'boundary={boundary}|phase=GamePhase.{tag}|', line)
+            self.assertIn('|team1=1|team2=1|hudFriendly=1|hudEnemy=1|', line)
 
     def test_only_the_two_camera_lightning_slots_change(self):
         f = self.fixture()

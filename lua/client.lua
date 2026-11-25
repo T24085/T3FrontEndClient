@@ -557,7 +557,7 @@ local function refresh_ctf_score_bar(pc,ps,gs)
                 break
             end
         end
-        local key=table.concat({boundary,team,scores[1],scores[2],shownFriendly,shownEnemy,resultFriendly,resultEnemy},'|')
+        local key=table.concat({boundary,tag,team,scores[1],scores[2],shownFriendly,shownEnemy,resultFriendly,resultEnemy},'|')
         if key==lastScoreBoundary then return end
         lastScoreBoundary=key
         report(('CTF_CLIENT_ROUND_SCORE|boundary=%s|phase=%s|team=%d|team1=%d|team2=%d|hudFriendly=%s|hudEnemy=%s|scoreboardFriendly=%s|scoreboardEnemy=%s|worldTime=%.3f'):format(
