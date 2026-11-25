@@ -17,7 +17,7 @@ class StartupAudioTest(unittest.TestCase):
         tick = (tick.replace('@@SPECTATOR_RUNTIME@@', '"spectator fixture"')
                 .replace('@@SPECTATOR_MATERIAL_RUNTIME@@', '"materials fixture"'))
         self.runtime = self.lua.execute('''
-local observations = {calls=0, applied=0, joined=0, events={}, order={}, fail=false}
+local observations = {calls=0, applied=0, joined=0, events={}, order={}, fail=false, master=1}
 local function object(world)
     return {
         IsValid=function() return true end,
@@ -59,6 +59,7 @@ settings.ApplySoundSettings = function()
     observations.calls = observations.calls + 1
     assert(not observations.fail, 'audio device not ready')
     observations.applied = observations.applied + 1
+    observations.master = .25
     table.insert(observations.order,'apply')
 end
 local function loaded(path)
@@ -86,6 +87,13 @@ local sys = {IsStandalone=function() return true end}
 return {
     tick=function() client_tick(sys) end,
     travel=travel,
+    player_mode=function() SPECTATOR_ROLE='player' end,
+    player_ready=function()
+        pc.Pawn=object(world)
+        pc.Pawn.bInitialized=true
+        -- Simulate the native mixer returning to its default during spawn.
+        observations.master=1
+    end,
     spectator_ready=function() pc.PlayerState=object(world) end,
     lagging_controller=function() pc.GetWorld=function() return bootstrap:GetWorld() end end,
     observed=observations
@@ -107,6 +115,21 @@ return {
         runtime.tick()
         self.assertEqual(runtime.observed.applied, 3)
         self.assertEqual(list(runtime.observed.events.values()).count('SAVED_SOUND_SETTINGS_APPLIED_READY'), 1)
+
+    def test_player_ready_restores_saved_levels_after_native_spawn_resets_the_mix(self):
+        runtime = self.runtime
+        runtime.player_mode()
+        runtime.tick()
+        runtime.tick()
+        self.assertEqual(runtime.observed.master, .25)
+
+        runtime.player_ready()
+        self.assertEqual(runtime.observed.master, 1)
+        runtime.tick()
+        self.assertEqual(runtime.observed.master, .25)
+
+        runtime.tick()
+        self.assertEqual(runtime.observed.calls, 3)
 
     def test_retries_failed_application_until_success_without_reapplying_afterward(self):
         runtime = self.runtime
