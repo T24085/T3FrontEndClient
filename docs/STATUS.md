@@ -1,3 +1,10 @@
+# Blink cue timing
+
+The owning client applies the authoritative Blink movement and presents one
+departure and one arrival. The arrival cue and first-person flash wait for
+the movement to reach the player. Nearby observers still receive the native
+host cues. The fix for duplicate cues is tracked in frontend issue #60.
+
 # Private-match fall damage
 
 Starter shows **Fall damage** beside **Flag indicators** when a host
@@ -319,10 +326,3 @@ Fresh isolated native qualifications now observe the staging-team transition, bo
 The direct-port-forwarding friend handoff is experimental and separate. It has transport/source checks, not complete off-site native qualification.
 
 Maps: Damnation, HighOctane, Scarabrae, Stonehenge, Snowblind, Rollercoaster, SnowblindBlizzard, HighOctane2026, Damnation2026, Scarabrae2026, Stonehenge2026, Snowblind2026, SnowblindBlizzard2026, Rollercoaster2026, Torment, DangerousCrossing, Drydock, Katabatic, Wavemist, Hollow, Raindance, Moonrise.
-
-# Blink cue timing
-
-The owning client applies the authoritative Blink movement and presents one
-departure and one arrival. The arrival cue and first-person flash wait for
-the movement to reach the player. Nearby observers still receive the native
-host cues. The fix for duplicate cues is tracked in frontend issue #60.
