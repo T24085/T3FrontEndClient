@@ -57,6 +57,7 @@ local function reconcile_score_bar(_,update) update() end
 local borderClass={GetFullName=function()return 'Class /Script/UMG.Border' end}
 local function StaticFindObject(path)
     if f.overlayTypes and f.overlayTypes[path] then return f.overlayTypes[path] end
+    if path=='/Script/Topaz.TopOverlayWidget_Character' then return nil end
     assert(path=='/Script/UMG.Border')
     return borderClass
 end
@@ -478,6 +479,7 @@ local function widget(state)
         self.writes=self.writes+1
         self.actor=pawn
         self.friendly=pawn.team==localState.r_TeamId
+        self.CachedTeamRelation=self.friendly and 1 or 2
     end
     return icon
 end
@@ -516,6 +518,20 @@ assert(marker.writes==3 and marker.friendly)
 pc.Pawn=possess(localState,2)
 tick();tick()
 assert(marker.writes==4 and not marker.friendly and selfIcon.writes==0 and unknown.writes==0)
+-- The rendered HUD can have an empty screen-space Players panel. Repair the
+-- pawn-owned widget even when its cached tint flips without a roster change.
+replacement.TopOverlayComponent={GetOwner=function()return replacement end,OverlayConfig=config,OverlayWidget=marker}
+marker.CachedTeamRelation=1
+tick()
+assert(marker.writes==5 and marker.CachedTeamRelation==2) -- shared widget corrected just once
+overlay.Players.children={}
+marker.CachedTeamRelation=1
+tick();tick()
+assert(marker.writes==6 and marker.CachedTeamRelation==2)
+replacement.TopOverlayComponent.GetOwner=function()return enemy end
+marker.CachedTeamRelation=1
+tick()
+assert(marker.writes==6)
 return true
 ''')
 

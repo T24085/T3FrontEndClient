@@ -820,7 +820,8 @@ local ctfFlagHud=(function()
             if not valid(pawn) then return end
             if not same_object(pawn.PlayerState,state) or not same_object(pawn:GetWorld(),world)
                 or pawn:GetTeamId()~=team then settled=false;return end
-            members[state:GetAddress()]={team=team,pawn=pawn:GetAddress(),actor=pawn}
+            local key=state:GetAddress()
+            members[key]={state=key,team=team,pawn=pawn:GetAddress(),actor=pawn}
             count=count+1
         end)
         return {members=members,count=count,viewer=viewer,settled=settled}
@@ -869,29 +870,60 @@ local ctfFlagHud=(function()
         scanDelay=scanDelay-1
     end
 
-    local function refresh_overlays(panel,roster,pc,bindings)
-        -- UI_Game_Overlays.ReattachPlayerWidget uses this exact call on an
-        -- existing character overlay with the same owning PlayerState.
+    local function refresh_chevron(icon,row,viewer,bindings,config)
+        local key=icon:GetAddress()
+        if bindings[key] then return end
+        local old=overlayBindings[key]
+        -- ETeamRelation: Neutral=0, Friendly=1, Enemy=2. Leave visibility,
+        -- neutral indicators and the actual palette to the native widget.
+        local relation=icon.CachedTeamRelation
+        local expected=row.team==viewer and 1 or 2
+        local wrong=(relation==1 or relation==2) and relation~=expected
+        if not old or old.viewer~=viewer or old.team~=row.team or old.pawn~=row.pawn
+            or old.state~=row.state or (wrong and not old.wrong) then
+            icon:SetOwningConfig(row.actor,config)
+        end
+        bindings[key]={viewer=viewer,team=row.team,pawn=row.pawn,state=row.state,
+            wrong=wrong and icon.CachedTeamRelation==relation}
+    end
+
+    local function refresh_overlays(roster,pc)
         characterClass=characterClass or StaticFindObject('/Script/Topaz.TopOverlayWidget_Character')
-        characterConfig=characterConfig or StaticFindObject('/Game/Topaz/Common/Overlays/Config/OverlayConfig_Character.OverlayConfig_Character')
         if not valid(characterClass) then characterClass=nil;return end
-        if not valid(characterConfig) then characterConfig=nil;return end
-        for i=0,panel:GetChildrenCount()-1 do
-            local icon=panel:GetChildAt(i)
-            if valid(icon) and icon:IsA(characterClass) then
-                local state=icon:GetOwningPlayerState()
-                local row=valid(state) and roster.members[state:GetAddress()] or nil
-                if row and not same_object(state,pc.PlayerState) then
-                    local key=icon:GetAddress()
-                    local old=overlayBindings[key]
-                    if not old or old.viewer~=roster.viewer or old.team~=row.team
-                        or old.pawn~=row.pawn or old.state~=state:GetAddress() then
-                        icon:SetOwningConfig(row.actor,characterConfig)
+        local bindings={}
+        local selfKey=pc.PlayerState:GetAddress()
+        for key,row in pairs(roster.members) do
+            if key~=selfKey then
+                local component=row.actor.TopOverlayComponent
+                if valid(component) and same_object(component:GetOwner(),row.actor) then
+                    local icon,config=component.OverlayWidget,component.OverlayConfig
+                    if valid(config) and valid(icon) and icon:IsA(characterClass) then
+                        refresh_chevron(icon,row,roster.viewer,bindings,config)
                     end
-                    bindings[key]={viewer=roster.viewer,team=row.team,pawn=row.pawn,state=state:GetAddress()}
                 end
             end
         end
+        -- Some HUD layouts reattach a screen-space widget by PlayerState.
+        -- Use the same character config as UI_Game_Overlays.ReattachPlayerWidget.
+        for _,widget in ipairs(overlayWidgets) do
+            if valid(widget) and valid(widget.Players) then
+                local panel=widget.Players
+                for i=0,panel:GetChildrenCount()-1 do
+                    local icon=panel:GetChildAt(i)
+                    if valid(icon) and icon:IsA(characterClass) then
+                        local state=icon:GetOwningPlayerState()
+                        local key=valid(state) and state:GetAddress() or nil
+                        local row=roster.members[key]
+                        if row and key~=selfKey and not bindings[icon:GetAddress()] then
+                            characterConfig=characterConfig or StaticFindObject('/Game/Topaz/Common/Overlays/Config/OverlayConfig_Character.OverlayConfig_Character')
+                            if valid(characterConfig) then refresh_chevron(icon,row,roster.viewer,bindings,characterConfig)
+                            else characterConfig=nil end
+                        end
+                    end
+                end
+            end
+        end
+        overlayBindings=bindings
     end
 
     function runtime.players(pc,world,gs,viewer)
@@ -905,13 +937,7 @@ local ctfFlagHud=(function()
                 reconcile_score_bar('minimap_players',function() refresh_players(widget,roster) end)
             end
         end
-        local bindings={}
-        for _,widget in ipairs(overlayWidgets) do
-            if valid(widget) and valid(widget.Players) then
-                reconcile_score_bar('player_chevrons',function() refresh_overlays(widget.Players,roster,pc,bindings) end)
-            end
-        end
-        overlayBindings=bindings
+        reconcile_score_bar('player_chevrons',function() refresh_overlays(roster,pc) end)
     end
 
     function runtime.minimap(pc,world,flags,now)
