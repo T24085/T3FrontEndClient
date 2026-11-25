@@ -1,14 +1,16 @@
--- Client-local splashes for authored maps and the legacy Damnation overlay.
+-- Client-local splashes for map-authored liquids and collidable community water.
 local INTERVAL_MS = 50
 local SPLASH_SECONDS = 0.85
 local MIN_SPEED = 350 -- cm/s
+local WATER_LANDING_SPEED = 120
 
 local function contact(previous, current, surface, dt)
     local before = previous.Z - surface.z
     local after = current.Z - surface.z
     local change = after - before
     local direction = before < 0 and 'exit' or 'enter'
-    local threshold = surface.profile and (direction=='exit' and surface.profile.exit or surface.profile.minimum) or MIN_SPEED
+    local threshold = surface.profile and (direction=='exit' and surface.profile.exit or surface.profile.minimum)
+        or surface.minimum or MIN_SPEED
     if dt<=0 or math.abs(change)<threshold*dt then return end
     if surface.ski then
         -- The capsule stops above the plane when it contacts the ski surface.
@@ -51,19 +53,75 @@ local function discover(world, valid)
                 ymin=p.Y-tonumber(length), ymax=p.Y}
         end
     end)
-    assert(#surfaces == 77 and #slots == 12, 'Damnation water overlay is incomplete')
+    if #surfaces ~= 77 or #slots ~= 12 then return end
     return surfaces, slots
+end
+
+local water_materials = {
+    ['/Game/Community/Stonehenge/Wildlands2026/Materials/M_Lake.M_Lake']=true,
+    ['/Game/Community/Biomes2026/Materials/M_Scarabrae_Lake.M_Scarabrae_Lake']=true,
+    ['/Game/Community/Biomes2026/Materials/M_Snowblind_Lake.M_Snowblind_Lake']=true,
+    ['/Game/Community/Rollercoaster/Oasis2026/Materials/M_OasisWater.M_OasisWater']=true,
+    ['/Game/Community/Damnation2026Shoreline/M_Damnation_LakeSurface.M_Damnation_LakeSurface']=true,
+    ['/Game/Community/Damnation2026WaterMotion/M_Damnation_AnimatedWater.M_Damnation_AnimatedWater']=true,
+    ['/Game/Community/RaindanceT2/Edition2026/Water/M_RT2_Water.M_RT2_Water']=
+        '/Game/Community/RaindanceT2/Edition2026/Water/SM_RT2_WaterSurface.SM_RT2_WaterSurface',
+}
+
+local function object_path(object, valid)
+    if valid(object) then return object:GetFullName():match('%S+$') end
+end
+
+local function discover_water(world, valid)
+    local system=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
+    if not valid(system) then return end
+    local surfaces={}
+    for _,actor in ipairs(FindAllOf('StaticMeshActor') or {}) do
+        if valid(actor) and actor:GetWorld():GetAddress()==world:GetAddress() then
+            local mesh=actor.StaticMeshComponent
+            if valid(mesh) then
+                local water=water_materials[object_path(mesh:GetMaterial(0),valid)]
+                local collision=water and mesh:GetCollisionEnabled()~=0
+                local sheet=type(water)=='string' and water==object_path(mesh.StaticMesh,valid)
+                if collision or sheet then
+                    local origin,extent={},{}
+                    system:GetComponentBounds(mesh,origin,extent,{})
+                    origin,extent=origin.Origin or origin,extent.BoxExtent or extent
+                    -- The authored rectangular sheet has no gameplay collision. Only
+                    -- accept it as a crossing plane when its bounds are horizontal.
+                    if extent.X and extent.Y and extent.X>0 and extent.Y>0 and (collision or extent.Z<=1) then
+                        surfaces[#surfaces+1]={ski=collision and mesh or nil,z=origin.Z+extent.Z,minimum=WATER_LANDING_SPEED,
+                            xmin=origin.X-extent.X,xmax=origin.X+extent.X,
+                            ymin=origin.Y-extent.Y,ymax=origin.Y+extent.Y}
+                    end
+                end
+            end
+        end
+    end
+    if #surfaces>0 then return surfaces,{} end
 end
 
 -- Native movement samples drive local, map-authored liquid effects.
 local defaults = {
     minimum=367.5, medium=735, hard=2205, exit=367.5, inner=1500, range=10000,
     cooldown=.20, life=.85, gain={easy=.50, medium=.71, hard=.89, exit=.42},
-    sounds={},
+    sounds={}, pitch_jitter=.06, volume_jitter=.10,
 }
+local land_water='/Game/Audio/SFX/PC/Player_Movement/Player_Land/Waves/Land_Water/'
+local stock_water = {
+    inner=defaults.inner,range=defaults.range,gain=defaults.gain,
+    pitch_jitter=defaults.pitch_jitter,volume_jitter=defaults.volume_jitter,
+    medium=735,hard=2205,
+    sounds={easy=land_water..'Land_Water_01.Land_Water_01',
+            medium=land_water..'Land_Water_02.Land_Water_02',
+            hard=land_water..'Land_Water_03.Land_Water_03',
+            exit=land_water..'Land_Water_01.Land_Water_01'},
+}
+local stock_splash='/Game/VFX/Abilities/Sprint/NS_Sprint_Footstep_WaterSplash_A.NS_Sprint_Footstep_WaterSplash_A'
 local bounds = {
     minimum={1,10000}, medium={1,10000}, hard={1,10000}, exit={1,10000},
     inner={0,30000}, range={1,30000}, cooldown={.05,2}, life={.2,3},
+    pitch_jitter={0,.25}, volume_jitter={0,.25},
 }
 local tiers = {easy=true,medium=true,hard=true,exit=true}
 
@@ -127,7 +185,7 @@ local function count_list(values,limit)
 end
 
 local function liquid_profiles(packs, report)
-    local profiles={stagnant_water=defaults}
+    local profiles={stagnant_water=defaults,river_water=defaults}
     if packs==nil then return profiles end
     local ok,count=pcall(count_list,packs,8)
     if not ok then report('LIQUID_PROFILE_SKIPPED|'..tostring(count));return profiles end
@@ -168,7 +226,8 @@ local function authored_surface(item,profiles)
         profile=merge_profile(merge_profile(defaults,{sounds=item.proposed_global_assets.sounds}),profile)
     end
     if item.overrides~=nil then profile=merge_profile(profile,item.overrides) end
-    return {id=item.id,tag=item.splash_pool_tag,xmin=lo[1],xmax=hi[1],ymin=lo[2],ymax=hi[2],z=z,
+    local water=item.liquid_type=='stagnant_water' or item.liquid_type=='river_water'
+    return {id=item.id,tag=item.splash_pool_tag,xmin=lo[1],xmax=hi[1],ymin=lo[2],ymax=hi[2],z=z,water=water,
             profile=profile,tint=tint}
 end
 
@@ -218,20 +277,27 @@ local function splash_tier(profile,speed,direction)
     return 'easy'
 end
 
-local function spatial_audio(valid,report)
-    local assets={}
-    local function load(path, expected)
+local function asset_loader(valid,report)
+    local unavailable={}
+    return function(path, expected)
         if not path then return end
         local key=expected..'|'..path
-        if assets[key]==nil then
-            local ok,asset=pcall(LoadAsset,path)
-            local class=StaticFindObject(expected)
-            assets[key]=ok and valid(asset) and valid(class) and asset:IsA(class) and asset or false
-            if not assets[key] then report('LIQUID_AUDIO_UNAVAILABLE|'..path) end
+        if unavailable[key] then return end
+        local class=StaticFindObject(expected)
+        if not valid(class) then return end
+        local asset=StaticFindObject(path)
+        if not valid(asset) then
+            local ok,loaded=pcall(LoadAsset,path)
+            asset=ok and loaded or nil
         end
-        return assets[key] or nil
+        if valid(asset) and asset:IsA(class) then return asset end
+        unavailable[key]=true
+        report('LIQUID_ASSET_UNAVAILABLE|'..path)
     end
-    return function(gameplay,context,pc,profile,tier,location,rotation)
+end
+
+local function spatial_audio(valid,report,load)
+    return function(gameplay,context,pc,profile,tier,location,rotation,fallback_sound)
         local camera=valid(pc) and pc.PlayerCameraManager
         if not valid(camera) then return end
         local listener=camera:GetCameraLocation()
@@ -239,38 +305,60 @@ local function spatial_audio(valid,report)
         local distance=math.sqrt(dx*dx+dy*dy+dz*dz)
         if distance>=profile.range then return end
         local sound=load(profile.sounds[tier],'/Script/Engine.SoundBase')
+            or load(fallback_sound,'/Script/Engine.SoundBase')
         if not sound then return end
         local attenuation=load(profile.attenuation,'/Script/Engine.SoundAttenuation')
         local concurrency=load(profile.concurrency,'/Script/Engine.SoundConcurrency')
         local range_gain=attenuation and 1 or math.min(1,(profile.range-distance)/(profile.range-profile.inner))
-        local ok,reason=pcall(function()
-            gameplay:SpawnSoundAtLocation(context,sound,location,rotation,profile.gain[tier]*range_gain,
-                                          1,0,attenuation,concurrency,true)
+        local volume=profile.gain[tier]*range_gain*(1+profile.volume_jitter*(2*math.random()-1))
+        local pitch=1+profile.pitch_jitter*(2*math.random()-1)
+        local ok,component=pcall(gameplay.SpawnSoundAtLocation,gameplay,context,sound,location,rotation,
+                                 volume,pitch,0,attenuation,concurrency,true)
+        if not ok then report('LIQUID_AUDIO_ERROR|'..tostring(component)) end
+        return ok and valid(component)
+    end
+end
+
+local function play_stock_splash(valid,report,load,context,location,rotation,size)
+    local fx=load(stock_splash,'/Script/Niagara.NiagaraSystem')
+    local niagara=StaticFindObject('/Script/Niagara.Default__NiagaraFunctionLibrary')
+    if fx and valid(niagara) then
+        local ok,component=pcall(function()
+            return niagara:SpawnSystemAtLocation(context,fx,location,rotation,
+                {X=size,Y=size,Z=size},true,true,0,true)
         end)
-        if not ok then report('LIQUID_AUDIO_ERROR|'..tostring(reason)) end
+        if not ok then report('WATER_SPLASH_FX_ERROR|'..tostring(component)) end
+        return ok and valid(component)
     end
 end
 
 local function factory(env)
     local valid, report = env.valid, env.report
     local current_world
-    local play_audio=spatial_audio(valid,report)
+    local load=asset_loader(valid,report)
+    local play_audio=spatial_audio(valid,report,load)
     return function(game_state,pc)
         local name=game_state:GetFullName()
         local descriptor
         for _,row in pairs(env.descriptors or {}) do
-            if row.liquids~=nil and name:find(row.world,1,true) then descriptor=row;break end
+            if row.liquids~=nil and type(row.world)=='string' and name:find(row.world,1,true) then
+                descriptor=row
+                break
+            end
         end
-        if not descriptor and not name:find('/Arena_Damnation_2026_P.',1,true) then return end
+        if not descriptor and not name:find('/Game/Maps/Community/',1,true) then return end
         local world = game_state:GetWorld()
         local world_address = world:GetAddress()
         if current_world == world_address then return end
         current_world = world_address
+        local error_prefix=descriptor and 'LIQUID_ERROR|' or 'WATER_SPLASH_ERROR|'
 
         local ok, problem = pcall(function()
             local surfaces,slots
             if descriptor then surfaces,slots=discover_authored(descriptor,world,valid,report)
-            else surfaces,slots=discover(world,valid) end
+            elseif name:find('/Arena_Damnation_2026_P.',1,true) then surfaces,slots=discover(world,valid) end
+            local stock=not surfaces
+            if stock then surfaces,slots=discover_water(world,valid) end
             if not surfaces then return end
             local gameplay = StaticFindObject('/Script/Engine.Default__GameplayStatics')
             local materials = StaticFindObject('/Script/Engine.Default__KismetMaterialLibrary')
@@ -279,16 +367,26 @@ local function factory(env)
             local empty_name = FName('None')
             local rotation = {Pitch=0, Yaw=0, Roll=0}
             local previous, next_slot, last = {}, 0, nil
-            assert(valid(gameplay) and valid(materials) and valid(character_class))
+            assert(valid(gameplay) and valid(character_class) and (#slots==0 or valid(materials)))
 
             local event_count=0
             local function splash(surface,x,y,z,speed,now,direction)
-                local profile=surface.profile
-                local tier
+                local profile=surface.profile or stock_water
+                local tier=splash_tier(profile,speed,direction)
+                local fallback_sound=surface.water and stock_water.sounds[tier] or nil
+                local sound_spawned=play_audio(gameplay,game_state,pc,profile,tier,{X=x,Y=y,Z=z},rotation,fallback_sound)
+                local size=math.min(1.55,0.66+speed/4600)
+                if stock or surface.water and #surface.pool.slots==0 then
+                    local fx_spawned=play_stock_splash(valid,report,load,game_state,{X=x,Y=y,Z=z+6},rotation,size)
+                    event_count=event_count+1
+                    if event_count<=64 then
+                        report('WATER_SPLASH|tier='..tier..'|fx='..tostring(fx_spawned==true)
+                               ..'|audio='..tostring(sound_spawned==true))
+                    end
+                    return
+                end
                 local slot
-                if profile then
-                    tier=splash_tier(profile,speed,direction)
-                    play_audio(gameplay,game_state,pc,profile,tier,{X=x,Y=y,Z=z},rotation)
+                if surface.profile then
                     event_count=event_count+1
                     if event_count<=64 then
                         report('LIQUID_SPLASH|id='..surface.id..'|tier='..tier..'|speed_cm_s='..math.floor(speed))
@@ -308,9 +406,8 @@ local function factory(env)
                     assert(valid(slot.material), 'liquid splash material failed to initialize')
                     mesh:SetMaterial(0, slot.material)
                 end
-                slot.time,slot.life = now,profile and profile.life or SPLASH_SECONDS
+                slot.time,slot.life = now,profile.life or SPLASH_SECONDS
                 if surface.tint then slot.material:SetVectorParameterValue(FName('SplashColor'),surface.tint) end
-                local size = math.min(1.55, 0.66 + speed / 4600)
                 actor:SetActorScale3D({X=size, Y=size, Z=size})
                 actor:K2_TeleportTo({X=x, Y=y, Z=z+23}, rotation)
                 slot.material:SetScalarParameterValue(age_parameter, 0.07)
@@ -351,7 +448,7 @@ local function factory(env)
                                         local x, y, speed, direction = contact(old, sample, surface, dt)
                                         if x then
                                             local z = surface.z
-                                            local hit = not surface.ski or surface.ski:K2_LineTraceComponent(
+                                            local hit = not surface.ski or valid(surface.ski) and surface.ski:K2_LineTraceComponent(
                                                 {X=x,Y=y,Z=z+50}, {X=x,Y=y,Z=z-50}, true, false, false, {}, {}, {}, {})
                                             if hit then
                                                 if surface.profile then
@@ -382,14 +479,14 @@ local function factory(env)
                 ExecuteInGameThreadWithDelay(INTERVAL_MS, function()
                     if not valid(game_state) or not valid(world) or current_world ~= world_address then return end
                     local success, reason = pcall(update)
-                    if success then tick() else report((descriptor and 'LIQUID_ERROR|' or 'DAMNATION_WATER_ERROR|')..tostring(reason)) end
+                    if success then tick() else report(error_prefix..tostring(reason)) end
                 end)
             end
-            report((descriptor and 'LIQUID_READY|map='..descriptor.name or 'DAMNATION_WATER_READY')
+            report((stock and 'WATER_SPLASH_READY' or descriptor and 'LIQUID_READY|map='..descriptor.name or 'DAMNATION_WATER_READY')
                    ..'|surfaces='..#surfaces..'|splash_pool='..#slots)
             tick()
         end)
-        if not ok then report((descriptor and 'LIQUID_ERROR|' or 'DAMNATION_WATER_ERROR|')..tostring(problem)) end
+        if not ok then report(error_prefix..tostring(problem)) end
     end
 end
 
