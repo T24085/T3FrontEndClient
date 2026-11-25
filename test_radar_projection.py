@@ -61,7 +61,9 @@ function api:BeginDeferredActorSpawnFromClass(context,klass,transform)
 end
 function api:FinishSpawningActor(actor) return actor end
 local contracts=releaseRadarBlueprintContracts
+local radarWidgetClass=object('Radar widget class')
 function StaticFindObject(path)
+    if path=='/Game/UI/Components/Game/UI_Game_Minimap_Radar.UI_Game_Minimap_Radar_C' then return radarWidgetClass end
     if path=='/Script/ValhallaUI.Default__UILibrary' then return lib end
     if path=='/Script/Engine.Default__GameplayStatics' then return api end
     if path=='/Game/Common/Blueprints/Cameras/BP_MinimapCapture.BP_MinimapCapture_C' then
@@ -89,18 +91,48 @@ widget.Material=object('Map material')
 widget.MapTexture={Brush={ResourceObject=widget.Material}}
 widget.CachedZoom,widget.TargetZoom=1,1
 widget.RadarSensors={children=0,GetChildrenCount=function(self) return self.children end}
+function widget.RadarSensors:GetChildAt() return {GetClass=function()return radarWidgetClass end} end
+function widget.RadarSensors:ClearChildren() self.children=0 end
 function widget:GetOwningPlayer() return pc end
 function widget:UpdateSublevel() self.CachedMapScale=1024/settings.MapSize;self.MapScale=self.CachedMapScale end
-function widget:BindRadarSensors() self.RadarSensors.children=2 end
+function widget:BindRadarSensors() self.RadarSensors.children=#f.radars;f.binds=(f.binds or 0)+1 end
 local foreignWidget=object('Foreign map widget');foreignWidget.world=foreign
 foreignWidget.GetOwningPlayer=widget.GetOwningPlayer
 function foreignWidget:SetVisibility() error('foreign minimap changed') end
 local otherPlayerWidget=object('Other player map widget');otherPlayerWidget.world=world
 function otherPlayerWidget:GetOwningPlayer() return otherPlayerWidget end
 otherPlayerWidget.SetVisibility=foreignWidget.SetVisibility
+local teams={}
+local radarPost
 function FindAllOf(klass)
     return ({BP_MinimapCapture_C=f.captures,StaticMeshActor=f.meshes,UI_Game_Map_C={widget,foreignWidget,otherPlayerWidget},
-        BP_Objective_RadarSensor_C=f.radars})[klass]
+        BP_Objective_RadarSensor_C=f.radars,TeamState=teams})[klass]
+end
+function RegisterHook(path,_,post)
+    assert(path=='/Script/Topaz.TopRadarSensor:SetRadarStatus' and not radarPost)
+    radarPost=post
+    return 1,2
+end
+function UnregisterHook(path,pre,post)
+    assert(path=='/Script/Topaz.TopRadarSensor:SetRadarStatus' and pre==1 and post==2 and radarPost)
+    radarPost=nil
+end
+function f.add_teams()
+    for id=1,2 do
+        local team=object('TeamState')
+        team.world=world;team.r_bIsRadarOnline=true;team.notifications=0
+        team.HasAuthority=gs.HasAuthority
+        function team:GetTeamId()return id end
+        function team:IsRadarOnline()return self.r_bIsRadarOnline end
+        function team:OnRep_IsRadarOnline()self.notifications=self.notifications+1 end
+        teams[id]=team
+    end
+end
+function f.deactivate_sensor(index,downed)
+    local sensor=f.radars[index]
+    sensor.PoweredComp.r_bOwnerDowned=downed
+    teams[sensor.r_TeamId].r_bIsRadarOnline=not downed
+    if radarPost then radarPost({get=function()return sensor end}) end
 end
 function f.add_mesh(asset,x,z,half_z,elsewhere,hidden,collision)
     local actor=object('StaticMeshActor');actor.world=elsewhere and foreign or world;actor.bHidden=hidden
@@ -123,6 +155,8 @@ end
 function f.add_radars()
     for team=1,2 do
         local radar=object('Radar sensor');radar.world=world;radar.r_TeamId=team
+        radar.HasAuthority=gs.HasAuthority
+        radar.PoweredComp={r_bGeneratorPowered=true,r_bOwnerDowned=false,GetOwner=function()return radar end}
         function radar:GetClass()
             return object('BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_RadarSensor.BP_Objective_RadarSensor_C')
         end
@@ -135,6 +169,11 @@ local runtime=releaseRadarRuntimeFactory({valid=function(v) return v~=nil end,sc
     capture_bounds_factory=releaseRadarBoundsFactory,world_settings_guard_factory=releaseNativeWorldSettingsFactory,
     blueprint_contracts=contracts})
 function f.tick() return runtime.tick(pc,gs) end
+function f.retire()
+    function gs:GetFullName() return 'a different remote level' end
+    return runtime.tick(pc,gs)
+end
+f.teams=teams
 f.widget=widget
 return f
 '''
@@ -189,6 +228,49 @@ class RadarProjectionTest(unittest.TestCase):
         self.assertTrue(f.tick())
         self.assertEqual(f.widget.RadarSensors.children, 2)
         self.assertEqual((f.requests, f.spawns), (1, 1))
+
+    def test_two_radars_per_team_bind_once_after_both_pairs_arrive(self):
+        f = self.fixture(*MAPS[-1], radar_count=2)
+        f.add_radars()
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.RadarSensors.children, 0)
+        # The native widget drew the first two replicated sensors between ticks.
+        f.widget.RadarSensors.children = 2
+        f.add_radars()
+        self.assertTrue(f.tick())
+        self.assertTrue(f.tick())
+        self.assertEqual((f.widget.RadarSensors.children, f.binds), (4, 1))
+
+    def test_client_team_radar_recovers_from_individual_replication_updates(self):
+        f = self.fixture(*MAPS[-1], radar_count=2)
+        f.add_teams()
+        f.add_radars()
+        self.assertTrue(f.tick())
+        f.deactivate_sensor(1, True)
+        self.assertFalse(f.teams[1].r_bIsRadarOnline)
+        self.assertEqual(f.teams[1].notifications, 0)
+
+        f.add_radars()
+        self.assertTrue(f.tick())
+        self.assertTrue(f.teams[1].r_bIsRadarOnline)
+        self.assertEqual(f.teams[1].notifications, 1)
+        f.deactivate_sensor(3, True)
+        self.assertFalse(f.teams[1].r_bIsRadarOnline)
+        f.deactivate_sensor(1, False)
+        self.assertTrue(f.teams[1].r_bIsRadarOnline)
+        f.deactivate_sensor(3, False)
+        f.deactivate_sensor(3, True)
+        self.assertTrue(f.teams[1].r_bIsRadarOnline)
+        self.assertTrue(f.teams[2].r_bIsRadarOnline)
+        self.assertEqual(f.teams[2].notifications, 0)
+        self.assertEqual(f.teams[1].notifications, 2)
+
+        f.radars[1].PoweredComp.r_bGeneratorPowered = False
+        self.assertTrue(f.tick())
+        self.assertFalse(f.teams[1].r_bIsRadarOnline)
+        self.assertTrue(f.retire())
+        f.deactivate_sensor(1, False)
+        self.assertTrue(f.teams[1].r_bIsRadarOnline)
 
     def test_no_radar_map_keeps_the_minimap_by_default(self):
         f = self.fixture(*MAPS[-1], radar_count=0)
