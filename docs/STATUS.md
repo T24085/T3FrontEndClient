@@ -1,3 +1,7 @@
+# Small-screen Play lobby
+
+The Play lobby keeps team rosters side by side, groups match setup fields, and keeps the match actions visible at the bottom. Join and create fields collapse while a lobby is active. Supported lobby options such as spectators, bots, and flag indicators are available under **Advanced rules**. At narrower widths, fields and secondary match actions can wrap while preserving their enabled states. See frontend issue #72.
+
 # Blink cue timing
 
 The owning client applies the authoritative Blink movement and presents one

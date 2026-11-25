@@ -122,7 +122,7 @@ class Desktop:
         self.copy_reset_handle = None
         root.title('TRIBES 3 • Community Starter')
         root.geometry('1030x800')
-        root.minsize(850, 740)
+        root.minsize(850, 570)
         root.configure(bg=BG)
         root.protocol('WM_DELETE_WINDOW', self.close)
         style = ttk.Style(root)
@@ -146,7 +146,7 @@ class Desktop:
         self.bot_count = tk.StringVar(value='2')
         self.retail_capture_point = tk.BooleanVar(value=True)
         self.live_status = tk.StringVar(value='Checking live matches…')
-        side = tk.Frame(root, bg='#0d1927', width=225)
+        side = tk.Frame(root, bg='#0d1927', width=198)
         self.sidebar = side
         side.pack(side='left', fill='y')
         side.pack_propagate(False)
@@ -188,8 +188,21 @@ class Desktop:
             self.settings_nav.pack(fill='x', padx=18, pady=(6, 0))
         main = tk.Frame(root, bg=BG)
         self.lobby_panel=main
-        main.pack(side='left', fill='both', expand=True, padx=32, pady=20)
-        entry = tk.Frame(main, bg=PANEL, padx=18, pady=14)
+        main.pack(side='left', fill='both', expand=True, padx=20, pady=14)
+        self.lobby_layout = None
+        self.entry_open = True
+        self.advanced_open = False
+        self.stacked_lobby_fields = None
+        self.room_action_layout = None
+        self.room_action_spacer = None
+        self.play_strip = tk.Frame(main, bg=PANEL, padx=10, pady=5)
+        self.play_strip.pack(fill='x')
+        self.entry_toggle = self.button(self.play_strip, 'Join or create lobby ▸',
+                                        lambda: self.set_entry_open(not self.entry_open), False)
+        self.entry_toggle.configure(pady=5)
+        self.play_actions = tk.Frame(self.play_strip, bg=PANEL)
+        self.play_actions.pack(side='right')
+        entry = self.entry_panel = tk.Frame(main, bg=PANEL, padx=12, pady=8)
         entry.pack(fill='x')
         self.label(entry, 'STEAM PLAYER NAME' if steam_name_loader else 'YOUR PLAYER NAME', 9, color=ACCENT, bg=PANEL).grid(row=0,column=0,sticky='w')
         self.label(entry, 'LOBBY CODE', 9, color=ACCENT, bg=PANEL).grid(row=0,column=1,sticky='w',padx=(12,0))
@@ -205,100 +218,144 @@ class Desktop:
             bg=PANEL, fg=TEXT, selectcolor='#20374a', activebackground=PANEL, activeforeground=TEXT)
         self.join_button = self.button(entry,'Join lobby',self.join,False)
         self.join_button.grid(row=2,column=1,sticky='w',padx=(12,0))
-        card = tk.Frame(main,bg=PANEL,padx=18,pady=14)
-        card.pack(fill='both',expand=True,pady=(14,0))
+        card = self.room_card = tk.Frame(main, bg=PANEL, padx=14, pady=9)
         heading = tk.Frame(card,bg=PANEL)
         heading.pack(fill='x')
         self.copy_code_button = self.button(heading,'Copy lobby code',self.copy_lobby_code,False)
+        self.copy_code_button.configure(pady=3)
         self.copy_code_button.pack(side='right',padx=(12,0))
         tk.Label(heading,textvariable=self.room_heading,bg=PANEL,fg=TEXT,font=('Segoe UI',17,'bold'),anchor='w').pack(side='left',fill='x',expand=True)
         tk.Label(card,textvariable=self.phase,bg=PANEL,fg=MUTED,font=('Segoe UI',10),anchor='w').pack(fill='x',pady=(2,8))
-        maprow = tk.Frame(card,bg=PANEL);maprow.pack(fill='x')
-        self.label(maprow,'MAP',9,color=ACCENT,bg=PANEL).pack(side='left',padx=(0,12))
+        self.match_fields = fields = tk.Frame(card, bg=PANEL)
+        fields.pack(fill='x', pady=(0, 5))
+        fields.columnconfigure(0, weight=2)
+        fields.columnconfigure((1, 2), weight=1)
+        self.map_field = maprow = tk.Frame(fields, bg=PANEL)
+        maprow.grid(row=0, column=0, sticky='ew', padx=(0, 10))
+        self.label(maprow, 'MAP', 9, color=ACCENT, bg=PANEL).pack(anchor='w', pady=(0, 3))
         self.map_options=options(LEGACY_MAPS)
-        self.map_combo = ttk.Combobox(maprow,textvariable=self.map_name,values=tuple(item['label'] for item in self.map_options),state='disabled')
-        self.map_combo.pack(side='left',fill='x',expand=True)
+        self.map_combo = ttk.Combobox(maprow,textvariable=self.map_name,values=tuple(item['label'] for item in self.map_options), width=15, state='disabled')
+        self.map_combo.pack(fill='x')
         self.map_combo.bind('<<ComboboxSelected>>',lambda e:self.choose_map())
-        self.spectator_toggle=tk.Checkbutton(maprow,text='Allow spectators',variable=self.allow_spectators,
+        self.rule_heading = tk.Frame(card, bg=PANEL)
+        self.rule_heading.pack(fill='x', pady=(0, 5))
+        self.rule_heading.columnconfigure(1, weight=1)
+        self.advanced_button = self.button(self.rule_heading, 'Advanced rules ▸',
+                                           self.toggle_advanced_rules, False)
+        self.advanced_button.configure(pady=3)
+        self.advanced_button.grid(row=0, column=0, sticky='w')
+        self.advanced_button.grid_remove()
+        self.rules_row = tk.Frame(card, bg=PANEL)
+        self.rules_row.columnconfigure((0, 1, 2), weight=1)
+        self.spectator_toggle=tk.Checkbutton(self.rules_row,text='Allow spectators',variable=self.allow_spectators,
             command=self.toggle_spectators,bg=PANEL,fg=TEXT,selectcolor='#20374a',activebackground=PANEL,
             activeforeground=TEXT,font=('Segoe UI',9))
-        self.side_row = tk.Frame(card, bg=PANEL)
-        self.label(self.side_row, 'BLUE STARTING SIDE', 9, color=ACCENT, bg=PANEL).pack(side='left', padx=(0, 8))
+        self.spectator_toggle.grid(row=1, column=0, sticky='w')
+        self.spectator_toggle.grid_remove()
+        self.side_row = tk.Frame(fields, bg=PANEL)
+        self.side_row.grid(row=0, column=1, sticky='ew', padx=(0, 10))
+        self.label(self.side_row, 'BLUE STARTING SIDE', 9, color=ACCENT, bg=PANEL).pack(anchor='w', pady=(0, 3))
         self.blue_side = tk.StringVar(value='Side A')
         self.side_combo = ttk.Combobox(self.side_row, textvariable=self.blue_side,
                                        values=('Side A', 'Side B'), width=8, state='disabled')
-        self.side_combo.pack(side='left')
+        self.side_combo.pack(fill='x')
         self.side_combo.bind('<<ComboboxSelected>>', self.choose_side)
         self.red_side = tk.StringVar(value='Red starts on Side B')
-        tk.Label(self.side_row, textvariable=self.red_side, bg=PANEL, fg=MUTED).pack(side='left', padx=10)
+        self.side_summary = tk.Label(self.rule_heading, textvariable=self.red_side, bg=PANEL, fg=MUTED,
+                                     anchor='e', justify='right', wraplength=360)
+        self.side_summary.grid(row=0, column=1, sticky='e')
         roster_frame = self.roster_frame = tk.Frame(card,bg=PANEL)
-        roster_frame.pack(fill='both',expand=True,pady=(8,4))
-        self.rules_row = tk.Frame(card,bg=PANEL)
+        roster_frame.pack(fill='both', expand=True, pady=(4, 0))
         check_style = dict(bg=PANEL,fg=TEXT,selectcolor='#20374a',activebackground=PANEL,
                            activeforeground=TEXT,font=('Segoe UI',9))
         self.flag_toggle = tk.Checkbutton(self.rules_row,text='Flag indicators',variable=self.flag_indicators,
             command=lambda:self.call_action('rules',flagIndicators=self.flag_indicators.get()),**check_style)
-        self.flag_toggle.pack(side='left')
+        self.flag_toggle.grid(row=0, column=0, sticky='w')
         self.fall_toggle = tk.Checkbutton(self.rules_row, text='Fall damage', variable=self.fall_damage,
             command=lambda: self.call_action('rules', fallDamage=self.fall_damage.get()), **check_style)
-        self.bot_toggle = tk.Checkbutton(self.rules_row,text='Allow bots',variable=self.allow_bots,
+        self.fall_toggle.grid(row=0, column=1, sticky='w')
+        self.fall_toggle.grid_remove()
+        bots = tk.Frame(self.rules_row, bg=PANEL)
+        bots.grid(row=0, column=2, sticky='w')
+        self.bot_toggle = tk.Checkbutton(bots,text='Allow bots',variable=self.allow_bots,
             command=self.change_bots,**check_style)
-        self.bot_toggle.pack(side='left',padx=(10,0))
-        self.bot_spinner = ttk.Spinbox(self.rules_row,from_=1,to=MAX_LOBBY_BOTS,textvariable=self.bot_count,
+        self.bot_toggle.pack(side='left')
+        self.bot_spinner = ttk.Spinbox(bots,from_=1,to=MAX_LOBBY_BOTS,textvariable=self.bot_count,
                                        width=3,state='disabled',command=self.change_bots)
         self.bot_spinner.pack(side='left',padx=(2,10))
         self.capture_toggle = tk.Checkbutton(self.rules_row,text='Retail capture point',variable=self.retail_capture_point,
             command=lambda:self.call_action('rules',retailCapturePoint=self.retail_capture_point.get()),**check_style)
-        self.capture_toggle.pack(side='left')
-        self.limits_row = tk.Frame(card, bg=PANEL)
-        self.label(self.limits_row, 'Score limit (caps)', 9, color=ACCENT, bg=PANEL).pack(side='left', padx=(0, 6))
+        self.capture_toggle.grid(row=1, column=1, columnspan=2, sticky='w')
+        self.limits_row = tk.Frame(fields, bg=PANEL)
+        self.limits_row.grid(row=0, column=2, sticky='ew')
+        self.limits_row.columnconfigure((0, 1), weight=1, uniform='limits')
+        self.label(self.limits_row, 'SCORE LIMIT (CAPS)', 9, color=ACCENT, bg=PANEL).grid(row=0, column=0, sticky='w', pady=(0, 3))
         self.score_limit = ttk.Combobox(self.limits_row,
             values=('Map default', 'Unlimited', *(str(value) for value in range(1, MAX_SCORE_LIMIT + 1))),
-            width=12, state='disabled')
-        self.score_limit.pack(side='left', padx=(0, 16))
-        self.label(self.limits_row, 'Time limit (min)', 9, color=ACCENT, bg=PANEL).pack(side='left', padx=(0, 6))
+            width=9, state='disabled')
+        self.score_limit.grid(row=1, column=0, sticky='ew', padx=(0, 10))
+        self.label(self.limits_row, 'TIME LIMIT (MIN)', 9, color=ACCENT, bg=PANEL).grid(row=0, column=1, sticky='w', pady=(0, 3))
         self.match_minutes = ttk.Combobox(self.limits_row,
             values=('Map default', *(str(value) for value in range(1, MAX_MATCH_MINUTES + 1))),
-            width=12, state='disabled')
-        self.match_minutes.pack(side='left')
+            width=9, state='disabled')
+        self.match_minutes.grid(row=1, column=1, sticky='ew')
         for control in (self.score_limit, self.match_minutes):
             control.bind('<<ComboboxSelected>>', self.change_match_limits)
         self.rosters = {}
         self.roster_players = {}
+        team_frames = {}
         roster_frame.columnconfigure((0, 1), weight=1, uniform='teams')
         roster_frame.rowconfigure(0, weight=1)
         for team, label, color, col in (('blue', 'Team Blue', '#78b8ff', 0),
                                          ('red', 'Team Red', '#ff9393', 1),
                                          (None, 'Unassigned', MUTED, 0)):
-            frame = tk.Frame(roster_frame, bg=PANEL)
+            frame = team_frames[team] = tk.Frame(roster_frame, bg=PANEL)
+            frame.columnconfigure(0, weight=1)
+            frame.rowconfigure(1, weight=1)
             frame.grid(row=1 if team is None else 0, column=col, columnspan=2 if team is None else 1,
-                       sticky='nsew', padx=(0, 6) if team == 'blue' else (0, 0))
-            self.label(frame, label, 10, True, color=color, bg=PANEL).pack(anchor='w')
+                       sticky='nsew', padx=(0, 3) if team == 'blue' else (3, 0) if team == 'red' else 0)
+            self.label(frame, label, 10, True, color=color, bg=PANEL).grid(row=0, column=0, columnspan=2, sticky='w')
             roster = tk.Listbox(frame, bg='#0b1a29', fg=TEXT, selectbackground='#31566c',
                                 font=('Segoe UI', 11), relief='flat', width=1,
-                                height=1 if team is None else 4, exportselection=False)
+                                height=1 if team is None else 2, exportselection=False)
             scroll = ttk.Scrollbar(frame, orient='vertical', command=roster.yview)
             roster.configure(yscrollcommand=scroll.set)
-            scroll.pack(side='right', fill='y')
-            roster.pack(side='left', fill='both', expand=True)
+            roster.grid(row=1, column=0, columnspan=2, sticky='nsew', padx=(0, scroll.winfo_reqwidth()))
+            scroll.place(in_=roster, relx=1, relheight=1, anchor='nw')
             roster.bind('<<ListboxSelect>>', lambda _event, box=roster: self.select_roster(box))
             self.rosters[team] = roster
             self.roster_players[team] = []
-        teams = tk.Frame(card,bg=PANEL);teams.pack(side='bottom',before=roster_frame,fill='x')
-        self.blue_button = self.button(teams,'Join blue',lambda:self.call_action('team',team='blue'),False);self.blue_button.pack(side='left',padx=(0,8))
-        self.red_button = self.button(teams,'Join red',lambda:self.call_action('team',team='red'),False);self.red_button.pack(side='left',padx=(0,8))
-        self.move_blue = self.button(teams,'Move selected blue',lambda:self.move('blue'),False);self.move_blue.pack(side='left',padx=(0,8))
-        self.move_red = self.button(teams,'Move selected red',lambda:self.move('red'),False);self.move_red.pack(side='left')
-        actions = tk.Frame(main,bg=BG);actions.pack(side='bottom',before=card,fill='x',pady=(14,0))
-        self.start_button = self.button(actions,'Start match',lambda:self.call_action('start'));self.start_button.pack(side='left',padx=(0,8))
-        self.game_button = self.button(actions,'Join game',self.join_game);self.game_button.pack(side='left',padx=(0,8))
-        self.stop_button = self.button(actions,'Stop match',lambda:self.call_action('stop'),False);self.stop_button.pack(side='left',padx=(0,8))
+        for team, join_label, move_label in (
+            ('blue', 'Join blue', 'Move to blue'), ('red', 'Join red', 'Move to red'),
+        ):
+            team_actions = tk.Frame(team_frames[team], bg=PANEL)
+            team_actions.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(5, 0))
+            team_actions.columnconfigure((0, 1), weight=1, uniform='actions')
+            join = self.button(team_actions, join_label, lambda selected=team: self.call_action('team', team=selected), False)
+            move = self.button(team_actions, move_label, lambda selected=team: self.move(selected), False)
+            for column, button in enumerate((join, move)):
+                button.configure(padx=5, pady=3)
+                button.grid(row=0, column=column, sticky='ew', padx=(0, 4) if column == 0 else 0)
+            if team == 'blue':
+                self.blue_button, self.move_blue = join, move
+            else:
+                self.red_button, self.move_red = join, move
+        self.team_action_labels = {button: button.cget('text') for button in (
+            self.blue_button, self.move_blue, self.red_button, self.move_red)}
+        actions = self.room_actions = tk.Frame(main, bg=BG)
+        self.show_restart_action = False
+        self.show_result_action = False
+        self.start_button = self.button(actions,'Start match',lambda:self.call_action('start'))
+        self.game_button = self.button(actions,'Join game',self.join_game)
+        self.stop_button = self.button(actions,'Stop match',lambda:self.call_action('stop'),False)
         self.restart_button = self.button(actions, 'Restart match', self.restart_match, False)
-        self.reset_button = self.button(actions,'New setup',lambda:self.call_action('reset'),False);self.reset_button.pack(side='left',padx=(0,8))
-        self.leave_button = self.button(actions,'Leave',lambda:self.call_action('leave'),False);self.leave_button.pack(side='left')
+        self.reset_button = self.button(actions,'New setup',lambda:self.call_action('reset'),False)
+        self.leave_button = self.button(actions,'Leave',lambda:self.call_action('leave'),False)
         self.result_button = self.button(actions, 'Match results',
                                          lambda: self.show_match_result(match_result_for(self.room)), False)
-        tk.Label(main,textvariable=self.status,bg=BG,fg=MUTED,font=('Segoe UI',10),anchor='w',wraplength=700).pack(side='bottom',before=actions,fill='x',pady=(12,0))
+        self.room_status = tk.Label(main, textvariable=self.status, bg=BG, fg=MUTED, font=('Segoe UI', 10),
+                                    anchor='w', justify='left')
+        main.bind('<Configure>', self.layout_play, add='+')
         self.live_panel=tk.Frame(root,bg=BG)
         self.label(self.live_panel,'Lobby Browser',27,True).pack(anchor='w')
         self.live_summary=self.label(self.live_panel,'Left click for next player, right click for previous. F7 for first person, F8 for chase, or middle click to switch views.',
@@ -345,6 +402,108 @@ class Desktop:
         self.poll_handle=root.after(150,self.poll)
         self.refresh_handle=root.after(2000,self.refresh)
         self.live_refresh_handle=root.after(3000,self.live_tick)
+
+
+    def show_lobby_controls(self, in_room):
+        if self.lobby_layout == in_room:
+            return
+        self.lobby_layout = in_room
+        self.entry_toggle.pack_forget()
+        if in_room:
+            self.entry_toggle.pack(side='left')
+            self.set_entry_open(False)
+            self.room_actions.pack(side='bottom', fill='x', padx=0, pady=(10, 0))
+            self.room_status.pack(side='bottom', before=self.room_actions, fill='x', pady=(5, 0))
+            self.room_card.pack(fill='both', expand=True, pady=(8, 0))
+        else:
+            self.advanced_open = False
+            self.room_card.pack_forget()
+            self.room_actions.pack_forget()
+            self.room_status.pack(side='bottom', fill='x', pady=(5, 0))
+            self.set_entry_open(True)
+
+    def set_entry_open(self, open_form):
+        self.entry_open = open_form
+        self.entry_toggle.configure(text='Join or create lobby ' + ('▾' if open_form else '▸'))
+        if open_form:
+            self.entry_panel.pack(fill='x', after=self.play_strip)
+        else:
+            self.entry_panel.pack_forget()
+
+    def toggle_advanced_rules(self):
+        self.advanced_open = not self.advanced_open
+        self.show_advanced_rules()
+
+    def show_advanced_rules(self):
+        available = self.lobby_layout and (
+            self.caps.get('matchRulesEnabled') is True or self.caps.get('spectateEnabled') is True)
+        if available:
+            self.advanced_button.grid()
+        else:
+            self.advanced_button.grid_remove()
+        self.advanced_button.configure(text='Advanced rules ' + ('▾' if self.advanced_open else '▸'))
+        if available and self.advanced_open:
+            self.rules_row.pack(fill='x', before=self.roster_frame, pady=(0, 5))
+        else:
+            self.rules_row.pack_forget()
+
+    def layout_play(self, event):
+        width = event.width
+        compact_sidebar = width + self.sidebar.winfo_width() < 1150
+        self.resize_lobby_sidebar(compact_sidebar)
+        field_width = sum(field.winfo_reqwidth() for field in (self.map_field, self.side_row, self.limits_row))
+        stacked = width < field_width + 52
+        if stacked != self.stacked_lobby_fields:
+            self.stacked_lobby_fields = stacked
+            self.map_field.grid_configure(row=0, column=0, columnspan=2 if stacked else 1)
+            self.reflow_optional_field(self.side_row, row=0, column=2 if stacked else 1)
+            self.reflow_optional_field(self.limits_row, row=1 if stacked else 0, column=0 if stacked else 2,
+                                       columnspan=3 if stacked else 1, pady=(5, 0) if stacked else 0)
+        for button, label in self.team_action_labels.items():
+            button.configure(text=label if width >= 700 else ('Join team' if label.startswith('Join') else 'Move here'))
+        self.room_status.configure(wraplength=max(width - 8, 1))
+        self.layout_room_actions(width)
+
+    @staticmethod
+    def reflow_optional_field(field, **position):
+        visible = bool(field.winfo_manager())
+        field.grid_configure(**position)
+        if not visible:
+            field.grid_remove()
+
+    def layout_room_actions(self, width=None):
+        if width is None:
+            width = self.lobby_panel.winfo_width()
+        buttons = [self.start_button, self.game_button, self.stop_button]
+        if self.show_restart_action:
+            buttons.append(self.restart_button)
+        buttons.append(self.reset_button)
+        if self.show_result_action:
+            buttons.append(self.result_button)
+        all_buttons = (*buttons, self.leave_button)
+        wrap = sum(button.winfo_reqwidth() + 6 for button in all_buttons) + 16 > width
+        key = (all_buttons, wrap)
+        if key == self.room_action_layout:
+            return
+        self.room_action_layout = key
+        for button in self.room_actions.grid_slaves():
+            button.grid_forget()
+        if self.room_action_spacer is not None:
+            self.room_actions.columnconfigure(self.room_action_spacer, weight=0)
+        for index, button in enumerate(buttons):
+            row = int(wrap and index >= 3)
+            button.grid(row=row, column=(index - 3 if row else index), sticky='w',
+                        padx=(0, 6), pady=(4, 0) if row else 0)
+        spacer = 3 if wrap else len(buttons)
+        self.room_action_spacer = spacer
+        self.room_actions.columnconfigure(spacer, weight=1)
+        self.leave_button.grid(row=0, column=spacer+1, sticky='e')
+
+    def resize_lobby_sidebar(self, compact):
+        width = 198 if compact else 225
+        if int(self.sidebar.cget('width')) != width:
+            self.sidebar.configure(width=width)
+
 
     def label(self,parent,text,size=11,bold=False,color=TEXT,bg=BG):
         return tk.Label(parent,text=text,bg=bg,fg=color,font=('Segoe UI',size,'bold' if bold else 'normal'),anchor='w')
@@ -535,11 +694,9 @@ class Desktop:
             self.reset_copy_feedback()
         self.room = room
         result = match_result_for(room)
-        if result:
-            self.result_button.pack(side='left', padx=(8, 0))
-        else:
-            self.result_button.pack_forget()
+        self.show_result_action = result is not None
         in_room = room is not None
+        self.show_lobby_controls(in_room)
         self.copy_code_button.configure(state='normal' if in_room else 'disabled')
         phase = room['phase'] if in_room else None
         leader = in_room and any(p['id']==room['playerId'] and p['leader'] for p in room['players'])
@@ -547,20 +704,19 @@ class Desktop:
         restarting = isinstance(restart, dict) and restart.get('stage') in ('countdown', 'draining', 'starting')
         can_restart = leader and self.caps.get('matchRestartEnabled') is True and phase in (
             'starting', 'ready', 'stopped', 'ended', 'failed')
-        if can_restart:
-            if not self.restart_button.winfo_manager():
-                self.restart_button.pack(side='left', before=self.reset_button, padx=(0, 8))
-            self.restart_button.configure(state='disabled' if restarting or self.controls_busy else 'normal')
-        else:
-            self.restart_button.pack_forget()
+        self.show_restart_action = can_restart
+        self.restart_button.configure(state='normal' if can_restart and not restarting and not self.controls_busy else 'disabled')
+        self.layout_room_actions()
         setup = in_room and phase=='setup'
         if not setup or not leader or self.pending_map is not None and self.pending_map[0] != room['code']:
             self.pending_map = None
         self.allow_spectators.set(room.get('allowSpectators',True) if in_room else True)
         if self.caps.get('spectateEnabled') is True:
-            self.spectator_toggle.pack(side='right',padx=(12,0))
+            self.spectator_toggle.grid()
             self.spectator_toggle.configure(state='normal' if setup and leader else 'disabled')
-        else:self.spectator_toggle.pack_forget()
+        else:
+            self.spectator_toggle.grid_remove()
+        self.show_advanced_rules()
         for widget in (self.name_entry,self.code_entry,self.create_button,self.join_button): widget.configure(state='disabled' if in_room or self.controls_busy else 'normal')
         if self.steam_name_loader and not in_room and not self.controls_busy:
             self.name_entry.configure(state='readonly', readonlybackground='#20374a')
@@ -754,10 +910,12 @@ class Desktop:
     def render_sides(self, room, editable):
         side = room.get('blueSide') if room else None
         if side not in ('A', 'B'):
-            self.side_row.pack_forget()
+            self.side_row.grid_remove()
+            self.side_summary.grid_remove()
             return
         if not self.side_row.winfo_manager():
-            self.side_row.pack(fill='x', before=self.roster_frame, pady=(6, 0))
+            self.side_row.grid()
+        self.side_summary.grid()
         self.blue_side.set('Side ' + side)
         self.red_side.set('Red starts on Side A · In-game colors swap' if side == 'B'
                           else 'Red starts on Side B')
@@ -807,20 +965,24 @@ class Desktop:
 
     def render_match_rules(self, room, editable):
         if self.caps.get('matchRulesEnabled') is not True:
-            self.rules_row.pack_forget()
-            self.limits_row.pack_forget()
+            self.limits_row.grid_remove()
+            self.flag_toggle.grid_remove()
+            self.fall_toggle.grid_remove()
+            self.bot_toggle.master.grid_remove()
+            self.capture_toggle.grid_remove()
             return
-        if not self.rules_row.winfo_manager():
-            self.rules_row.pack(fill='x',before=self.roster_frame,pady=(6,0))
+        self.flag_toggle.grid()
+        self.bot_toggle.master.grid()
+        self.capture_toggle.grid()
         rules = room.get('rules', DEFAULT_LOBBY_RULES) if room else DEFAULT_LOBBY_RULES
         self.flag_indicators.set(rules['flagIndicators'])
         self.fall_damage.set(rules.get('fallDamage') is True)
         if self.caps.get('fallDamageEnabled') is True:
             if not self.fall_toggle.winfo_manager():
-                self.fall_toggle.pack(side='left', after=self.flag_toggle)
+                self.fall_toggle.grid()
             self.fall_toggle.configure(state='normal' if editable else 'disabled')
         else:
-            self.fall_toggle.pack_forget()
+            self.fall_toggle.grid_remove()
         count = rules['botCount']
         self.allow_bots.set(count > 0)
         if count:
@@ -835,10 +997,10 @@ class Desktop:
 
     def render_match_limits(self, room, editable):
         if room is None or self.caps.get('matchLimitsEnabled') is not True:
-            self.limits_row.pack_forget()
+            self.limits_row.grid_remove()
             return
         if not self.limits_row.winfo_manager():
-            self.limits_row.pack(fill='x', before=self.roster_frame, pady=(4, 0))
+            self.limits_row.grid()
         limits = room.get('matchLimits', DEFAULT_MATCH_LIMITS)
         score, minutes = limits['scoreLimit'], limits['matchMinutes']
         score_label = 'Unlimited' if score == 0 else str(score) if score is not None else 'Map default'
@@ -862,7 +1024,10 @@ class Desktop:
         self.current_panel=name
         self.lobby_panel.pack_forget();self.live_panel.pack_forget()
         panel=self.live_panel if name=='live'else self.lobby_panel
-        panel.pack(side='left',fill='both',expand=True,padx=32,pady=28)
+        if name == 'lobbies':
+            panel.pack(side='left', fill='both', expand=True, padx=20, pady=14)
+        else:
+            panel.pack(side='left', fill='both', expand=True, padx=32, pady=28)
         self.render_live_controls()
         if name=='live':self.refresh_live_matches()
 

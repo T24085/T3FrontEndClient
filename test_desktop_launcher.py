@@ -64,7 +64,7 @@ class DesktopTest(unittest.TestCase):
             self.assertEqual(board.item(board.get_children()[0], 'values'),
                              ('One', 'Blue', '4', '2', '1', '3', '5', '7', '1:05'))
             app.render(dict(lobby.room, lastResult=result))
-            self.assertEqual(app.result_button.winfo_manager(), 'pack')
+            self.assertEqual(app.result_button.winfo_manager(), 'grid')
             app.render(dict(lobby.room, lastResult=dict(result, players=None)))
             self.assertFalse(app.result_button.winfo_manager())
         finally:
@@ -212,12 +212,14 @@ class DesktopTest(unittest.TestCase):
                 'flagIndicators':True, 'botCount':4, 'retailCapturePoint':False,
             })
             app.render(lobby.room)
+            self.assertFalse(app.rules_row.winfo_manager())
+            app.advanced_button.invoke()
             self.assertEqual(app.rules_row.winfo_manager(), 'pack')
             self.assertFalse(app.fall_toggle.winfo_manager())
             self.assertFalse(app.limits_row.winfo_manager())
             app.caps['matchLimitsEnabled'] = True
             app.render(lobby.room)
-            self.assertEqual(app.limits_row.winfo_manager(), 'pack')
+            self.assertEqual(app.limits_row.winfo_manager(), 'grid')
             self.assertEqual(app.score_limit.get(), 'Map default')
             self.assertEqual(str(app.score_limit.cget('state')), 'readonly')
             app.score_limit.set('Unlimited')
@@ -234,7 +236,7 @@ class DesktopTest(unittest.TestCase):
             app.caps['fallDamageEnabled'] = True
             lobby.room['rules']['fallDamage'] = True
             app.render(lobby.room)
-            self.assertEqual(app.fall_toggle.winfo_manager(), 'pack')
+            self.assertEqual(app.fall_toggle.winfo_manager(), 'grid')
             self.assertEqual(app.fall_toggle.cget('state'), 'normal')
             self.assertTrue(app.fall_damage.get())
             calls = []
@@ -480,19 +482,27 @@ class DesktopTest(unittest.TestCase):
     def test_controls_fit_at_declared_minimum_window_size(self):
         root=tk.Tk();root.attributes('-alpha',0)
         lobby,game=FakeLobby(),FakeGame()
+        caps = dict(matchRulesEnabled=True, matchLimitsEnabled=True, fallDamageEnabled=True, spectateEnabled=True,
+                    matchRestartEnabled=True)
+        lobby.capabilities = lambda: caps
         app=Desktop(root,lobby,lambda _:game)
         try:
             root.geometry('%dx%d' % root.minsize())
             lobby.room['blueSide'] = 'B'
-            app.caps['matchRulesEnabled'] = True
+            app.caps = caps
             app.render(lobby.room)
             app.status.set('Community service connected.')
             root.update_idletasks();root.update()
             width,height=root.winfo_width(),root.winfo_height()
-            status=next(child for child in app.lobby_panel.pack_slaves()
-                        if isinstance(child,tk.Label) and str(child.cget('textvariable'))==str(app.status))
-            widgets=(app.name_entry,app.code_entry,app.create_button,app.join_button,app.map_combo,
-                     app.side_combo,*app.rosters.values(),app.blue_button,app.red_button,app.move_blue,app.move_red,
+            status = app.room_status
+            self.assertFalse(app.name_entry.winfo_ismapped())
+            self.assertFalse(app.flag_toggle.winfo_ismapped())
+            app.advanced_button.invoke()
+            app.render(lobby.room)
+            root.update()
+            widgets=(app.entry_toggle, app.map_combo, app.side_combo, app.score_limit, app.match_minutes,
+                     app.flag_toggle, app.fall_toggle, app.bot_spinner, app.capture_toggle, app.spectator_toggle,
+                     *app.rosters.values(),app.blue_button,app.red_button,app.move_blue,app.move_red,
                      app.start_button,app.game_button,app.stop_button,app.reset_button,app.leave_button,status)
             self.assertGreaterEqual(status.winfo_height(),status.winfo_reqheight())
             for widget in widgets:
@@ -508,6 +518,19 @@ class DesktopTest(unittest.TestCase):
                     self.assertLessEqual(right_in_parent,parent.winfo_width(), str(widget))
                     self.assertLessEqual(bottom_in_parent,parent.winfo_height(), str(widget))
                     parent=parent.master
+            lobby.room['phase'] = 'ready'
+            app.caps['matchRestartEnabled'] = True
+            app.render(lobby.room)
+            root.update()
+            self.assertTrue(app.restart_button.winfo_ismapped())
+            app.entry_toggle.invoke()
+            root.update()
+            self.assertTrue(app.name_entry.winfo_ismapped())
+            self.assertTrue(app.leave_button.winfo_ismapped())
+            app.render(None)
+            root.update()
+            self.assertTrue(app.join_button.winfo_ismapped())
+            self.assertFalse(app.advanced_button.winfo_ismapped())
         finally:
             app.close()
 
