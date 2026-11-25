@@ -426,9 +426,105 @@ local function prune_generator_icons(panel,world)
     for index=#duplicates,1,-1 do panel:RemoveChildAt(duplicates[index]) end
 end
 
+local carriedFlagBorder=(function()
+    local flagIconClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_ScoreBar_CTF_FlagIcon.WBP_Game_ScoreBar_CTF_FlagIcon_C'
+    local frames={}
+    local color={R=0.9,G=0.018,B=0.025,A=1}
+    local edges={
+        {anchors={Minimum={X=0,Y=0},Maximum={X=1,Y=0}},offsets={Left=0,Top=0,Right=0,Bottom=2}},
+        {anchors={Minimum={X=0,Y=1},Maximum={X=1,Y=1}},offsets={Left=0,Top=-2,Right=0,Bottom=2}},
+        {anchors={Minimum={X=0,Y=0},Maximum={X=0,Y=1}},offsets={Left=0,Top=2,Right=2,Bottom=2}},
+        {anchors={Minimum={X=1,Y=0},Maximum={X=1,Y=1}},offsets={Left=-2,Top=2,Right=2,Bottom=2}},
+    }
+
+    local function enemy_carries(flag,team,world)
+        if not valid(flag) or flag.r_TeamId~=team or not same_object(flag:GetWorld(),world) then return false end
+        local held=flag:GetHeldBy()
+        if held.bReturned~=false or not valid(held.Holder) then return false end
+        local holder=held.Holder
+        if not same_object(holder:GetWorld(),world) or not holder:IsAlive() then return false end
+        local ps=holder.PlayerState
+        if not valid(ps) or ps.r_TeamId~=3-team then return false end
+        -- A replicated holder can still name the thrower after detachment.
+        local root=flag.RootComponent
+        local attached=valid(root) and root:GetAttachParent() or nil
+        return valid(attached) and same_object(attached:GetOwner(),holder)
+    end
+
+    local function create_frame(icon,parent)
+        local canvasClass=StaticFindObject('/Script/UMG.CanvasPanel')
+        local borderClass=StaticFindObject('/Script/UMG.Border')
+        local tree=icon.WidgetTree
+        if not valid(canvasClass) or not valid(borderClass) or not valid(tree) then return end
+        local frame=StaticConstructObject(canvasClass,tree)
+        if not valid(frame) then return end
+        frame:SetVisibility(3) -- Hit-test invisible, including its children.
+        for _,edge in ipairs(edges) do
+            local line=StaticConstructObject(borderClass,tree)
+            if not valid(line) then return end
+            line:SetBrushColor(color)
+            local slot=frame:AddChildToCanvas(line)
+            if not valid(slot) then return end
+            slot:SetAnchors(edge.anchors)
+            slot:SetOffsets(edge.offsets)
+        end
+        local slot=parent:AddChildToOverlay(frame)
+        local ok,why=pcall(function()
+            assert(valid(slot),'carried_flag_border_overlay_slot')
+            slot:SetHorizontalAlignment(0) -- Fill the native icon overlay.
+            slot:SetVerticalAlignment(0)
+        end)
+        if not ok then
+            frame:RemoveFromParent()
+            error(why,0)
+        end
+        return frame
+    end
+
+    return function(bars,team,world)
+        local seen={}
+        for _,bar in ipairs(bars) do
+            local panel=valid(bar) and bar.FriendlyObjectives or nil
+            if valid(panel) then
+                for index=0,math.min(panel:GetChildrenCount(),32)-1 do
+                    local icon=panel:GetChildAt(index)
+                    if valid(icon) and icon:GetClass():GetFullName()==flagIconClass and valid(icon.Icon) then
+                        local key=icon:GetAddress()
+                        local parent=icon.Icon:GetParent()
+                        local frame=frames[key]
+                        if valid(frame) and not same_object(frame:GetParent(),parent) then
+                            frame:RemoveFromParent()
+                            frame=nil
+                            frames[key]=nil
+                        end
+                        if valid(parent) and parent:GetClass():GetFullName()=='Class /Script/UMG.Overlay' then
+                            local taken=enemy_carries(icon.CachedActor,team,world)
+                            if taken and not valid(frame) then
+                                frame=create_frame(icon,parent)
+                                frames[key]=frame
+                            end
+                            if valid(frame) then
+                                seen[key]=true
+                                local visibility=taken and 3 or 1
+                                if frame:GetVisibility()~=visibility then frame:SetVisibility(visibility) end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        for key,frame in pairs(frames) do
+            if not seen[key] then
+                if valid(frame) then frame:RemoveFromParent() end
+                frames[key]=nil
+            end
+        end
+    end
+end)()
+
 local function refresh_ctf_score_bar(pc,ps,gs)
     local team=ps.r_TeamId
-    if team~=1 and team~=2 then return end
+    if team~=1 and team~=2 then carriedFlagBorder({});return end
     local world=pc:GetWorld()
     if not same_object(world,gs:GetWorld()) then return end
     if not same_object(scoreBarWorld,world) or not same_object(scoreBarController,pc)
@@ -460,6 +556,9 @@ local function refresh_ctf_score_bar(pc,ps,gs)
         scoreBarScanDelay=3
     end
     scoreBarScanDelay=scoreBarScanDelay-1
+    reconcile_score_bar('carried_flag_border',function()
+        carriedFlagBorder(scoreBars,team,world)
+    end)
     local scores,malformed={},false
     local read=reconcile_score_bar('replication',function()
         local rows=gs.r_CurrentTeamScores
