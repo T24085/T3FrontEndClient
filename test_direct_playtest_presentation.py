@@ -59,6 +59,14 @@ function f.addScoreboard(world,controller)
     function board:IsVisible() return true end
     board.ScoreText_Friendly=score_text('0')
     board.ScoreText_Enemy=score_text('0')
+    board.FriendlyScoreFill=object('FriendlyFill')
+    board.EnemyScoreFill=object('EnemyFill')
+    function board:UpdateScore(score,label,fill)
+        assert((label==self.ScoreText_Friendly and fill==self.FriendlyScoreFill) or
+               (label==self.ScoreText_Enemy and fill==self.EnemyScoreFill))
+        label:SetText(tostring(score))
+        fill.score=score
+    end
     f.scoreboards[#f.scoreboards+1]=board
     return board
 end
@@ -210,6 +218,8 @@ class DirectPlaytestPresentationTests(unittest.TestCase):
         for board in (tab, result):
             self.assertEqual(board.ScoreText_Friendly.value, '4')
             self.assertEqual(board.ScoreText_Enemy.value, '1')
+            self.assertEqual(board.FriendlyScoreFill.score, 4)
+            self.assertEqual(board.EnemyScoreFill.score, 1)
         self.assertEqual(foreign.ScoreText_Friendly.value, '0')
         f.setPartialScore(8)
         f.refresh()

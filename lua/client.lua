@@ -477,17 +477,21 @@ local function refresh_ctf_score_bar(pc,ps,gs)
     if not read or malformed or scores[1]==nil or scores[2]==nil then scores={} end
     local friendly,enemy=scores[team],scores[3-team]
     if friendly~=nil then
-        local function sync_score_text(widget,score)
-            if valid(widget) and tonumber(widget:GetText():ToString())~=score then
-                widget:SetText(FText(string.format('%d',score)))
+        local function sync_score(board,score,label,fill)
+            if valid(label) and tonumber(label:GetText():ToString())~=score then
+                board:UpdateScore(score,label,fill)
             end
         end
         -- The Tab and Results scenes use UI_Game_Scoreboard, a separate widget
         -- from the in-match HUD. Keep its native team-result data and row stats.
         for _,board in ipairs(scoreboards) do
             if valid(board) then
-                reconcile_score_bar('scoreboard_friendly',function() sync_score_text(board.ScoreText_Friendly,friendly) end)
-                reconcile_score_bar('scoreboard_enemy',function() sync_score_text(board.ScoreText_Enemy,enemy) end)
+                reconcile_score_bar('scoreboard_friendly',function()
+                    sync_score(board,friendly,board.ScoreText_Friendly,board.FriendlyScoreFill)
+                end)
+                reconcile_score_bar('scoreboard_enemy',function()
+                    sync_score(board,enemy,board.ScoreText_Enemy,board.EnemyScoreFill)
+                end)
             end
         end
     end
