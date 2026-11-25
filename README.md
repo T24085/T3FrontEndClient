@@ -41,7 +41,19 @@ The [paired backend](https://github.com/T24085/T3BackEndServer) documents host s
 
 ## Source preview
 
-The integration branch adds private lobby locking and rejoin, Public CTF team switching, improved map downloads, and CTF flag HUD fixes. It includes the Windows and native Ubuntu launcher sources. Fixture results and pending in-game checks are listed in the [source preview README](https://github.com/T24085/T3FrontEndClient/tree/feat/phoenix-rising-issue-integration#source-preview) and [validation notes](https://github.com/T24085/T3FrontEndClient/blob/feat/phoenix-rising-issue-integration/docs/STATUS.md).
+The November 24 source sync brings together the ranked launcher, Starter skins,
+native Ubuntu handoff changes, radar and mission-boundary client support, and
+water splash fixes in the [current client preview](https://github.com/T24085/T3FrontEndClient/tree/sync/current-source-2026-11-24).
+See the [paired host preview](https://github.com/T24085/T3BackEndServer/tree/sync/current-source-2026-11-24)
+and the [client validation notes](https://github.com/T24085/T3FrontEndClient/blob/sync/current-source-2026-11-24/docs/STATUS.md).
+
+- [Bot training and dashboard source](https://github.com/T24085/T3FrontEndClient/tree/sync/2026-11-24/feat/local-bot-training/tools/bot_training)
+- [Regional Starter](https://github.com/T24085/T3FrontEndClient/tree/feat/regional-friend-host)
+- [Native Ubuntu join diagnostics](https://github.com/T24085/T3FrontEndClient/tree/sync/2026-11-24/feat/native-ubuntu-starter)
+- [Rust and Unreal client experiments](https://github.com/T24085/T3FrontEndClient/tree/feat/rust-unreal-client)
+- [November 24 worktree snapshots](https://github.com/T24085/T3FrontEndClient/branches/all?query=sync%2F2026-11-24)
+
+Use **Download and play** for the published installers.
 
 ## Starter screenshots
 
