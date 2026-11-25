@@ -38,10 +38,19 @@ cosmetic overrides that arrive on the original material after the view opens.
 The observer HUD also suppresses the default “Text Block” beside “SKI TOGGLE”
 and restores the label when the native HUD supplies a value.
 
-Lua fixture coverage exercises perspective controls, close-camera body
-presentation, target reacquisition, and camera clearance. An isolated native
-Firestorm test measured the open camera pose and the raised pose around a
-static obstacle. A rendered multiplayer check is pending.
+First person follows the viewed player's native eye position and field of view
+and takes its rotation from the player's replicated aim. When the native
+spectator pawn or view is briefly unavailable, the client waits for it and
+re-enters the selected perspective once it is ready. This preserves the
+spectator-only camera scope.
+
+The signed Windows r93 and Linux r25 builds contain the earlier collision
+boom. This candidate carries the newer chase camera and the first-person
+and transition fixes. The isolated Unreal fixture confirmed the eye position,
+aim, and field of view, and checked that the chase camera clears static
+obstacles and ignores dynamic blockers. The Lua fixture covers transient
+spectator state and perspective changes. A rendered multiplayer check and
+Starter publication are pending. See frontend issue #76.
 
 # Friendly flag carry border
 

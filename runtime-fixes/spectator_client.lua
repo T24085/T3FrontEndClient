@@ -3,10 +3,12 @@
 return function(env)
  local valid,scope,signature,report=assert(env.valid),assert(env.scope),assert(env.signature),assert(env.report)
  local passive=env.passive==true
- local pc,ps,world,rig,nextHandle;local stopped=false;local started=false
+ local pc,ps,world,rig,nextHandle;local stopped=false;local started=false;local primed=false
  local ready=false;local lastNext=0;local lastTarget=nil
  local preferredThird=true
  local renderedThird=nil
+ local cameraRefresh=false
+ local modeRetryAt=nil
  local skiPlaceholder=nil
  local lastHudScan=nil
  local materials=nil
@@ -69,11 +71,11 @@ return function(env)
   return valid(pc)and valid(ps)and same(pc.PlayerState,ps)and pc:IsLocalPlayerController()
    and not pc:HasAuthority()and same(pc:GetWorld(),world)and same(ps:GetWorld(),world)
  end
- local function guard()
-  scope();assert(not stopped and local_context(),'spectator_client_context_changed')
-  assert(ps:IsOnlyASpectator()and not valid(pc.Pawn),'spectator_client_observer_only_required')
+ local function observer_context()
+  return local_context() and ps:IsOnlyASpectator() and not valid(pc.Pawn)
  end
  local function prime()
+  if primed then return end
   local callback=StaticFindObject('/Script/Topaz.TopGameMode_Topaz:OnGeneratorOnline');assert(valid(callback),'spectator_client_property_initializer_required')
   callback:ForEachProperty(function(p)assert(type(p.GetPropertyClass)=='function'and p:GetPropertyClass():GetFullName()=='Class /Script/Topaz.TopGenerator','spectator_client_object_binding_required')end)
   signature('/Script/Engine.PlayerState:IsOnlyASpectator',{{'ReturnValue','BoolProperty',0}})
@@ -93,6 +95,8 @@ return function(env)
   signature('/Script/Engine.SceneComponent:K2_SetWorldLocationAndRotation',{{'NewLocation','StructProperty',0},{'NewRotation','StructProperty',24},
    {'bSweep','BoolProperty',48},{'SweepHitResult','StructProperty',56},{'bTeleport','BoolProperty',288}})
   signature('/Script/Engine.SceneComponent:SetAbsolute',{{'bNewAbsoluteLocation','BoolProperty',0},{'bNewAbsoluteRotation','BoolProperty',1},{'bNewAbsoluteScale','BoolProperty',2}})
+  signature('/Script/Engine.SceneComponent:K2_SetWorldRotation',{{'NewRotation','StructProperty',0},
+   {'bSweep','BoolProperty',24},{'SweepHitResult','StructProperty',32},{'bTeleport','BoolProperty',264}})
   signature('/Script/Engine.Pawn:GetBaseAimRotation',{{'ReturnValue','StructProperty',0}})
   signature(chaseTrace,{{'WorldContextObject','ObjectProperty',0},{'Start','StructProperty',8},{'End','StructProperty',32},
    {'Radius','FloatProperty',56},{'ObjectTypes','ArrayProperty',64},{'bTraceComplex','BoolProperty',80},
@@ -114,6 +118,7 @@ return function(env)
     assert(not idleField and p:GetFullName()=='FloatProperty /Script/Valhalla.ValPlayerController:AFKTimer'and p:GetOffset_Internal()==3924,'spectator_idle_field_changed');idleField=true
    end
   end);assert(idleField,'spectator_idle_field_required')
+  primed=true
  end
  local function component_inventory(target)
   local raw=target:K2_GetComponentsByClass(StaticFindObject('/Script/Engine.ActorComponent'))
@@ -131,9 +136,20 @@ return function(env)
   end
   return components
  end
+ local function viewed_pawn()
+  local target=pc:GetViewTarget()
+  if valid(target) and target:IsA(StaticFindObject('/Script/Engine.PlayerState')) then return target.PawnPrivate end
+  return target
+ end
+ local function spectator_pawn()
+  local spectator=pc:GetSpectatorPawn()
+  if valid(spectator) and same(spectator:GetWorld(),world) then return spectator end
+ end
  local function release_rig()
-  if materials then materials.retire()end
-  if not rig then return true end
+  if not rig then
+   if materials then materials.retire()end
+   return true
+  end
   local r=rig;local target=r.target
   local components=nil
   if valid(target)and identity(target)==r.identity then
@@ -142,19 +158,26 @@ return function(env)
   if components and #components>=1 then
    -- The native camera manager may cache the component selected on entering
    -- a view target. Leave this exact actor before destroying that component.
-   if valid(pc)and same(pc:GetViewTarget(),target)then
-    assert(same(pc:GetWorld(),world)and pc:IsLocalPlayerController()and not pc:HasAuthority()and valid(pc.PlayerState)and pc.PlayerState:IsOnlyASpectator()and not valid(pc.Pawn),'spectator_camera_release_context_changed')
-    local spectator=pc:GetSpectatorPawn()
-    assert(valid(spectator)and same(spectator:GetWorld(),world),'spectator_camera_release_pawn_required')
+   if valid(pc) and same(viewed_pawn(),target) then
+    if not observer_context() then return false end
+    local spectator=spectator_pawn()
+    if not spectator then return false end
     pc:SetViewTargetWithBlend(spectator,0,0,0,false)
-    assert(same(pc:GetViewTarget(),spectator),'spectator_camera_release_view_unconfirmed')
+    if not same(pc:GetViewTarget(),spectator) then return false end
    end
+  end
+  if materials then materials.retire()end
+  if components and #components>=1 then
    -- A stored Lua wrapper is not a native lifetime guarantee. Never put an
    -- invalid original back into a reflected camera field during restoration.
    if r.camera and same(target.ThirdPersonCameraComponent,r.camera)then target.ThirdPersonCameraComponent=valid(r.originalCamera)and r.originalCamera or nil end
    if r.arm and same(target.ThirdPersonCameraBoom,r.arm)then target.ThirdPersonCameraBoom=valid(r.originalArm)and r.originalArm or nil end
    if r.changedForce and target.bForceOnlySpectatorToThirdPerson==false then target.bForceOnlySpectatorToThirdPerson=r.originalForce end
-   for i=1,2 do local component,wanted;if i==1 then component,wanted=r.camera,r.cameraIdentity else component,wanted=r.arm,r.armIdentity end
+   if r.first and same(target.FirstPersonCameraComponent,r.first) then
+    target.FirstPersonCameraComponent=valid(r.nativeEye) and r.nativeEye or nil
+   end
+   for _,entry in ipairs({{r.first,r.firstIdentity},{r.camera,r.cameraIdentity},{r.arm,r.armIdentity}})do
+    local component,wanted=entry[1],entry[2]
     local present=false
     for _,current in ipairs(components)do if valid(current)and identity(current)==wanted then present=true end end
     if present then
@@ -191,7 +214,7 @@ return function(env)
  end
  local function sweep_retired()
   for i=#retired,1,-1 do local r=retired[i]
-   if not valid(r.target)and not valid(r.camera)and not valid(r.arm)then table.remove(retired,i)end
+   if not valid(r.target)and not valid(r.first)and not valid(r.camera)and not valid(r.arm)then table.remove(retired,i)end
   end
  end
  local function allow_first_person(r)
@@ -201,8 +224,8 @@ return function(env)
   return true
  end
  local function target_rig(target)
-  if rig and same(rig.target,target)then return end
-  release_rig()
+  if rig and same(rig.target,target)then return true end
+  if not release_rig() then return false end
   assert(not target:HasAuthority()and same(target:GetWorld(),world),'spectator_camera_remote_replica_required')
   local r={target=target,identity=identity(target),originalCamera=target.ThirdPersonCameraComponent,originalArm=target.ThirdPersonCameraBoom,originalForce=target.bForceOnlySpectatorToThirdPerson}
   assert(type(r.originalForce)=='boolean','spectator_original_camera_policy_required')
@@ -227,6 +250,33 @@ return function(env)
   assert(r.camera:K2_AttachToComponent(root,FName('None'),0,0,0,false),'spectator_local_camera_attach_failed')
   target.ThirdPersonCameraBoom=r.arm;target.ThirdPersonCameraComponent=r.camera
   assert(same(target.ThirdPersonCameraBoom,r.arm)and same(target.ThirdPersonCameraComponent,r.camera),'spectator_local_camera_binding_failed')
+  return true
+ end
+ local function update_first_person(r)
+  local target=r.target
+  local eye=target.FirstPersonCameraComponent
+  if same(eye,r.first) then eye=r.nativeEye end
+  if not valid(eye) or not same(eye:GetOwner(),target) then return false end
+  if not valid(r.first) then
+   local transform={Rotation={X=0,Y=0,Z=0,W=1},Translation={X=0,Y=0,Z=0},Scale3D={X=1,Y=1,Z=1}}
+   r.first=target:AddComponentByClass(StaticFindObject('/Script/Engine.CameraComponent'),false,transform,false)
+   assert(valid(r.first) and same(r.first:GetOwner(),target),'spectator_local_eye_creation_failed')
+   r.firstIdentity=identity(r.first)
+  end
+  if not same(target.FirstPersonCameraComponent,r.first) then
+   -- Attachment follows the native eye position at render cadence. Only
+   -- rotate the viewer-owned camera, using the remote pawn's replicated aim.
+   r.first:SetAbsolute(false,true,false)
+   assert(r.first:K2_AttachToComponent(eye,FName('None'),2,0,0,false),'spectator_local_eye_attach_failed')
+   r.nativeEye=eye
+   target.FirstPersonCameraComponent=r.first
+   cameraRefresh=true
+  end
+  local fov=eye.FieldOfView
+  if type(fov)=='number' and fov>0 and fov<180 then r.first.FieldOfView=fov end
+  local aim=target:GetBaseAimRotation()
+  r.first:K2_SetWorldRotation({Pitch=aim.Pitch,Yaw=aim.Yaw,Roll=aim.Roll},false,{},true)
+  return true
  end
  local function chase_endpoint(pivot,pitch,yaw,length)
   local p,y=math.rad(pitch),math.rad(yaw)
@@ -267,9 +317,7 @@ return function(env)
   r.camera:K2_SetWorldLocationAndRotation(location,{Pitch=bestPitch,Yaw=bestYaw,Roll=0},false,{},true)
  end
  local function current_target()
-  local target=pc:GetViewTarget()
-  local stateClass=StaticFindObject('/Script/Engine.PlayerState')
-  if valid(target)and target:IsA(stateClass)then target=target.PawnPrivate end
+  local target=viewed_pawn()
   local characterClass=StaticFindObject('/Script/Valhalla.ValCharacter')
   if valid(target)and target:IsA(characterClass)and same(target:GetWorld(),world)and target.bInitialized==true
    and not same(target,pc.Pawn) then
@@ -281,18 +329,33 @@ return function(env)
   return nil
  end
  local function refresh_camera(target)
-  local spectator=pc:GetSpectatorPawn();assert(valid(spectator)and same(spectator:GetWorld(),world),'spectator_native_camera_pawn_required')
+  local spectator=spectator_pawn()
+  if not spectator then return false end
   -- Val's camera manager caches its component when the view target changes.
   -- Re-enter the same native target after installing a viewer-local rig or
   -- changing perspective; no server target or possession is changed.
   pc:SetViewTargetWithBlend(spectator,0,0,0,false)
+  if not same(pc:GetViewTarget(),spectator) then return false end
   pc:SetViewTargetWithBlend(target,0,0,0,false)
+  return same(viewed_pawn(),target)
  end
  local function select_perspective()
-  local changed=pc:IsThirdPerson()~=preferredThird
-  if changed then pc:ToggleThirdPerson()end
-  assert(pc:IsThirdPerson()==preferredThird,'spectator_requested_perspective_required')
-  return changed
+  if pc:IsThirdPerson()==preferredThird then
+   modeRetryAt=nil
+   return true
+  end
+  cameraRefresh=true
+  local stamp=now()
+  if modeRetryAt and stamp<modeRetryAt then return false end
+  pc:ToggleThirdPerson()
+  if pc:IsThirdPerson()==preferredThird then
+   modeRetryAt=nil
+   return true
+  end
+  -- A native spectator transition can defer this toggle. Retry at most
+  -- once per second while preserving the requested camera mode.
+  modeRetryAt=stamp+1
+  return false
  end
  local function native_third_person(target)
   -- The native death camera owns its perspective and can pass close to the
@@ -325,22 +388,29 @@ return function(env)
    materials.poll(target,third)
   end
  end
+ local function apply_view(target)
+  if allow_first_person(rig) then cameraRefresh=true end
+  if not select_perspective() then return false end
+  if preferredThird then
+   update_chase(rig)
+  elseif not update_first_person(rig) then
+   return false
+  end
+  if cameraRefresh and not refresh_camera(target) then return false end
+  cameraRefresh=false
+  update_presentation(target)
+  return true
+ end
  function service.action(action)
-  if stopped or not pc then return end
-  guard()
+  scope()
+  if stopped or not observer_context() then return end
   if action=='next'or action=='previous'then pc:ServerSpectateNext(action=='next'and 1 or -1)
   elseif action=='first'or action=='third'then
    preferredThird=action=='third'
+   cameraRefresh=true;modeRetryAt=nil
    local target=current_target()
-   local following=target and same(rig and rig.target,target)
-   if following then allow_first_person(rig)end
-   select_perspective()
-   -- Explicit mode selection also repairs a cached camera whose controller
-   -- is already reporting the requested mode.
-   if following then
-    if preferredThird then update_chase(rig)end
-    refresh_camera(target);update_presentation(target)
-   end
+   if target and same(rig and rig.target,target) then apply_view(target)
+   else select_perspective()end
    report('SPECTATOR_VIEW|mode='..action)
   else error('spectator_unknown_camera_action')end
  end
@@ -352,7 +422,11 @@ return function(env)
   end
  end
  local function follow()
-  guard()
+  scope()
+  if not observer_context() then
+   cameraRefresh=true
+   return
+  end
   refresh_ski_hud()
   -- Watching is intentionally passive. The original local AFK clock also
   -- kicks observer-only controllers; exempt this exact admitted viewer while
@@ -364,24 +438,17 @@ return function(env)
   sweep_retired();local target=current_target()
   if not target then
    select_perspective()
-   release_rig();lastTarget=nil;renderedThird=nil
+   if release_rig() then lastTarget=nil;renderedThird=nil end
    if now()-lastNext>=2 then lastNext=now();pc:ServerSpectateNext(1)end
    return
   end
   local changed=lastTarget~=identity(target)
   if changed then
-   target_rig(target);lastTarget=identity(target);renderedThird=nil
-  end
-  local policyReset=allow_first_person(rig)
-  local perspectiveChanged=select_perspective()
-  if preferredThird then update_chase(rig)end
-  if changed or perspectiveChanged or policyReset then
-   refresh_camera(target)
-  end
-  if changed then
+   if not target_rig(target) then return end
+   lastTarget=identity(target);renderedThird=nil;cameraRefresh=true
    report('SPECTATOR_TARGET|lease='..env.lease_id..'|watch='..env.watch_id..'|player='..target:GetFullName())
   end
-  update_presentation(target)
+  if not apply_view(target) then return end
   if not ready then ready=true;report('SPECTATOR_READY|lease='..env.lease_id..'|watch='..env.watch_id..'|mode='..(preferredThird and'third'or'first'))end
  end
  local schedule
@@ -406,8 +473,7 @@ return function(env)
    ExecuteInGameThread(function()
     if stopped then return end
     local ok,why=pcall(function()
-     guard()
-     if mouse and pc.bShowMouseCursor==true then return end
+     if mouse and (not observer_context() or pc.bShowMouseCursor==true) then return end
      local selected=action
      if action=='toggle'then selected=preferredThird and 'first' or 'third'end
      service.action(selected)
@@ -418,9 +484,12 @@ return function(env)
  end
  function service.tick(controller,state,gameState)
   assert(not passive,'spectator_lease_runtime_required')
+  scope()
   if not started then
-   prime();pc=controller;ps=state;world=pc:GetWorld();guard()
-   assert(same(gameState:GetWorld(),world),'spectator_game_state_world_required')
+   pc=controller;ps=state;world=pc:GetWorld()
+   if not local_context() or not same(gameState:GetWorld(),world)then return end
+   prime()
+   if not observer_context() then return end
    assert(type(env.material_factory)=='function','spectator_material_factory_required')
    materials=env.material_factory({pc=pc,valid=valid,scope=scope,signature=signature,report=report})
    assert(type(materials)=='table'and type(materials.apply)=='function'and type(materials.poll)=='function'and type(materials.retire)=='function'and type(materials.owned)=='function','spectator_material_runtime_required')
@@ -440,7 +509,6 @@ return function(env)
    report('SPECTATOR_IDLE_POLICY|scope=local_observer_only')
    schedule()
   end
-  guard()
  end
  function service.observe_native(controller,state,gameState)
   scope()
@@ -492,7 +560,13 @@ return function(env)
   end
   update()
  end
- function service.retire()scope();cleanup();sweep_retired();stopped=true;return #retired==0 and(not materials or #materials.owned()==0)end
+ function service.retire()
+  scope()
+  local cleaned=cleanup()
+  sweep_retired()
+  stopped=true
+  return cleaned and #retired==0 and(not materials or #materials.owned()==0)
+ end
  function service.owned()return {rig=rig,retired=retired,materials=materials and materials.owned()or{},pc=pc,world=world,stopped=stopped}end
  return service
 end

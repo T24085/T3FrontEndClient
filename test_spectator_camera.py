@@ -93,15 +93,22 @@ function make_target(name)
  function t.RootComponent:GetOwner()return t end
  function t.RootComponent:K2_GetComponentLocation()return {X=0,Y=0,Z=100}end
  t.alpha=0
- t.FirstPersonCameraComponent=object(name..'_eye')
- function t.FirstPersonCameraComponent:GetOwner()return t end
- function t.FirstPersonCameraComponent:K2_GetComponentLocation()return {X=0,Y=0,Z=64}end
+ t.eye=object(name..'_eye');t.FirstPersonCameraComponent=t.eye
+ t.eye.FieldOfView=104;t.eye.position={X=0,Y=0,Z=64}
+ function t.eye:GetOwner()return t end
+ function t.eye:K2_GetComponentLocation()return self.position end
  function t:GetThirdPersonCameraAlpha()return self.alpha end
  function t:AddComponentByClass(class,manual,transform)
   local component=object(class.name)
   component.height=transform.Translation.Z
   function component:GetOwner()return t end
-  function component:K2_AttachToComponent(parent,socket)assert(parent==t.RootComponent and socket=='None');return true end
+  function component:K2_AttachToComponent(parent,socket,locationRule)
+   assert(socket=='None' and ((parent==t.RootComponent and locationRule==0) or (parent==t.eye and locationRule==2)))
+   self.parent=parent
+   return true
+  end
+  function component:K2_GetComponentLocation()return self.parent:K2_GetComponentLocation()end
+  function component:K2_SetWorldRotation(rotation)self.rotation=rotation end
   function component:SetAbsolute(location,rotation,scale)assert(not location and rotation and not scale)end
   function component:K2_SetWorldLocationAndRotation(location,rotation)self.location=location;self.rotation=rotation end
   return component
@@ -113,7 +120,7 @@ function make_target(name)
 end
 pc=object('observer');ps=object('observer_state');pc.PlayerState=ps
 function ps:IsOnlyASpectator()return true end
-local spectator=object('spectator_pawn')
+local spectator=object('spectator_pawn');pc.spectator=spectator
 pc.third=false;pc.AFKTimer=10;pc.directions={};pc.toggles=0;pc.camera_refreshes=0
 pc.PlayerCameraManager=object('camera_manager')
 pc.PlayerCameraManager.location={X=0,Y=0,Z=64}
@@ -123,7 +130,7 @@ function pc:IsLocalPlayerController()return true end
 function pc:IsThirdPerson()return self.third end
 function pc:ToggleThirdPerson()self.third=not self.third;self.toggles=self.toggles+1 end
 function pc:GetViewTarget()return self.view end
-function pc:GetSpectatorPawn()return spectator end
+function pc:GetSpectatorPawn()return self.spectator end
 function pc:SetViewTargetWithBlend(target)self.view=target;self.camera_refreshes=self.camera_refreshes+1 end
 function pc:ServerViewSelf()self.view=spectator end
 function pc:ServerRequestStartSpectating()self.view=active end
@@ -151,7 +158,8 @@ end
 retirements=0
 function materials.retire()retirements=retirements+1 end
 function materials.owned()return {}end
-env={lease_id='lease',watch_id='watch',now=function()return 100 end,
+clock=100
+env={lease_id='lease',watch_id='watch',now=function()return clock end,
  valid=function(obj)return type(obj)=='table'and obj.alive==true end,
  scope=function()end,signature=function()end,
  report=function(event)events[#events+1]=event end,
@@ -344,12 +352,53 @@ class SpectatorCameraTests(unittest.TestCase):
         self.assertEqual((ROOT / 'lua/spectator_client.lua').read_bytes(),
                          (ROOT / 'runtime-fixes/spectator_client.lua').read_bytes())
 
-    def test_ordinary_player_is_rejected_before_perspective_changes(self):
+    def test_ordinary_player_is_ignored_before_perspective_changes(self):
         self.check('''
         function ps:IsOnlyASpectator()return false end
-        pc.third=true
-        local ok=pcall(service.action,'first')
-        assert(not ok and pc.third)
+        pc.Pawn=active
+        keys.F7();follow_once()
+        assert(pc.third and pc.AFKTimer==10 and #presentations==0)
+        ''')
+
+    def test_first_person_tracks_the_native_eye_and_current_aim(self):
+        self.check('''
+        follow_once();active.aim={Pitch=32,Yaw=-125,Roll=7};keys.F7()
+        local lens=active.FirstPersonCameraComponent
+        assert(lens~=active.eye and lens.parent==active.eye)
+        assert(lens.FieldOfView==104 and lens:K2_GetComponentLocation().Z==64)
+        assert(lens.rotation.Pitch==32 and lens.rotation.Yaw==-125 and lens.rotation.Roll==7)
+        active.eye.position={X=52,Y=30,Z=116}
+        assert(lens:K2_GetComponentLocation().X==52 and lens:K2_GetComponentLocation().Z==116)
+        active.aim={Pitch=-18,Yaw=85,Roll=0};follow_once()
+        assert(lens.rotation.Pitch==-18 and lens.rotation.Yaw==85)
+        keys.F8();keys.F7();assert(active.FirstPersonCameraComponent==lens)
+        ''')
+
+    def test_missing_spectator_pawn_and_local_state_are_retried(self):
+        self.check('''
+        follow_once()
+        local pawn=pc.spectator;pc.spectator=nil
+        local refreshes=pc.camera_refreshes
+        keys.F7();follow_once()
+        local lens=active.FirstPersonCameraComponent
+        assert(not pc.third and pc.camera_refreshes==refreshes and presentations[#presentations]==true)
+        pc.PlayerState=nil;pc.AFKTimer=7;follow_once()
+        assert(pc.AFKTimer==7 and lens==active.FirstPersonCameraComponent)
+        pc.spectator=pawn;pc.PlayerState=ps;follow_once()
+        assert(pc.camera_refreshes==refreshes+2 and presentations[#presentations]==false)
+        assert(lens==active.FirstPersonCameraComponent and pc.AFKTimer==0)
+        ''')
+
+    def test_delayed_engine_perspective_change_keeps_requested_mode(self):
+        self.check('''
+        follow_once()
+        function pc:ToggleThirdPerson()self.toggles=self.toggles+1 end
+        keys.F7();follow_once();follow_once()
+        assert(pc.third and pc.toggles==2)
+        clock=clock+1;follow_once()
+        assert(pc.toggles==3)
+        pc.third=false;follow_once()
+        assert(presentations[#presentations]==false and active.FirstPersonCameraComponent.parent==active.eye)
         ''')
 
     def test_builder_replaces_stale_verified_camera_and_keeps_feature_gating(self):
