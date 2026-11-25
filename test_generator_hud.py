@@ -101,7 +101,8 @@ local controller={GetAddress=function()return 2 end,GetWorld=function()return wo
 local team={r_TeamId=1}
 local missing=true
 local scores={{TeamNum=1,Score=3},{TeamNum=2,Score=5}}
-local state={GetWorld=function()return world end,GetAddress=function()return 3 end}
+local state={GetWorld=function()return world end,GetAddress=function()return 3 end,
+ GetServerWorldTimeSeconds=function()return 1 end}
 state.r_CurrentTeamScores={
  GetArrayNum=function() return #scores end,
  ForEach=function(_,visit)

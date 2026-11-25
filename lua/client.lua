@@ -565,6 +565,11 @@ local ctfFlagHud=(function()
     local retry={}
     local mapWidgets={}
     local observedAttachments={}
+    local previousFlag={}
+    local playerSnapshots={}
+    local overlayWidgets,overlayBindings={},{}
+    local overlayClass='WidgetBlueprintGeneratedClass '..directory..'Overlays/UI_Game_Overlays.UI_Game_Overlays_C'
+    local characterClass,characterConfig
     local stolenBorders={}
     local scanDelay=0
 
@@ -574,13 +579,16 @@ local ctfFlagHud=(function()
 
     local function snapshot(world)
         local flags,teams,attachments={},{},{}
+        local ambiguous={}
         for _,flag in ipairs(FindAllOf('TopPickup_Flag') or {}) do
             if valid(flag) and same_object(flag:GetWorld(),world) then
                 local team=flag.r_TeamId
-                if (team~=1 and team~=2) or teams[team] then return end
-                local info=flag:GetHeldBy()
-                if type(info.bReturned)~='boolean' then return end
+                if team~=1 and team~=2 then goto next_flag end
                 local key=flag:GetAddress()
+                if teams[team] and teams[team]~=key then ambiguous[team]=true end
+                teams[team]=key
+                local info=flag:GetHeldBy()
+                if type(info.bReturned)~='boolean' then goto next_flag end
                 local holder=info.Holder
                 if info.bReturned then
                     holder=nil
@@ -603,13 +611,24 @@ local ctfFlagHud=(function()
                     end
                 end
                 flags[key]={flag=flag,team=team,info=info,holder=holder}
-                teams[team]=true
             end
+            ::next_flag::
         end
-        if teams[1] and teams[2] then
-            observedAttachments=attachments
-            return flags
+        local markers={}
+        for team=1,2 do
+            local key=teams[team]
+            if ambiguous[team] then key=previousFlag[team] end
+            local row=flags[key]
+            if row and row.team==team then markers[key]=row else key=nil end
+            previousFlag[team]=key
         end
+        observedAttachments=attachments
+        -- Only a settled pair may update scores. The minimap can already
+        -- prune stale markers and show the unambiguous team during handoff.
+        if previousFlag[1] and previousFlag[2] and not ambiguous[1] and not ambiguous[2] then
+            return markers,markers
+        end
+        return nil,markers
     end
 
     local function inspect(panel,expected,flags,team)
@@ -746,11 +765,14 @@ local ctfFlagHud=(function()
     function runtime.prepare(pc,world)
         if not same_object(controllerIdentity,pc) or not same_object(worldIdentity,world) then
             controllerIdentity,worldIdentity=pc,world
+            previousFlag,playerSnapshots,overlayWidgets,overlayBindings={},{},{},{}
+            characterClass,characterConfig=nil,nil
             retry,mapWidgets,observedAttachments,stolenBorders,scanDelay={},{},{},{},0
         end
         for key,entry in pairs(stolenBorders) do
             if not valid(entry.icon) or not valid(entry.icon:GetParent()) then stolenBorders[key]=nil end
         end
+        runtime.scan(pc,world)
         return snapshot(world)
     end
 
@@ -783,16 +805,116 @@ local ctfFlagHud=(function()
         -- Late names and the settled attachment state are read on the next tick.
     end
 
-    function runtime.minimap(pc,world,flags,now)
-        if scanDelay==0 then
-            mapWidgets={}
-            for _,widget in ipairs(FindAllOf('UI_Game_Map_C') or {}) do
-                if class_is(widget,mapClass) and same_object(widget:GetWorld(),world)
-                    and same_object(widget:GetOwningPlayer(),pc) then mapWidgets[#mapWidgets+1]=widget end
+    -- The native map caches player widgets by PlayerState. Rebuild from its
+    -- own team data after a settled change, including a replacement pawn.
+    local function player_snapshot(gs,world,viewer)
+        local members={}
+        local count,settled=0,true
+        local players=gs.PlayerArray
+        players:ForEach(function(_,param)
+            local state=param:get()
+            if not valid(state) or not same_object(state:GetWorld(),world) then return end
+            local team=state.r_TeamId
+            if team~=1 and team~=2 then return end
+            local pawn=state.PawnPrivate
+            if not valid(pawn) then return end
+            if not same_object(pawn.PlayerState,state) or not same_object(pawn:GetWorld(),world)
+                or pawn:GetTeamId()~=team then settled=false;return end
+            members[state:GetAddress()]={team=team,pawn=pawn:GetAddress(),actor=pawn}
+            count=count+1
+        end)
+        return {members=members,count=count,viewer=viewer,settled=settled}
+    end
+
+    local function refresh_players(widget,roster)
+        local key=widget:GetAddress()
+        local old=playerSnapshots[key]
+        if old and old.viewer==roster.viewer and old.count==roster.count then
+            local changed=false
+            for id,row in pairs(roster.members) do
+                local before=old.members[id]
+                if not before or before.team~=row.team or before.pawn~=row.pawn then
+                    changed=true
+                    break
+                end
             end
+            if not changed then return end
+        end
+        widget:ResetPlayers()
+        widget:FlagAllTeamsNeedUpdate()
+        playerSnapshots[key]=roster
+    end
+
+    local function owned_widgets(name,class,pc,world)
+        local widgets={}
+        for _,widget in ipairs(FindAllOf(name) or {}) do
+            if class_is(widget,class) and same_object(widget:GetWorld(),world)
+                and same_object(widget:GetOwningPlayer(),pc) then widgets[#widgets+1]=widget end
+        end
+        return widgets
+    end
+
+    function runtime.scan(pc,world)
+        if scanDelay==0 then
+            mapWidgets=owned_widgets('UI_Game_Map_C',mapClass,pc,world)
+            overlayWidgets=owned_widgets('UI_Game_Overlays_C',overlayClass,pc,world)
+            local retained={}
+            for _,widget in ipairs(mapWidgets) do
+                local key=widget:GetAddress()
+                retained[key]=playerSnapshots[key]
+            end
+            playerSnapshots=retained
             scanDelay=3
         end
         scanDelay=scanDelay-1
+    end
+
+    local function refresh_overlays(panel,roster,pc,bindings)
+        -- UI_Game_Overlays.ReattachPlayerWidget uses this exact call on an
+        -- existing character overlay with the same owning PlayerState.
+        characterClass=characterClass or StaticFindObject('/Script/Topaz.TopOverlayWidget_Character')
+        characterConfig=characterConfig or StaticFindObject('/Game/Topaz/Common/Overlays/Config/OverlayConfig_Character.OverlayConfig_Character')
+        if not valid(characterClass) then characterClass=nil;return end
+        if not valid(characterConfig) then characterConfig=nil;return end
+        for i=0,panel:GetChildrenCount()-1 do
+            local icon=panel:GetChildAt(i)
+            if valid(icon) and icon:IsA(characterClass) then
+                local state=icon:GetOwningPlayerState()
+                local row=valid(state) and roster.members[state:GetAddress()] or nil
+                if row and not same_object(state,pc.PlayerState) then
+                    local key=icon:GetAddress()
+                    local old=overlayBindings[key]
+                    if not old or old.viewer~=roster.viewer or old.team~=row.team
+                        or old.pawn~=row.pawn or old.state~=state:GetAddress() then
+                        icon:SetOwningConfig(row.actor,characterConfig)
+                    end
+                    bindings[key]={viewer=roster.viewer,team=row.team,pawn=row.pawn,state=state:GetAddress()}
+                end
+            end
+        end
+    end
+
+    function runtime.players(pc,world,gs,viewer)
+        if #mapWidgets==0 and #overlayWidgets==0 then return end
+        local state,pawn=pc.PlayerState,pc.Pawn
+        if not valid(state) or not valid(pawn) or not same_object(pawn,state.PawnPrivate)
+            or not same_object(pawn.PlayerState,state) or pawn:GetTeamId()~=viewer then return end
+        local roster=player_snapshot(gs,world,viewer)
+        for _,widget in ipairs(mapWidgets) do
+            if roster.settled and valid(widget) and widget:GetVisibility()~=1 and widget:GetVisibility()~=2 then
+                reconcile_score_bar('minimap_players',function() refresh_players(widget,roster) end)
+            end
+        end
+        local bindings={}
+        for _,widget in ipairs(overlayWidgets) do
+            if valid(widget) and valid(widget.Players) then
+                reconcile_score_bar('player_chevrons',function() refresh_overlays(widget.Players,roster,pc,bindings) end)
+            end
+        end
+        overlayBindings=bindings
+    end
+
+    function runtime.minimap(pc,world,flags,now)
         for _,widget in ipairs(mapWidgets) do
             if valid(widget) and widget:GetVisibility()~=1 and widget:GetVisibility()~=2
                 and type(widget.MapScale)=='number' and widget.MapScale>0 then
@@ -807,7 +929,9 @@ local ctfFlagHud=(function()
                     -- building it. Never clear a layer with unrelated children.
                     if missing and not view.other and retry_binding(widget,now) then
                         widget:BindFlags()
-                        view=inspect(widget.Flags,mapMarkerClass,flags) or view
+                        view=inspect(widget.Flags,mapMarkerClass,flags)
+                        if not view then goto next_widget end
+                        remove_stale(view)
                     end
                     for key,marker in pairs(view.icons) do
                         local row=flags[key]
@@ -824,6 +948,7 @@ local ctfFlagHud=(function()
                     widget:UpdateFlags()
                 end
             end
+            ::next_widget::
         end
     end
 
@@ -855,11 +980,12 @@ local function refresh_ctf_score_bar(pc,ps,gs)
         scoreBarScanDelay=3
     end
     scoreBarScanDelay=scoreBarScanDelay-1
-    local flags
-    reconcile_score_bar('flags',function() flags=ctfFlagHud.prepare(pc,world) end)
-    if flags then
+    local flags,markers
+    reconcile_score_bar('flags',function() flags,markers=ctfFlagHud.prepare(pc,world) end)
+    reconcile_score_bar('players',function() ctfFlagHud.players(pc,world,gs,team) end)
+    if markers then
         reconcile_score_bar('minimap_flags',function()
-            ctfFlagHud.minimap(pc,world,flags,gs:GetServerWorldTimeSeconds())
+            ctfFlagHud.minimap(pc,world,markers,gs:GetServerWorldTimeSeconds())
         end)
     end
     local scores,malformed={},false

@@ -45,6 +45,7 @@ local f={pc=pc,world=world,now=0}
 local function FindAllOf(class)
     if class=='TopPickup_Flag' then return flags end
     if class=='UI_Game_Map_C' then return widgets end
+    if class=='UI_Game_Overlays_C' then return f.overlays or {} end
     error(class)
 end
 local function valid(o) return o~=nil and not o.invalid end
@@ -55,6 +56,7 @@ local function FText(text) return text end
 local function reconcile_score_bar(_,update) update() end
 local borderClass={GetFullName=function()return 'Class /Script/UMG.Border' end}
 local function StaticFindObject(path)
+    if f.overlayTypes and f.overlayTypes[path] then return f.overlayTypes[path] end
     assert(path=='/Script/UMG.Border')
     return borderClass
 end
@@ -337,6 +339,183 @@ assert(hud.prepare(f.pc,f.world)==nil)
 expired.invalid=true
 local flags=assert(hud.prepare(f.pc,f.world))
 assert(flags[friendly] and flags[enemy] and not flags[expired])
+return true
+''')
+
+    def test_minimap_prunes_overlapping_flags_on_native_bind_and_handoff(self):
+        self.run_lua(r'''
+local a,b=f.flag(1),f.flag(2)
+local map=f.map()
+local function update(t)
+    local score,markers=hud.prepare(f.pc,f.world)
+    hud.minimap(f.pc,f.world,markers,t)
+    return score
+end
+assert(update(1))
+local replacement=f.flag(1)
+map:BindFlags()
+assert(map.Flags:GetChildrenCount()==3)
+assert(not update(2))
+assert(map.Flags:GetChildrenCount()==2 and map.Flags:GetChildAt(0).CachedActor==a)
+-- Force the native binder to create the overlapping marker again.
+table.remove(map.Flags.children,2)
+assert(not update(5))
+assert(map.Flags:GetChildrenCount()==2 and map.Flags:GetChildAt(1).CachedActor==b)
+a.invalid=true
+assert(update(9))
+assert(map.Flags:GetChildrenCount()==2)
+local seen={}
+for _,marker in ipairs(map.Flags.children) do seen[marker.CachedActor]=true end
+assert(seen[replacement] and seen[b] and not seen[a])
+return true
+''')
+
+    def test_join_during_overlap_displays_only_the_unambiguous_flag(self):
+        self.run_lua(r'''
+local old,current,other=f.flag(2),f.flag(2),f.flag(1)
+local map=f.map()
+map:BindFlags()
+local unrelated=f.unrelated()
+map.Flags:add(unrelated)
+local score,markers=hud.prepare(f.pc,f.world)
+assert(not score)
+hud.minimap(f.pc,f.world,markers,1)
+assert(map.Flags:GetChildrenCount()==2 and map.Flags:GetChildAt(0).CachedActor==other)
+assert(map.Flags:GetChildAt(1)==unrelated)
+old.invalid=true
+table.remove(map.Flags.children,2)
+score,markers=hud.prepare(f.pc,f.world)
+assert(score)
+hud.minimap(f.pc,f.world,markers,5)
+assert(map.Flags:GetChildrenCount()==2)
+return true
+''')
+
+    def test_player_markers_rebuild_after_team_and_pawn_changes(self):
+        self.run_lua(r'''
+local own,enemy=f.flag(1),f.flag(2)
+local map=f.map()
+local state=object('player',world)
+local viewer=1
+pc.PlayerState=object('viewer',world)
+pc.Pawn=f.pawn()
+pc.Pawn.PlayerState,pc.PlayerState.PawnPrivate=pc.PlayerState,pc.Pawn
+function pc.Pawn:GetTeamId()return viewer end
+local pawn
+local function spawn(team)
+    pawn=f.pawn()
+    pawn.PlayerState=state
+    pawn.team=team
+    function pawn:GetTeamId()return self.team end
+    state.r_TeamId,state.PawnPrivate=team,pawn
+end
+local players={state}
+local gs={PlayerArray={ForEach=function(_,visit)
+    for i,ps in ipairs(players) do visit(i,{get=function()return ps end}) end
+end}}
+local refreshes,reset=0,false
+function map:ResetPlayers() reset=true end
+function map:FlagAllTeamsNeedUpdate()
+    assert(reset)
+    reset=false
+    refreshes=refreshes+1
+end
+local function tick(t)
+    local _,markers=hud.prepare(f.pc,f.world)
+    hud.minimap(f.pc,f.world,markers,t)
+    hud.players(f.pc,f.world,gs,viewer)
+end
+spawn(2)
+tick(1)
+tick(2)
+assert(refreshes==1)
+state.r_TeamId=1
+tick(3)
+assert(refreshes==1)
+pawn.team=1
+tick(4)
+local settled=refreshes
+assert(settled>1)
+tick(5)
+assert(refreshes==settled)
+spawn(1)
+tick(6)
+assert(refreshes==settled+1)
+viewer=2
+tick(7)
+assert(refreshes==settled+2)
+players={}
+tick(8)
+assert(refreshes==settled+3)
+return true
+''')
+
+    def test_overhead_chevrons_follow_settled_team_and_current_pawn(self):
+        self.run_lua(r'''
+local state,localState=object('state',world),object('viewer',world)
+pc.PlayerState=localState
+local function possess(state,team)
+    local pawn=f.pawn()
+    state.PawnPrivate,state.r_TeamId=pawn,team
+    pawn.PlayerState,pawn.team=state,team
+    function pawn:GetTeamId() return self.team end
+    return pawn
+end
+local enemy=possess(state,2)
+pc.Pawn=possess(localState,1)
+local config,cls={},{}
+f.overlayTypes={
+    ['/Script/Topaz.TopOverlayWidget_Character']=cls,
+    ['/Game/Topaz/Common/Overlays/Config/OverlayConfig_Character.OverlayConfig_Character']=config,
+}
+local function widget(state)
+    local icon=object('character_overlay',world)
+    function icon:IsA(class)return class==cls end
+    function icon:GetOwningPlayerState() return state end
+    icon.writes=0
+    function icon:SetOwningConfig(pawn,value)
+        assert(value==config and pawn.PlayerState==state and pawn==state.PawnPrivate)
+        self.writes=self.writes+1
+        self.actor=pawn
+        self.friendly=pawn.team==localState.r_TeamId
+    end
+    return icon
+end
+local overlay=object('Overlays/UI_Game_Overlays',world)
+-- The generated class basename excludes the package folder.
+function overlay:GetClass()return {GetFullName=function()
+    return 'WidgetBlueprintGeneratedClass '..ui..'Overlays/UI_Game_Overlays.UI_Game_Overlays_C'
+end}end
+function overlay:GetOwningPlayer()return pc end
+overlay.Players=panel()
+local marker,selfIcon,unknown=widget(state),widget(localState),widget(state)
+function unknown:IsA(_)return false end
+for _,i in ipairs({marker,selfIcon,unknown})do overlay.Players:add(i)end
+f.overlays={overlay}
+local gs={PlayerArray={ForEach=function(_,visit)
+    for i,s in ipairs({localState,state})do visit(i,{get=function()return s end})end
+end}}
+local function tick()
+    hud.prepare(pc,world)
+    hud.players(pc,world,gs,localState.r_TeamId)
+end
+tick();tick()
+assert(marker.writes==1 and not marker.friendly)
+state.r_TeamId=1
+tick()
+assert(marker.writes==1)
+enemy.team=1
+tick()
+assert(marker.writes==2 and marker.friendly)
+local replacement=possess(state,1)
+tick()
+assert(marker.writes==3 and marker.actor==replacement)
+localState.r_TeamId=2
+tick()
+assert(marker.writes==3 and marker.friendly)
+pc.Pawn=possess(localState,2)
+tick();tick()
+assert(marker.writes==4 and not marker.friendly and selfIcon.writes==0 and unknown.writes==0)
 return true
 ''')
 
