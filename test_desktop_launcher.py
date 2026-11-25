@@ -71,6 +71,98 @@ class DesktopTest(unittest.TestCase):
             app.close()
             app.close_worker.join(2)
 
+    def test_private_restart_displays_countdown_and_hands_off_owned_client(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        game = FakeGame()
+        app = Desktop(root, lobby, lambda _: game)
+        try:
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            app.caps.update(matchRestartEnabled=True, gameClientReady=True)
+            original = 'a' * 32
+            room = lobby.room
+            room.update(phase='ready', match={'id': original, 'status': 'ready'})
+            room['players'][0]['team'] = 'blue'
+            app.render(room)
+            self.assertEqual(app.restart_button.cget('state'), 'normal')
+            with patch('desktop_launcher.simpledialog.askstring', return_value='Connection lost'), patch.object(app, 'call_action') as action:
+                app.restart_button.invoke()
+                action.assert_called_once_with('restart', matchId=original, reason='Connection lost')
+            restart = {'stage': 'countdown', 'matchId': original, 'reason': 'Connection lost', 'seconds': 8}
+            room['restart'] = restart
+            own_game = {'status': 'playing', 'role': 'player', 'matchId': original, 'error': None}
+            with patch.object(game, 'snapshot', return_value=own_game), patch.object(game, 'stop_replaced_match', return_value=True, create=True) as stop:
+                for stage in ('countdown', 'draining'):
+                    restart['stage'] = stage
+                    app.render(room)
+                    root.after_cancel(app.poll_handle)
+                    app.poll()
+                    self.assertEqual(app.game_button.cget('state'), 'disabled')
+                    if stage == 'countdown':
+                        self.assertIn('8s · Connection lost', app.phase.get())
+                        stop.assert_not_called()
+                stop.assert_called_once_with(original)
+            restart.update(stage='complete', replacementMatchId='b' * 32)
+            room['match'] = {'id': 'b' * 32, 'status': 'ready'}
+            app.join_attempted_match = original
+            app.render(room)
+            with patch.object(app, 'join_game') as join:
+                root.after_cancel(app.poll_handle)
+                app.poll()
+                join.assert_called_once()
+        finally:
+            app.close()
+            app.close_worker.join(2)
+
+    def test_private_match_browser_displays_lock_and_rejoin(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        app = Desktop(root, lobby, lambda _: FakeGame())
+        try:
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            app.caps.update(privateLobbyAdmission=True, gameClientReady=True)
+            app.render(None)
+            self.assertEqual(app.lobby_lock.winfo_manager(), 'grid')
+            app.lock_lobby.set(True)
+            app.name.set('Player')
+            with patch.object(app, 'run_async') as enter, patch.object(lobby, 'create') as create:
+                app.create()
+                enter.call_args.args[0]()
+                create.assert_called_once_with('Player', locked=True)
+            match_id = 'a'*32
+            locked = {'id':match_id, 'label':'Stonehenge', 'playerCount':2, 'playerCapacity':24,
+                      'spectatorCount':0, 'spectatorCapacity':0, 'canSpectate':False,
+                      'locked':True, 'rejoin':False, 'canJoin':False,
+                      'joinReason':'Match in progress, lobby locked.', 'teamCounts':{'blue':1,'red':1}}
+            app.render_live_matches([locked])
+            app.live_list.selection_set(match_id)
+            app.render_live_controls()
+            self.assertEqual(app.live_join_button.cget('state'), 'disabled')
+            self.assertEqual(app.live_join_reason.get(), 'Match in progress, lobby locked.')
+            self.assertIn('Locked', app.live_list.item(match_id, 'values')[1])
+            app.render_live_matches([dict(locked, rejoin=True, canJoin=True, joinReason='')])
+            self.assertEqual(app.live_join_button.cget('text'), 'Rejoin')
+            self.assertEqual(app.live_join_button.cget('state'), 'normal')
+            self.assertEqual(str(app.live_team.cget('state')), 'disabled')
+            app.render_live_matches([dict(locked, locked=False, canJoin=True, joinReason='')])
+            self.assertEqual(str(app.live_team.cget('state')), 'readonly')
+            app.live_team.current(2)
+            with patch.object(app, 'run_async') as enter, patch.object(lobby, 'join_match', create=True) as join:
+                app.join_live_selected()
+                enter.call_args.args[0]()
+                join.assert_called_once_with(match_id, 'Player', team='red')
+        finally:
+            app.close()
+            app.close_worker.join(2)
+
     @unittest.skipUnless(sys.platform == 'win32', 'Retail profile import is a Windows Starter control.')
     def test_settings_import_button_uses_saved_profile_only_after_game_exits(self):
         root = tk.Tk()
@@ -122,6 +214,23 @@ class DesktopTest(unittest.TestCase):
             app.render(lobby.room)
             self.assertEqual(app.rules_row.winfo_manager(), 'pack')
             self.assertFalse(app.fall_toggle.winfo_manager())
+            self.assertFalse(app.limits_row.winfo_manager())
+            app.caps['matchLimitsEnabled'] = True
+            app.render(lobby.room)
+            self.assertEqual(app.limits_row.winfo_manager(), 'pack')
+            self.assertEqual(app.score_limit.get(), 'Map default')
+            self.assertEqual(str(app.score_limit.cget('state')), 'readonly')
+            app.score_limit.set('Unlimited')
+            app.match_minutes.set('21')
+            limits = {'scoreLimit': 0, 'matchMinutes': 21}
+            with patch.object(app, 'call_action') as call:
+                app.change_match_limits()
+                call.assert_called_once_with('rules', matchLimits=limits)
+            lobby.room['matchLimits'] = limits
+            app.render_live_matches([{'id': '1'*32, 'label': 'Katabatic', 'playerCount': 1,
+                                      'playerCapacity': 24, 'spectatorCount': 0,
+                                      'spectatorCapacity': 25, 'matchLimits': limits}])
+            self.assertEqual(app.live_list.item('1'*32, 'values')[-1], 'Unlimited / 21 min')
             app.caps['fallDamageEnabled'] = True
             lobby.room['rules']['fallDamage'] = True
             app.render(lobby.room)
@@ -155,6 +264,9 @@ class DesktopTest(unittest.TestCase):
             self.assertEqual(app.fall_toggle.cget('state'), 'disabled')
             self.assertEqual(app.bot_toggle.cget('state'), 'disabled')
             self.assertEqual(str(app.side_combo.cget('state')), 'disabled')
+            self.assertEqual(str(app.score_limit.cget('state')), 'disabled')
+            self.assertEqual(app.score_limit.get(), 'Unlimited')
+            self.assertEqual(app.match_minutes.get(), '21')
         finally:
             app.close()
             app.close_worker.join(2)

@@ -426,9 +426,105 @@ local function prune_generator_icons(panel,world)
     for index=#duplicates,1,-1 do panel:RemoveChildAt(duplicates[index]) end
 end
 
+local carriedFlagBorder=(function()
+    local flagIconClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_ScoreBar_CTF_FlagIcon.WBP_Game_ScoreBar_CTF_FlagIcon_C'
+    local frames={}
+    local color={R=0.9,G=0.018,B=0.025,A=1}
+    local edges={
+        {anchors={Minimum={X=0,Y=0},Maximum={X=1,Y=0}},offsets={Left=0,Top=0,Right=0,Bottom=2}},
+        {anchors={Minimum={X=0,Y=1},Maximum={X=1,Y=1}},offsets={Left=0,Top=-2,Right=0,Bottom=2}},
+        {anchors={Minimum={X=0,Y=0},Maximum={X=0,Y=1}},offsets={Left=0,Top=2,Right=2,Bottom=2}},
+        {anchors={Minimum={X=1,Y=0},Maximum={X=1,Y=1}},offsets={Left=-2,Top=2,Right=2,Bottom=2}},
+    }
+
+    local function enemy_carries(flag,team,world)
+        if not valid(flag) or flag.r_TeamId~=team or not same_object(flag:GetWorld(),world) then return false end
+        local held=flag:GetHeldBy()
+        if held.bReturned~=false or not valid(held.Holder) then return false end
+        local holder=held.Holder
+        if not same_object(holder:GetWorld(),world) or not holder:IsAlive() then return false end
+        local ps=holder.PlayerState
+        if not valid(ps) or ps.r_TeamId~=3-team then return false end
+        -- A replicated holder can still name the thrower after detachment.
+        local root=flag.RootComponent
+        local attached=valid(root) and root:GetAttachParent() or nil
+        return valid(attached) and same_object(attached:GetOwner(),holder)
+    end
+
+    local function create_frame(icon,parent)
+        local canvasClass=StaticFindObject('/Script/UMG.CanvasPanel')
+        local borderClass=StaticFindObject('/Script/UMG.Border')
+        local tree=icon.WidgetTree
+        if not valid(canvasClass) or not valid(borderClass) or not valid(tree) then return end
+        local frame=StaticConstructObject(canvasClass,tree)
+        if not valid(frame) then return end
+        frame:SetVisibility(3) -- Hit-test invisible, including its children.
+        for _,edge in ipairs(edges) do
+            local line=StaticConstructObject(borderClass,tree)
+            if not valid(line) then return end
+            line:SetBrushColor(color)
+            local slot=frame:AddChildToCanvas(line)
+            if not valid(slot) then return end
+            slot:SetAnchors(edge.anchors)
+            slot:SetOffsets(edge.offsets)
+        end
+        local slot=parent:AddChildToOverlay(frame)
+        local ok,why=pcall(function()
+            assert(valid(slot),'carried_flag_border_overlay_slot')
+            slot:SetHorizontalAlignment(0) -- Fill the native icon overlay.
+            slot:SetVerticalAlignment(0)
+        end)
+        if not ok then
+            frame:RemoveFromParent()
+            error(why,0)
+        end
+        return frame
+    end
+
+    return function(bars,team,world)
+        local seen={}
+        for _,bar in ipairs(bars) do
+            local panel=valid(bar) and bar.FriendlyObjectives or nil
+            if valid(panel) then
+                for index=0,math.min(panel:GetChildrenCount(),32)-1 do
+                    local icon=panel:GetChildAt(index)
+                    if valid(icon) and icon:GetClass():GetFullName()==flagIconClass and valid(icon.Icon) then
+                        local key=icon:GetAddress()
+                        local parent=icon.Icon:GetParent()
+                        local frame=frames[key]
+                        if valid(frame) and not same_object(frame:GetParent(),parent) then
+                            frame:RemoveFromParent()
+                            frame=nil
+                            frames[key]=nil
+                        end
+                        if valid(parent) and parent:GetClass():GetFullName()=='Class /Script/UMG.Overlay' then
+                            local taken=enemy_carries(icon.CachedActor,team,world)
+                            if taken and not valid(frame) then
+                                frame=create_frame(icon,parent)
+                                frames[key]=frame
+                            end
+                            if valid(frame) then
+                                seen[key]=true
+                                local visibility=taken and 3 or 1
+                                if frame:GetVisibility()~=visibility then frame:SetVisibility(visibility) end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        for key,frame in pairs(frames) do
+            if not seen[key] then
+                if valid(frame) then frame:RemoveFromParent() end
+                frames[key]=nil
+            end
+        end
+    end
+end)()
+
 local function refresh_ctf_score_bar(pc,ps,gs)
     local team=ps.r_TeamId
-    if team~=1 and team~=2 then return end
+    if team~=1 and team~=2 then carriedFlagBorder({});return end
     local world=pc:GetWorld()
     if not same_object(world,gs:GetWorld()) then return end
     if not same_object(scoreBarWorld,world) or not same_object(scoreBarController,pc)
@@ -460,6 +556,9 @@ local function refresh_ctf_score_bar(pc,ps,gs)
         scoreBarScanDelay=3
     end
     scoreBarScanDelay=scoreBarScanDelay-1
+    reconcile_score_bar('carried_flag_border',function()
+        carriedFlagBorder(scoreBars,team,world)
+    end)
     local scores,malformed={},false
     local read=reconcile_score_bar('replication',function()
         local rows=gs.r_CurrentTeamScores
@@ -832,7 +931,215 @@ local function update_flag_markers(pc,ps,gs)
  markerService(pc,ps,gs)
 end
 
+local bind_blink_movement=(function()
+ local blink='BlueprintGeneratedClass /Game/Topaz/Abilities/Packs/Blink/GA_Pack_Blink.GA_Pack_Blink_C'
+ local commit='/Script/GameplayAbilities.GameplayAbility:K2_CommitAbility'
+ local move='/Script/Engine.Actor:K2_SetActorLocation'
+ local controller,pending,installed,failed
+
+ local function same(a,b)
+  return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
+ end
+
+ local function local_pawn(pawn)
+  return valid(pawn) and valid(controller) and controller:IsLocalPlayerController()
+   and not pawn:HasAuthority() and same(controller.Pawn,pawn) and same(pawn.Controller,controller)
+ end
+
+ local visuals=(function()
+  local ability='/Script/GameplayAbilities.GameplayAbility:'
+  local add=ability..'K2_AddGameplayCueWithParams'
+  local execute=ability..'K2_ExecuteGameplayCueWithParams'
+  local alpha='/Script/Valhalla.ValCharacter:GetThirdPersonCameraAlpha'
+  local remote='/Script/GameplayAbilities.AbilitySystemComponent:NetMulticast_InvokeGameplayCueExecuted_WithParams'
+  local startCue,endCue='GameplayCue.Blink.Start','GameplayCue.Blink.End'
+  local active,replaying,installed,failed,gameplay
+
+  local function point(value)
+   return {X=value.X,Y=value.Y,Z=value.Z}
+  end
+
+  local function distance(a,b)
+   return math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)
+  end
+
+  local function along(value,axis)
+   return value.X*axis.X+value.Y*axis.Y+value.Z*axis.Z
+  end
+
+  local function current()
+   local cast=active
+   if cast and os.clock()<cast.expires and local_pawn(cast.pawn)
+    and same(cast.pawn.AbilitySystemComponent,cast.asc) then return cast end
+   active=nil
+  end
+
+  local function hide_cue(tag)
+   tag:set({TagName=FName('None')})
+  end
+
+  local function outgoing(context,tag,executed)
+   local cast=replaying or active
+   if not cast or not same(context:get(),cast.ability) or (not replaying and current()~=cast) then return end
+   local name=tag:get().TagName:ToString()
+   if name~=startCue and name~=endCue then return end
+   hide_cue(tag)
+   if executed and name==endCue and cast.predictionFrame and not replaying then cast.skipFlash=true end
+  end
+
+  local function pulse(cast)
+   if current()~=cast or cast.finished then return end
+   local pawn=cast.pawn
+   local position=point(pawn:K2_GetActorLocation())
+   local now=gameplay:GetTimeSeconds(pawn)
+   local speed=along(pawn:GetVelocity(),cast.axis)
+   local progress=along(position,cast.axis)
+   local elapsed=math.max(0,now-cast.sampleTime)
+   -- Movement replay can carry a skier many meters beyond the host's cue
+   -- position. Count the Blink step after accounting for ordinary motion.
+   local ordinary=math.max(0,speed,cast.speed)*elapsed
+   cast.warp=math.max(cast.warp,progress-cast.progress-ordinary)
+   cast.progress,cast.speed,cast.sampleTime=progress,speed,now
+   local span=cast.departure and cast.landing and distance(cast.departure,cast.landing)
+   if span and span<25 then cast.finished=true;return end
+   if not span or cast.warp<span*.55 then
+    ExecuteInGameThreadWithDelay(16,function()pulse(cast)end)
+    return
+   end
+   cast.finished=true
+   replaying=cast
+   local ok,reason=pcall(function()
+    local params={Location=position,GameplayEffectLevel=1,AbilityLevel=1}
+    cast.asc:NetMulticast_InvokeGameplayCueExecuted_WithParams({TagName=FName(endCue)},{Current=0},params)
+    if valid(cast.ability) and pawn:IsLocallyViewed() then cast.ability:PlayFX(cast.departure,position) end
+    report('BLINK_LOCAL_ARRIVAL|source=host')
+   end)
+   replaying=nil
+   if not ok then report('BLINK_VISUAL_REPLAY_ERROR|'..tostring(reason):sub(1,400)) end
+  end
+
+  local function incoming(context,tag,_,params)
+   if replaying or not active or not same(context:get(),active.asc) then return end
+   local cast=current()
+   if not cast then return end
+   local name=tag:get().TagName:ToString()
+   if name==startCue then
+    if cast.departure then hide_cue(tag);return end
+    cast.departure=point(params:get().Location)
+   elseif name==endCue then
+    hide_cue(tag)
+    if cast.landing then return end
+    cast.landing=point(params:get().Location)
+   else
+    return
+   end
+  end
+
+  local function defer_flash(context)
+   if not active or not active.skipFlash then return end
+   local cast=current()
+   if cast and same(context:get(),cast.pawn) then
+    cast.skipFlash=false
+    return 1
+   end
+  end
+
+  local function install()
+   gameplay=loaded('/Script/Engine.Default__GameplayStatics','GameplayStatics /Script/Engine.Default__GameplayStatics')
+   signature(add,{{'GameplayCueTag','StructProperty',0},{'GameplayCueParameter','StructProperty',8},
+    {'bRemoveOnAbilityEnd','BoolProperty',224}})
+   signature(execute,{{'GameplayCueTag','StructProperty',0},{'GameplayCueParameters','StructProperty',8}})
+   signature(alpha,{{'ReturnValue','FloatProperty',0}})
+   signature(remote,{{'GameplayCueTag','StructProperty',0},{'PredictionKey','StructProperty',8},
+    {'GameplayCueParameters','StructProperty',32}})
+   local hooks={}
+   local function hook(path,before,after)
+    local pre,post=RegisterHook(path,before,after)
+    hooks[#hooks+1]={path,pre,post}
+   end
+   local function noop()end
+   local ok,why=pcall(function()
+    hook(add,outgoing,noop)
+    hook(execute,function(context,tag)outgoing(context,tag,true)end,noop)
+    hook(alpha,noop,defer_flash)
+    hook(remote,incoming,noop)
+   end)
+   if ok then return end
+   for _,entry in ipairs(hooks)do UnregisterHook(table.unpack(entry))end
+   error(why)
+  end
+
+  return {
+   bind=function()
+    if installed or failed then return end
+    local ok,reason=pcall(install)
+    installed,failed=ok,not ok
+    if not ok then report('BLINK_VISUAL_HOOKS_UNAVAILABLE|'..tostring(reason):sub(1,400)) end
+   end,
+   hold=function(pawn,instance,origin,target)
+    if not installed or not valid(pawn.AbilitySystemComponent) then return end
+    local length=math.max(1,distance(target,origin))
+    local axis={X=(target.X-origin.X)/length,Y=(target.Y-origin.Y)/length,Z=(target.Z-origin.Z)/length}
+    local cast={pawn=pawn,asc=pawn.AbilitySystemComponent,ability=instance,
+     expires=os.clock()+2.5,predictionFrame=true,axis=axis,warp=0,progress=along(origin,axis),
+     speed=along(pawn:GetVelocity(),axis),sampleTime=gameplay:GetTimeSeconds(pawn)}
+    active=cast
+    ExecuteInGameThreadWithDelay(1,function()cast.predictionFrame,cast.skipFlash=false,false end)
+    ExecuteInGameThreadWithDelay(1,function()pulse(cast)end)
+   end,
+   clear=function()active=nil end,
+  }
+ end)()
+
+ local function on_commit(context)
+  local ability=context:get()
+  if not valid(ability) or ability:GetClass():GetFullName()~=blink or ability:K2_HasAuthority() then return end
+  pending=nil
+  local pawn=ability.CharCached
+  if not local_pawn(pawn) or not same(pawn,ability:GetAvatarActorFromActorInfo()) then return end
+  local target=ability.CurrentStepLocation
+  if not target or type(target.X)~='number' or type(target.Y)~='number' or type(target.Z)~='number' then return end
+  pending={pawn=pawn,ability=ability,x=target.X,y=target.Y,z=target.Z,expires=os.clock()+.1}
+ end
+
+ local function on_move(context,destination,sweep,_,teleport)
+  local attempt=pending
+  if not attempt then return end
+  if os.clock()>attempt.expires then pending=nil;return end
+  local pawn=context:get()
+  if not same(pawn,attempt.pawn) or not local_pawn(pawn) or sweep:get()~=false or teleport:get()~=true then return end
+  local target=destination:get()
+  if target.X~=attempt.x or target.Y~=attempt.y or target.Z~=attempt.z then return end
+  pending=nil
+  -- Blink already submitted its target. Let the owning client's normal
+  -- movement channel apply the authoritative result instead of jumping twice.
+  local origin=pawn:K2_GetActorLocation()
+  destination:set({X=origin.X,Y=origin.Y,Z=origin.Z})
+  teleport:set(false)
+  visuals.hold(pawn,attempt.ability,origin,{X=attempt.x,Y=attempt.y,Z=attempt.z})
+ end
+
+ local function install()
+  signature(commit,{{'ReturnValue','BoolProperty',0}})
+  signature(move,{{'NewLocation','StructProperty',0},{'bSweep','BoolProperty',24},
+   {'SweepHitResult','StructProperty',32},{'bTeleport','BoolProperty',264},{'ReturnValue','BoolProperty',265}})
+  local pre,post=RegisterHook(move,on_move,function()end)
+  local ok,reason=pcall(RegisterHook,commit,on_commit,function()end)
+  if not ok then UnregisterHook(move,pre,post);error(reason) end
+ end
+
+ return function(pc)
+  if not same(pc,controller) then controller,pending=pc,nil;visuals.clear() end
+  visuals.bind()
+  if installed or failed then return end
+  local ok,reason=pcall(install)
+  installed,failed=ok,not ok
+  if not ok then report('BLINK_MOVEMENT_UNAVAILABLE|'..tostring(reason):sub(1,400)) end
+ end
+end)()
+
 local function observe_markers(pc,ps,gs)
+ bind_blink_movement(pc)
  weaponInput(pc,ps)
  if not inputService then inputService=assert(loadfile(@@JETPACK_INPUT@@))()({valid=valid,report=report,signature=signature,scope=scope}) end
  inputService(pc,ps)
@@ -869,6 +1176,83 @@ return function(env)
  end
 end
 
+end)()
+local releaseRadarPowerFactory=(function()
+return function(env)
+ local valid,scope,signature=env.valid,env.scope,env.signature
+ local expected=env.descriptor.radars_per_team or 1
+ local statusPath='/Script/Topaz.TopRadarSensor:SetRadarStatus'
+ local sensorClass='BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_RadarSensor.BP_Objective_RadarSensor_C'
+ local pre,post,world
+ local owners={}
+ local function same(a,b) return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() end
+ local function sync(group)
+  local team=group.team
+  if not valid(team) or team:HasAuthority() or not same(team:GetWorld(),world) then return end
+  local online=false
+  for _,sensor in ipairs(group.sensors) do
+   if not valid(sensor) or not same(sensor:GetWorld(),world) or sensor.r_TeamId~=group.id then return end
+   local comp=sensor.PoweredComp
+   if not valid(comp) or not same(comp:GetOwner(),sensor) or type(comp.r_bGeneratorPowered)~='boolean'
+      or type(comp.r_bOwnerDowned)~='boolean' then return end
+   online=online or (comp.r_bGeneratorPowered and not comp.r_bOwnerDowned)
+  end
+  if team:IsRadarOnline()==online then return end
+  team.r_bIsRadarOnline=online
+  team:OnRep_IsRadarOnline()
+ end
+ local function tick(gs)
+  if expected<=1 or env.descriptor.hide_minimap or gs:HasAuthority() then return end
+  world=gs:GetWorld()
+  local groups={{id=1,sensors={}},{id=2,sensors={}}}
+  owners={}
+  for _,team in ipairs(FindAllOf('TeamState') or {}) do
+   if valid(team) and same(team:GetWorld(),world) and not team:HasAuthority() then
+    local group=groups[team:GetTeamId()]
+    if group then
+     if group.team or type(team.r_bIsRadarOnline)~='boolean' then return end
+     group.team=team
+    end
+   end
+  end
+  for _,sensor in ipairs(FindAllOf('BP_Objective_RadarSensor_C') or {}) do
+   if valid(sensor) and same(sensor:GetWorld(),world) then
+    local group=groups[sensor.r_TeamId]
+    if not group or sensor:HasAuthority() or sensor:GetClass():GetFullName()~=sensorClass then return end
+    group.sensors[#group.sensors+1]=sensor
+   end
+  end
+  for _,group in ipairs(groups) do
+   if not group.team or #group.sensors~=expected then return end
+  end
+  for _,group in ipairs(groups) do
+   for _,sensor in ipairs(group.sensors) do owners[sensor:GetAddress()]={sensor=sensor,group=group} end
+  end
+  if not pre then
+   signature(statusPath,{{'bSetStatus','BoolProperty',0}})
+   local teamPath='/Script/Valhalla.ValTeamState:'
+   signature(teamPath..'IsRadarOnline',{{'ReturnValue','BoolProperty',0}})
+   signature(teamPath..'OnRep_IsRadarOnline',{})
+   -- An individual replicated sensor also updates the client's native team
+   -- flag. The host's aggregate can stay unchanged during that event.
+   pre,post=RegisterHook(statusPath,function()end,function(context)
+    local sensor=context:get()
+    local owned=valid(sensor) and owners[sensor:GetAddress()]
+    if owned and not sensor:HasAuthority() and same(sensor,owned.sensor) then
+     scope()
+     sync(owned.group)
+    end
+   end)
+   assert(type(pre)=='number' and type(post)=='number','radar_client_native_status_hook_required')
+  end
+  for _,group in ipairs(groups) do sync(group) end
+ end
+ local function retire()
+  owners={}
+  if pre then UnregisterHook(statusPath,pre,post);pre,post=nil,nil end
+ end
+ return {tick=tick,retire=retire}
+end
 end)()
 local releaseRadarHelperFactory=(function()
 -- Local minimap capture and display. Native radars, teams, power and authored
@@ -950,28 +1334,44 @@ return function(env)
   local canvas=widget.RadarSensors
   if not valid(canvas) then return false end
   local before=canvas:GetChildrenCount();assert(type(before)=='number' and before>=0 and before<=64,'radar_client_native_radar_canvas_capacity')
-  local actors,teams={},{}
+  local perTeam=env.descriptor.radars_per_team or 1
+  local expected=2*perTeam
+  local teams={0,0}
   for _,actor in ipairs(FindAllOf('BP_Objective_RadarSensor_C') or {}) do
    if valid(actor) and same(actor:GetWorld(),state.world) then
     assert(actor:GetClass():GetFullName()=='BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_RadarSensor.BP_Objective_RadarSensor_C','radar_client_original_radar_class_required')
-    actors[#actors+1]=actor
-    local team=actor.r_TeamId;if team==1 or team==2 then assert(not teams[team],'radar_client_ambiguous_native_radar_team');teams[team]=actor end
+    local team=actor.r_TeamId
+    if team~=1 and team~=2 then return false end
+    teams[team]=teams[team]+1
    end
   end
-  if #actors~=2 or not teams[1] or not teams[2] then return false end
+  if teams[1]~=perTeam or teams[2]~=perTeam then return false end
+  -- Native initialization can run while only some replicated sensors exist.
+  -- Rebuild that partial sensor layer once, after every team ID has arrived.
+  if perTeam>1 and before>0 and before<expected and not record.rebuilt_partial_radars then
+   local radarClass=StaticFindObject('/Game/UI/Components/Game/UI_Game_Minimap_Radar.UI_Game_Minimap_Radar_C')
+   if not valid(radarClass) then return false end
+   for index=0,before-1 do
+    local child=canvas:GetChildAt(index)
+    if not valid(child) or not same(child:GetClass(),radarClass) then return false end
+   end
+   record.rebuilt_partial_radars=true
+   canvas:ClearChildren()
+   before=canvas:GetChildrenCount()
+  end
   if before==0 then
    -- Invoke the exact original zero-parameter Blueprint only on its empty
    -- native canvas; it owns creation, binding, friendliness and positions.
    widget:BindRadarSensors()
-   local after=canvas:GetChildrenCount();assert(after==2,'radar_client_original_bind_radar_canvas_count')
+   local after=canvas:GetChildrenCount()
+   if after~=expected then return false end
    record.radar_canvas_ready=true
-   report('BASE_RADAR_CLIENT_RADAR_CANVAS_BOUND|widget='..widget:GetFullName()..'|before=0|after='..after..'|radarActors=2|owner=OriginalBindRadarSensors|onlineFlagWrites=0')
+   report('BASE_RADAR_CLIENT_RADAR_CANVAS_BOUND|widget='..widget:GetFullName()..'|before=0|after='..after..'|radarActors='..expected..'|owner=OriginalBindRadarSensors|onlineFlagWrites=0')
    return true
   end
-  -- Native initialization may already have populated the canvas. Never
-  -- clear/rebind it or create duplicate widgets to repair partial state.
-  if before~=2 then return false end
-  if not record.radar_canvas_ready then report('BASE_RADAR_CLIENT_RADAR_CANVAS_READY|widget='..widget:GetFullName()..'|before=2|nativeBindCalls=0|radarActors=2');record.radar_canvas_ready=true end
+  -- Native initialization may already have populated the full canvas.
+  if before~=expected then return false end
+  if not record.radar_canvas_ready then report('BASE_RADAR_CLIENT_RADAR_CANVAS_READY|widget='..widget:GetFullName()..'|before='..before..'|nativeBindCalls=0|radarActors='..expected);record.radar_canvas_ready=true end
   return true
  end
  local service={}
@@ -1130,7 +1530,7 @@ local releaseRadarRuntimeFactory=(function()
 -- Normal network clients only. Actual remote world owns map selection.
 return function(env)
  local valid,report,scope=assert(env.valid),assert(env.report),assert(env.scope)
- local descriptors=assert(env.map_descriptors);local service=nil;local identity=nil;local retired={}
+ local descriptors=assert(env.map_descriptors);local service,power,identity;local retired={}
  local captureBounds=assert(env.capture_bounds_factory)(env)
  local guard=assert(env.guard_factory)(env)
  local nativeSettings=assert(env.world_settings_guard_factory)(env)
@@ -1140,6 +1540,7 @@ return function(env)
   assert(not pc:HasAuthority() and not gs:HasAuthority(),'radar_runtime_network_client_required')
   local world=pc:GetWorld();local name=gs:GetFullName();local key=name..'|'..gs:GetAddress()..'|'..world:GetAddress()
   if identity~=key then
+   if power then power.retire();power=nil end
    if service then service.retire('remote_world_changed');retired[#retired+1]=service end
    service=nil;identity=key
    local selected
@@ -1153,7 +1554,15 @@ return function(env)
    local e={};for k,v in pairs(env) do e[k]=v end
    e.world_prefix=selected.world;e.client_context_guard=guard;e.descriptor=selected;e.world_settings_guard=nativeSettings
    e.capture_bounds=captureBounds
+   power=releaseRadarPowerFactory(e)
    service=assert(env.helper_factory)(e)
+  end
+  if power then
+   local ok,why=pcall(power.tick,gs)
+   if not ok then
+    report('BASE_RADAR_CLIENT_POWER_ERROR|'..tostring(why):sub(1,500))
+    power.retire();power=nil
+   end
   end
   if not service then return true end
   local ok,result=pcall(service.tick,pc,gs)

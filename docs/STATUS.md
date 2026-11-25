@@ -1,3 +1,10 @@
+# Blink cue timing
+
+The owning client applies the authoritative Blink movement and presents one
+departure and one arrival. The arrival cue and first-person flash wait for
+the movement to reach the player. Nearby observers still receive the native
+host cues. The fix for duplicate cues is tracked in frontend issue #60.
+
 # Private-match fall damage
 
 Starter shows **Fall damage** beside **Flag indicators** when a host
@@ -31,6 +38,12 @@ Lua fixture coverage exercises perspective controls, close-camera body
 presentation, target reacquisition, and camera clearance. An isolated native
 Firestorm test measured the open camera pose and the raised pose around a
 static obstacle. A rendered multiplayer check is pending.
+
+# Friendly flag carry border
+
+The CTF score bar draws a red border around the local team's flag icon while
+a living opponent carries it. The border clears when the flag detaches or
+returns home. It follows the current native HUD icon after a rebuild.
 
 # Community map lighting
 
@@ -319,3 +332,12 @@ Fresh isolated native qualifications now observe the staging-team transition, bo
 The direct-port-forwarding friend handoff is experimental and separate. It has transport/source checks, not complete off-site native qualification.
 
 Maps: Damnation, HighOctane, Scarabrae, Stonehenge, Snowblind, Rollercoaster, SnowblindBlizzard, HighOctane2026, Damnation2026, Scarabrae2026, Stonehenge2026, Snowblind2026, SnowblindBlizzard2026, Rollercoaster2026, Torment, DangerousCrossing, Drydock, Katabatic, Wavemist, Hollow, Raindance, Moonrise.
+
+# Team radar with backup sensors
+
+On layouts that declare multiple sensors per team, a connected client
+reconciles the native team radar flag from the full set of replicated
+sensors. Radar stays online while any sensor still has power and is
+operational. The client also waits for all authored sensors before asking
+the native minimap binder to populate the sensor layer. The paired backend
+change is tracked in Tribes3-Modded/T3BackEndServer issue #38.

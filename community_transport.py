@@ -17,7 +17,26 @@ from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION
 from player_names import display_name
 
 MAX_LOBBY_BOTS = 12
+PRIVATE_ADMISSION_HEADER = 'X-T3-Private-Join'
+
 DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True, 'fallDamage': False}
+MAX_SCORE_LIMIT = 50
+MAX_MATCH_MINUTES = 60
+DEFAULT_MATCH_LIMITS = {'scoreLimit': None, 'matchMinutes': None}
+
+
+def validated_match_limits(value):
+    if not isinstance(value, dict) or value.keys() != DEFAULT_MATCH_LIMITS.keys():
+        raise ValueError('Invalid score or time limit settings.')
+    score = value['scoreLimit']
+    if score is not None and (type(score) is not int or not 0 <= score <= MAX_SCORE_LIMIT):
+        raise ValueError(f'Choose a score limit from 1 to {MAX_SCORE_LIMIT}, Unlimited, or Map default.')
+    minutes = value['matchMinutes']
+    if minutes is not None and (type(minutes) is not int or not 1 <= minutes <= MAX_MATCH_MINUTES):
+        raise ValueError(f'Choose a time limit from 1 to {MAX_MATCH_MINUTES} minutes or Map default.')
+    return dict(value)
+
+
 RESULT_STATS = ('kills', 'deaths', 'assists', 'captures', 'returns', 'flagGrabs', 'flagHeldSeconds')
 RESULT_STAT_LIMIT = 1_000_000_000
 RESULT_PLAYER_LIMIT = 64
@@ -140,7 +159,8 @@ class CommunityClient:
         return address in ipaddress.ip_network('100.64.0.0/10')
 
     def request_headers(self):
-        return {'Host': self.authority, 'Accept': 'application/json', CATALOG_HEADER: str(CATALOG_VERSION), 'X-T3-Map-Labels': '1'}
+        return {'Host': self.authority, 'Accept': 'application/json',
+                CATALOG_HEADER: str(CATALOG_VERSION), 'X-T3-Map-Labels': '1', PRIVATE_ADMISSION_HEADER: '1'}
 
     def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True):
         headers = self.request_headers()
@@ -173,8 +193,12 @@ class CommunityClient:
             if response.status != 200:
                 code = value.get('code')
                 if code not in ('lobby_missing', 'session_invalid','spectator_session_invalid',
-                                'spectator_unavailable','spectator_forbidden','spectator_conflict','spectator_capacity'): code = None
+                                'spectator_unavailable','spectator_forbidden','spectator_conflict','spectator_capacity',
+                                'lobby_locked','lobby_team_balance'): code = None
                 raise CommunityError(str(value.get('error', 'Lobby request failed.'))[:256], code=code)
+            room = value.get('room')
+            if isinstance(room, dict) and 'matchLimits' in room:
+                validated_match_limits(room['matchLimits'])
             return value
         except CommunityError:
             raise
@@ -202,7 +226,7 @@ class CommunityClient:
             return self.server_maps.get(name)
         return BY_ID[name].label if name in BY_ID else None
 
-    def create(self, name):
+    def create(self, name, *, locked=None):
         with self.lock:
             if self.code is not None:
                 try:
@@ -210,7 +234,12 @@ class CommunityClient:
                 except CommunityError as exc:
                     if exc.code not in ('lobby_missing', 'session_invalid'):
                         raise
-            return self._remember(self._request('create', {'name':name}))
+            data = {'name':name}
+            if locked is not None:
+                if type(locked) is not bool:
+                    raise CommunityError('Choose whether to lock the lobby.')
+                data['locked'] = locked
+            return self._remember(self._request('create', data))
 
     def join(self, code, name):
         with self.lock:
@@ -223,6 +252,19 @@ class CommunityClient:
                 else:
                     raise CommunityError('Leave lobby '+self.code+' before joining another lobby.')
             return self._remember(self._request('join', {'code':code, 'name':name}))
+
+    def join_match(self, match_id, name, *, team='auto'):
+        if (not isinstance(match_id, str) or re.fullmatch('[0-9a-f]{32}', match_id) is None
+                or team not in ('auto', 'blue', 'red')):
+            raise CommunityError('Select a live match and a valid team.')
+        with self.lock:
+            response = self._request('join-match', {'matchId':match_id, 'name':name, 'team':team},
+                                     use_lobby_token=False)
+            room = response.get('room')
+            match = room.get('match') if isinstance(room, dict) else None
+            if not isinstance(match, dict) or match.get('id') != match_id:
+                raise CommunityError('The selected match was replaced. Refresh and try again.')
+            return self._remember(response)
 
     def resume(self):
         """Recover only this freshly verified device's existing membership."""
@@ -245,7 +287,7 @@ class CommunityClient:
 
     def action(self, operation, **data):
         with self.lock:
-            if self.code is None or operation not in ('state', 'team', 'map', 'start', 'stop', 'reset', 'leave','spectators','rules'):
+            if self.code is None or operation not in ('state', 'team', 'map', 'start', 'stop', 'restart', 'reset', 'leave','spectators','rules'):
                 raise CommunityError('No valid lobby action is available.')
             if 'code' in data:
                 raise CommunityError('Invalid lobby action.')
@@ -318,10 +360,15 @@ class CommunityClient:
             value=self._request('matches',use_lobby_token=False)
             matches=value.get('matches')
             if not isinstance(matches,list):raise CommunityError('Invalid live match list.')
+            limits = value.get('matchLimits', {})
+            if not isinstance(limits, dict):
+                raise CommunityError('Invalid live match limits.')
             seen=set();result=[]
             fields={'id','map','label','playerCount','playerCapacity','spectatorCount','spectatorCapacity','canSpectate'}
+            admission_fields = {'locked', 'canJoin', 'rejoin', 'joinReason', 'teamCounts'}
             for item in matches:
-                if (not isinstance(item,dict) or set(item)!=fields or not isinstance(item['id'],str)
+                if (not isinstance(item, dict) or not fields <= item.keys() <= fields | admission_fields
+                        or not isinstance(item['id'], str)
                         or re.fullmatch('[0-9a-f]{32}',item['id'])is None or item['id']in seen
                         or self.map_label(item['map']) is None or item['label']!=self.map_label(item['map'])
                         or type(item['canSpectate'])is not bool
@@ -329,7 +376,25 @@ class CommunityClient:
                                ('playerCount','playerCapacity','spectatorCount','spectatorCapacity'))
                         or item['playerCount']>item['playerCapacity']):
                     raise CommunityError('Invalid live match list.')
+                if admission_fields & item.keys():
+                    counts = item.get('teamCounts')
+                    if (not admission_fields <= item.keys()
+                            or any(type(item[key]) is not bool for key in ('locked', 'canJoin', 'rejoin'))
+                            or not isinstance(item['joinReason'], str) or len(item['joinReason']) > 160
+                            or item['canJoin'] == bool(item['joinReason'])
+                            or not isinstance(counts, dict) or set(counts) != {'blue', 'red'}
+                            or any(type(value) is not int or not 0 <= value <= 12 for value in counts.values())
+                            or sum(counts.values()) != item['playerCount']):
+                        raise CommunityError('Invalid player admission details.')
                 seen.add(item['id']);result.append(dict(item))
+            if not limits.keys() <= seen:
+                raise CommunityError('Invalid live match limits.')
+            for item in result:
+                if item['id'] in limits:
+                    try:
+                        item['matchLimits'] = validated_match_limits(limits[item['id']])
+                    except ValueError as exc:
+                        raise CommunityError(str(exc)) from exc
             # _request's existing64KiB wire bound limits the whole projection.
             return result
 
