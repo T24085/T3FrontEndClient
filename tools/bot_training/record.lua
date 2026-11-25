@@ -16,7 +16,13 @@ return function(env)
 
     local function sample(pc, gs)
         local pawn = pc.Pawn
-        if not valid(pawn) or not pawn.bInitialized or pawn:GetHealth() <= 0 then
+        local ps = pc.PlayerState
+        if not valid(pawn) or not valid(ps) or not pawn.bInitialized or pawn:GetHealth() <= 0 then
+            owner = nil
+            return
+        end
+        local team = ps.r_TeamId
+        if env.team and team ~= env.team then
             owner = nil
             return
         end
@@ -44,7 +50,6 @@ return function(env)
         end)
         local p, v = pawn:K2_GetActorLocation(), movement.Velocity
         local direction, view = pawn:GetLastMovementInputVector(), pc:GetControlRotation()
-        local team = pc.PlayerState.r_TeamId
         rows[#rows + 1] = string.format(
             '%d,%.4f,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%.4f,%.4f,%d,%d',
             segment, now, team, p.X, p.Y, p.Z, v.X, v.Y, v.Z, view.Yaw, view.Pitch,

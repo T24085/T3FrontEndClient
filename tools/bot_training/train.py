@@ -8,7 +8,7 @@ import random
 from statistics import mean, median
 import time
 
-from practice import HERE, event_text, memory_available, start
+from practice import HERE, MAP, NativeMemoryBusy, check_training_stop, event_text, memory_available, start
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,27 @@ def replace_once(source, anchor, replacement):
     if source.count(anchor) != 1:
         raise ValueError(f'The native practice template changed at {anchor!r}.')
     return source.replace(anchor, replacement, 1)
+
+
+def fixed_training_teams(text, teams):
+    """Validate the actual bot assignments for an isolated practice world."""
+    stock = """  local totals,teams={0,0},{}
+  for _,team in pairs(roster) do totals[team]=totals[team]+1 end
+  for i=1,env.bots do
+   local team=totals[1]<=totals[2] and 1 or 2
+   totals[team]=totals[team]+1
+   assert(totals[team]<=12,'match_rules_bot_slots_exhausted')
+   teams[i]=team
+  end
+  if env.public_fill then teams={1,2} end"""
+    assignments = ','.join(str(team) for team in teams)
+    return replace_once(text, stock, f"""  local teams={{{assignments}}}
+  assert(not env.public_fill and #teams==env.bots,'training_fixed_roster_mismatch')
+  local totals={{0,0}}
+  for _,team in ipairs(teams) do
+   totals[team]=totals[team]+1
+   assert(totals[team]<=gm.MembersPerTeamOverride,'match_rules_bot_slots_exhausted')
+  end""")
 
 
 def publish(path, data):
@@ -107,6 +128,12 @@ def summarize(results):
 
 
 class Trainer:
+    measure_approach = False
+    live_player = False
+    bot_count = 1
+    map_id = MAP
+    largest_team = 1
+
     def __init__(self, attempts, seconds, seed, smoke, qualification_policies=(), start_index=0, batch=None):
         self.attempts, self.seconds, self.smoke = attempts, seconds, smoke
         self.rng = random.Random(seed)
@@ -116,19 +143,23 @@ class Trainer:
         self.batch = batch
 
     def instrument(self, text, run):
+        if self.largest_team > 12:
+            text = replace_once(text, '        gm.MembersPerTeamOverride=12;assert(gm.MembersPerTeamOverride==12)',
+                                f'        gm.MembersPerTeamOverride={self.largest_team};'
+                                f'assert(gm.MembersPerTeamOverride=={self.largest_team})')
         stamp = "  local stamp=now();assert(finite(stamp),'match_loading_clock_unknown')"
+        force_training_ready = "" if self.live_player else "  count=1;teams[2]=true\n"
         text = replace_once(text, stamp,
-            "  assert(env.allow_loopback and env.map_id=='HighOctane2026' and committed.count==1)\n"
-            "  count=1;teams[2]=true\n" + stamp)
+            f"  assert(env.allow_loopback and env.map_id=={json.dumps(self.map_id)} and committed.count==1)\n"
+            + force_training_ready + stamp)
         hook = ' function service.populate(gm,gs,roster,revision)'
         text = replace_once(text, hook, f'''
  local train=assert(loadfile({json.dumps((HERE / 'native_trials.lua').as_posix())}))()({{
-  path={json.dumps(run.as_posix())},scope=scope,signature=signature,report=report,valid=valid
+  path={json.dumps(run.as_posix())},route_geometry={json.dumps((HERE/'route_geometry.lua').as_posix())},
+  scope=scope,signature=signature,report=report,valid=valid
  }})
  local training_started=false
-''' + hook + '''
-  if training_started then return end
-''')
+''' + hook + ('' if self.live_player else '\n  if training_started then return end\n'))
         ready = "   report('MATCH_RULES_BOTS_READY|count='..ready)"
         text = replace_once(text, ready, ready + '''
    local entry=assert(entries[1])
@@ -137,7 +168,8 @@ class Trainer:
    local ok, why=pcall(train,gm,gs,entry.pawn,entry.controller)
    if not ok then report('BOT_TRAIN_ERROR|'..tostring(why):sub(1,400)) end
 ''')
-        return replace_once(text, ',flag_approach=botFlagApproach', '')
+        approach = ',flag_approach=botFlagApproach'
+        return replace_once(text, approach, '') if approach in text else text
 
     def wait(self, out, process, ready, seconds):
         deadline = time.monotonic() + seconds
@@ -146,13 +178,14 @@ class Trainer:
             result = ready(log)
             if result:
                 return result
+            check_training_stop()
             for line in log.splitlines():
                 if line.startswith(('RUNTIME_ERROR|', 'BOT_TRAIN_ERROR|')):
                     raise RuntimeError(line)
             if process.done():
                 raise RuntimeError('Local host exited. Check host/game.log in the training run.')
             if memory_available() < 1024**3:
-                raise RuntimeError('Available commit dropped below the game reserve.')
+                raise NativeMemoryBusy('Available commit dropped below the game reserve. Waiting to retry the unfinished training game.')
             time.sleep(.25)
         raise RuntimeError('Timed out waiting for native training evidence.')
 
@@ -169,13 +202,24 @@ class Trainer:
         history = {policy: [] for policy in POLICIES}
         trial = 0
 
-        def attempt(policy, spawn, offset, evaluation):
+        def attempt(policy, spawn, offset, evaluation, defense_profile=None, pass_runup_cm=None, pass_guidance=None):
             nonlocal trial
             trial += 1
             path = out / f'result-{trial}.csv'
             values = [spawn, offset, self.seconds, *asdict(policy).values()]
+            if defense_profile is not None:
+                values.append(defense_profile)
+            if pass_runup_cm is not None:
+                assert defense_profile is not None
+                values.append(pass_runup_cm)
+            if pass_guidance is not None:
+                assert pass_runup_cm is not None
+                values.append(pass_guidance)
             publish(out / f'trial-{trial}.csv', ','.join(map(str, values)) + '\n')
             data = self.wait(out, process, lambda _: read_ready(path), self.seconds * 4 + 100)
+            if getattr(self, 'reuse_trials', False) and trial > 1:
+                if read_ready(out/f'verified-reset-{trial}.csv') != '1\n':
+                    raise RuntimeError('training_reuse_unverified|missing_reset_receipt')
             row = dict(zip(METRICS, map(float, data.strip().split(',')), strict=True))
             if (not all(map(math.isfinite, row.values())) or row['id'] != trial or row['start_energy'] < 98
                     or row['pickup'] not in (0, 1) or row['capture'] not in (0, row['pickup'])
@@ -184,6 +228,40 @@ class Trainer:
                 raise ValueError(f'Invalid result for native trial {trial}.')
             row.update(policy=asdict(policy), reward=reward(row), spawn=spawn, offset_cm=offset,
                        held_out=evaluation, trace=f'trace-{trial}.csv')
+            if self.measure_approach:
+                values = self.wait(out, process, lambda _: read_ready(out/f'approach-{trial}.csv'), 15)
+                approach = list(map(float, values.split(',')))
+                if approach != [0]:
+                    if (len(approach) != 2 or not all(map(math.isfinite, approach))
+                            or not row['pickup'] or not 0 <= approach[0] <= approach[1]):
+                        raise ValueError(f'Invalid flag approach evidence for native trial {trial}.')
+                    row.update(approach_entry_kmh=approach[0], approach_peak_kmh=approach[1])
+            if self.bot_count > 1:
+                extra = out / f'defense-{trial}.csv'
+                values = self.wait(out, process, lambda _: read_ready(extra), 15)
+                row['defense'] = dict(zip(('died', 'damage_taken', 'hof_near_flag_seconds',
+                                           'ld_near_carrier_seconds', 'red_caps',
+                                           'hof_alive_seconds', 'ld_alive_seconds'),
+                                          map(float, values.split(',')), strict=True))
+            if pass_runup_cm is not None:
+                values = self.wait(out, process, lambda _: read_ready(out / f'pass-{trial}.csv'), 15)
+                recovered, closest, speed, *extra = map(float, values.split(','))
+                skiing = extra[:1]
+                flythrough = extra[1:]
+                if (recovered not in (0, 1) or not all(math.isfinite(v) and v >= 0 for v in (closest, speed))
+                        or skiing not in ([], [0], [1]) or (skiing == [1] and (recovered or not row['pickup']))):
+                    raise ValueError(f'Invalid flag pass evidence for native trial {trial}.')
+                row.update(recovered=bool(recovered), closest_pass_cm=closest, closest_pass_kmh=speed)
+                if skiing:
+                    row['skiing_flythrough_grab'] = bool(skiing[0])
+                if flythrough:
+                    if flythrough != [0] and (len(flythrough) != 6 or flythrough[0] != 1
+                            or not all(map(math.isfinite, flythrough)) or min(flythrough[1:3]) < 0):
+                        raise ValueError(f'Invalid fly-through trace for native trial {trial}.')
+                    row['entered_flythrough'] = flythrough[0] == 1
+                    if row['entered_flythrough']:
+                        row.update(zip(('flythrough_gap_cm', 'flythrough_speed_kmh', 'flythrough_homeward_kmh',
+                                        'flythrough_cross_cm', 'flythrough_vertical_cm'), flythrough[1:], strict=True))
             with (out / 'trials.jsonl').open('a', encoding='utf-8') as log:
                 log.write(json.dumps(row) + '\n')
             print(f"Trial {trial}: {row['average_kmh']:.1f} km/h average, {row['peak_kmh']:.1f} km/h peak, "

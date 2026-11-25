@@ -38,8 +38,11 @@ return function(record,path)
  function StaticFindObject() return {GetTimeSeconds=function() return now end} end
  function ExecuteInGameThreadWithDelay(delay,fn) assert(delay==50);next_tick=fn end
  local messages={}
- record({path=path,world='world',scope=function() end,valid=function(x) return x~=nil end,
+ record({path=path,world='world',team=2,scope=function() end,valid=function(x) return x~=nil end,
   report=function(s) messages[#messages+1]=s end})(pc,gs)
+ for n=1,12 do now=now+.05;next_tick() end
+ assert(#messages==0)
+ pc.PlayerState.r_TeamId=2
  for n=1,10 do now=now+.05;jet.InputPressed=n>5;next_tick() end
  assert(messages[1]=='BOT_DEMO_RECORDING')
 end
