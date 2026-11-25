@@ -421,7 +421,7 @@ class CommunityGame:
             if self.status=='starting' and self.startup_phase=='checking_maps':
                 progress=self.map_sync.status or 'Checking map files…'
             return {'status':self.status, 'error':self.error, 'run':str(self.run) if self.run else None,
-                    'role':self.role, 'watchId':self.watch_id,
+                    'role':self.role, 'watchId':self.watch_id, 'matchId':self.match_id,
                     'progress':progress,
                     'preparation':preparation}
 
@@ -447,11 +447,23 @@ class CommunityGame:
     def stop(self):
         with self.lock:
             self._cancel_preparation()
-            if self.status not in ('starting', 'playing', 'stopping'):
-                return
-            self.stop_requested = True
-            self.status = 'stopping'
-            if self.current_artifacts is not None and not self.cancellation_written: self._request_cancel()
+            self._stop_current_game()
+
+    def stop_replaced_match(self, match_id):
+        """Close only the owned player session named by the lobby restart."""
+        with self.lock:
+            if not match_id or self.match_id != match_id or self.role != 'player':
+                return False
+            return self._stop_current_game()
+
+    def _stop_current_game(self):
+        if self.status not in ('starting', 'playing', 'stopping'):
+            return False
+        self.stop_requested = True
+        self.status = 'stopping'
+        if self.current_artifacts is not None and not self.cancellation_written:
+            self._request_cancel()
+        return True
 
     def _cancel_preparation(self):
         self.preparation_stop_requested=True

@@ -43,6 +43,53 @@ class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
 
+    def test_private_restart_displays_countdown_and_hands_off_owned_client(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        game = FakeGame()
+        app = Desktop(root, lobby, lambda _: game)
+        try:
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            app.caps.update(matchRestartEnabled=True, gameClientReady=True)
+            original = 'a' * 32
+            room = lobby.room
+            room.update(phase='ready', match={'id': original, 'status': 'ready'})
+            room['players'][0]['team'] = 'blue'
+            app.render(room)
+            self.assertEqual(app.restart_button.cget('state'), 'normal')
+            with patch('desktop_launcher.simpledialog.askstring', return_value='Connection lost'), patch.object(app, 'call_action') as action:
+                app.restart_button.invoke()
+                action.assert_called_once_with('restart', matchId=original, reason='Connection lost')
+            restart = {'stage': 'countdown', 'matchId': original, 'reason': 'Connection lost', 'seconds': 8}
+            room['restart'] = restart
+            own_game = {'status': 'playing', 'role': 'player', 'matchId': original, 'error': None}
+            with patch.object(game, 'snapshot', return_value=own_game), patch.object(game, 'stop_replaced_match', return_value=True, create=True) as stop:
+                for stage in ('countdown', 'draining'):
+                    restart['stage'] = stage
+                    app.render(room)
+                    root.after_cancel(app.poll_handle)
+                    app.poll()
+                    self.assertEqual(app.game_button.cget('state'), 'disabled')
+                    if stage == 'countdown':
+                        self.assertIn('8s · Connection lost', app.phase.get())
+                        stop.assert_not_called()
+                stop.assert_called_once_with(original)
+            restart.update(stage='complete', replacementMatchId='b' * 32)
+            room['match'] = {'id': 'b' * 32, 'status': 'ready'}
+            app.join_attempted_match = original
+            app.render(room)
+            with patch.object(app, 'join_game') as join:
+                root.after_cancel(app.poll_handle)
+                app.poll()
+                join.assert_called_once()
+        finally:
+            app.close()
+            app.close_worker.join(2)
+
     def test_private_match_browser_displays_lock_and_rejoin(self):
         root = tk.Tk()
         root.withdraw()

@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import simpledialog, ttk
 
 from community_game import CommunityGame
 from startup_paths import installation_options
@@ -43,6 +43,15 @@ def starter_version(package=ROOT):
 def match_phase_text(room):
     if room is None:
         return 'Create a lobby or enter a code.'
+    restart = room.get('restart')
+    if isinstance(restart, dict):
+        stage = restart.get('stage')
+        if stage == 'countdown':
+            return f"Restarting in {restart['seconds']}s · {restart['reason']}"
+        if stage in ('draining', 'starting'):
+            return f"Match restarting · {restart['reason']}"
+        if stage == 'failed':
+            return f"Restart failed · {restart['error']}"
     text = 'Match: ' + room['phase']
     if room['phase']=='setup':
         preparation=room.get('preparation')
@@ -260,6 +269,7 @@ class Desktop:
         self.start_button = self.button(actions,'Start match',lambda:self.call_action('start'));self.start_button.pack(side='left',padx=(0,8))
         self.game_button = self.button(actions,'Join game',self.join_game);self.game_button.pack(side='left',padx=(0,8))
         self.stop_button = self.button(actions,'Stop match',lambda:self.call_action('stop'),False);self.stop_button.pack(side='left',padx=(0,8))
+        self.restart_button = self.button(actions, 'Restart match', self.restart_match, False)
         self.reset_button = self.button(actions,'New setup',lambda:self.call_action('reset'),False);self.reset_button.pack(side='left',padx=(0,8))
         self.leave_button = self.button(actions,'Leave',lambda:self.call_action('leave'),False);self.leave_button.pack(side='left')
         tk.Label(main,textvariable=self.status,bg=BG,fg=MUTED,font=('Segoe UI',10),anchor='w',wraplength=700).pack(side='bottom',before=actions,fill='x',pady=(12,0))
@@ -412,6 +422,13 @@ class Desktop:
                 state = self.game.snapshot()
                 previous_status=self.game_status
                 self.game_status=state['status']
+                restart = self.room.get('restart') if self.room else None
+                if (isinstance(restart, dict) and restart.get('stage') in ('draining', 'starting', 'complete')
+                        and state['status'] in ('starting', 'playing') and state.get('role') == 'player'
+                        and state.get('matchId') == restart.get('matchId')
+                        and self.game.stop_replaced_match(restart['matchId'])):
+                    self.game_status = 'stopping'
+                    state = dict(state, status='stopping', progress='Closing the previous match…')
                 if state['status'] in ('starting','playing','stopping'):
                     self.status.set(state.get('progress') or {'starting':'Opening game…','playing':'Game connected.','stopping':'Closing game…'}[state['status']])
                     if self.watch_id is not None:
@@ -495,6 +512,16 @@ class Desktop:
         self.copy_code_button.configure(state='normal' if in_room else 'disabled')
         phase = room['phase'] if in_room else None
         leader = in_room and any(p['id']==room['playerId'] and p['leader'] for p in room['players'])
+        restart = room.get('restart') if in_room else None
+        restarting = isinstance(restart, dict) and restart.get('stage') in ('countdown', 'draining', 'starting')
+        can_restart = leader and self.caps.get('matchRestartEnabled') is True and phase in (
+            'starting', 'ready', 'stopped', 'ended', 'failed')
+        if can_restart:
+            if not self.restart_button.winfo_manager():
+                self.restart_button.pack(side='left', before=self.reset_button, padx=(0, 8))
+            self.restart_button.configure(state='disabled' if restarting or self.controls_busy else 'normal')
+        else:
+            self.restart_button.pack_forget()
         setup = in_room and phase=='setup'
         if not setup or not leader or self.pending_map is not None and self.pending_map[0] != room['code']:
             self.pending_map = None
@@ -546,9 +573,12 @@ class Desktop:
         for widget in (self.move_blue,self.move_red): widget.configure(state='normal' if setup and leader and not self.controls_busy else 'disabled')
         self.start_button.configure(state='normal' if setup and leader and not self.controls_busy and self.pending_map is None and self.caps.get('matchStartEnabled') else 'disabled')
         join_pending = in_room and (room.get('match') or {}).get('status') == 'starting'
-        self.game_button.configure(state='normal' if in_room and phase=='ready' and not join_pending and not self.controls_busy and self.pending_map is None and self.caps.get('gameClientReady') else 'disabled')
-        self.stop_button.configure(state='normal' if leader and phase in ('starting','ready') else 'disabled')
-        self.reset_button.configure(state='normal' if leader and phase in ('stopped','ended','failed') else 'disabled')
+        can_join = (in_room and phase == 'ready' and not join_pending and not restarting and not self.controls_busy
+                    and self.pending_map is None and self.caps.get('gameClientReady'))
+        self.game_button.configure(state='normal' if can_join else 'disabled')
+        can_stop = leader and phase in ('starting', 'ready') and (not restarting or restart.get('replacementMatchId'))
+        self.stop_button.configure(state='normal' if can_stop else 'disabled')
+        self.reset_button.configure(state='normal' if leader and not restarting and phase in ('stopped','ended','failed') else 'disabled')
         self.leave_button.configure(state='normal' if in_room and not self.controls_busy else 'disabled')
         # Preparation has no match endpoint or player profile. Start it as soon
         # as the service confirms support, while the player is choosing a lobby.
@@ -595,6 +625,22 @@ class Desktop:
                 self.game.stop()
             return self.lobby.action(operation,**data)
         self.run_async(work,self.render)
+
+    def restart_match(self):
+        if self.room is None or self.restart_button.cget('state') != 'normal':
+            return
+        match = self.room.get('match')
+        if not isinstance(match, dict) or not match.get('id'):
+            return
+        reason = simpledialog.askstring('Restart match',
+            'Start a fresh round on the same map and teams. Enter a reason for everyone in the lobby.',
+            parent=self.root)
+        if reason is None:
+            return
+        if not reason.isprintable() or not 1 <= len(reason.strip()) <= 120:
+            self.status.set('Enter a printable restart reason of 1–120 characters.')
+            return
+        self.call_action('restart', matchId=match['id'], reason=reason.strip())
 
     def move(self,team):
         player = self.selected_player()
