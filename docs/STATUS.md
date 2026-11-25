@@ -1,3 +1,10 @@
+# Blink cue timing
+
+The owning client applies the authoritative Blink movement and presents one
+departure and one arrival. The arrival cue and first-person flash wait for
+the movement to reach the player. Nearby observers still receive the native
+host cues. The fix for duplicate cues is tracked in frontend issue #60.
+
 # Private-match fall damage
 
 Starter shows **Fall damage** beside **Flag indicators** when a host
