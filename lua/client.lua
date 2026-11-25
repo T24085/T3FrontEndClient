@@ -2469,38 +2469,72 @@ local function ensure_flag_release_handoff(gs)
  if ok then flagReleaseService=service
  else report('FLAG_RELEASE_HANDOFF_UNAVAILABLE|'..tostring(service)) end
 end
-local soundSettingsWorld, soundSettingsAttempts, soundSettingsApplied, soundSettingsReady
-local SOUND_SETTINGS_MAX_ATTEMPTS = 10
-local function apply_saved_sound_settings(world, sessionReady)
-    if not valid(world) then return end
-    if not same_object(soundSettingsWorld, world) then
-        soundSettingsWorld, soundSettingsAttempts, soundSettingsApplied, soundSettingsReady = world, 0, false, false
+local apply_saved_sound_settings=(function()
+    local factoryPath='/Script/RallyHereStart.RHSettingsDataFactory'
+    local volumeKeys={MasterSoundVolume=true,SFXSoundVolume=true,MusicSoundVolume=true,
+        LobbyMusicSoundVolume=true,VGSSoundVolume=true,AnnouncerSoundVolume=true,
+        AmbienceSoundVolume=true,VoiceSoundVolume=true}
+    local worldSeen,hudSeen,ready,applied,attempts
+    local maxAttempts=10
+
+    local function native_string(parameter)
+        local remote,value=pcall(function() return parameter:get() end)
+        if not remote then value=parameter end
+        return type(value)=='string' and value or value:ToString()
     end
-    -- ApplySoundSettings has no return value. A successful early call does not
-    -- establish that the audio state survives player initialization.
-    if sessionReady and not soundSettingsReady then
-        soundSettingsReady, soundSettingsAttempts, soundSettingsApplied = true, 0, false
-    end
-    if soundSettingsApplied or soundSettingsAttempts >= SOUND_SETTINGS_MAX_ATTEMPTS then return end
-    soundSettingsAttempts = soundSettingsAttempts + 1
-    local ok, why = pcall(function()
+
+    local function restore(factory)
         signature('/Script/Engine.GameUserSettings:GetGameUserSettings',{{'ReturnValue','ObjectProperty',0}})
         signature('/Script/Valhalla.ValGameUserSettings:ApplySoundSettings',{})
-        local defaults = loaded('/Script/Engine.Default__GameUserSettings',
-                                'GameUserSettings /Script/Engine.Default__GameUserSettings')
-        local settings = defaults:GetGameUserSettings()
-        local class = loaded('/Script/Valhalla.ValGameUserSettings','Class /Script/Valhalla.ValGameUserSettings')
+        signature(factoryPath..':ApplySettingAsFloat',{{'Name','NameProperty',0},{'Value','FloatProperty',8}})
+        local defaults=loaded('/Script/Engine.Default__GameUserSettings',
+                              'GameUserSettings /Script/Engine.Default__GameUserSettings')
+        local settings=defaults:GetGameUserSettings()
+        local class=loaded('/Script/Valhalla.ValGameUserSettings','Class /Script/Valhalla.ValGameUserSettings')
         assert(valid(settings) and settings:IsA(class),'native_sound_settings_required')
+        local levels={}
+        settings.SavedSettingsConfig:ForEach(function(key,value)
+            local name=native_string(key)
+            if volumeKeys[name] then
+                local level=tonumber(native_string(value))
+                if level and level>=0 and level<=1 then levels[name]=level end
+            end
+        end)
         settings:ApplySoundSettings()
-    end)
-    if ok then
-        soundSettingsApplied = true
-        report(soundSettingsReady and 'SAVED_SOUND_SETTINGS_APPLIED_READY' or 'SAVED_SOUND_SETTINGS_APPLIED')
-    elseif soundSettingsAttempts == SOUND_SETTINGS_MAX_ATTEMPTS then
-        report('SAVED_SOUND_SETTINGS_UNAVAILABLE|'..tostring(why):sub(1,300))
+        -- ApplySoundSettings alone leaves saved slider values out of the mixer.
+        -- Use the same native entry point as the stock Settings sliders.
+        for name,level in pairs(levels) do factory:ApplySettingAsFloat(FName(name),level) end
     end
-    return ok
-end
+
+    return function(world,pc,sessionReady)
+        if not valid(world) or not valid(pc) then return end
+        local hud=pc.MyHUD
+        if not valid(hud) or not same_object(hud:GetWorld(),world) then return end
+        if not same_object(worldSeen,world) or not same_object(hudSeen,hud) then
+            worldSeen,hudSeen,ready,applied,attempts=world,hud,false,false,0
+        end
+        if sessionReady and not ready then ready,applied,attempts=true,false,0 end
+        if applied or attempts>=maxAttempts then return end
+        local factory
+        for _,candidate in ipairs(FindAllOf('RHSettingsDataFactory') or {}) do
+            if valid(candidate) and same_object(candidate:GetOuter(),hud)
+                and candidate:GetClass():GetFullName()=='Class '..factoryPath then
+                if factory then return end
+                factory=candidate
+            end
+        end
+        if not factory then return end
+        attempts=attempts+1
+        local ok,why=pcall(restore,factory)
+        if ok then
+            applied=true
+            report(ready and 'SAVED_SOUND_SETTINGS_APPLIED_READY' or 'SAVED_SOUND_SETTINGS_APPLIED')
+        elseif attempts==maxAttempts then
+            report('SAVED_SOUND_SETTINGS_UNAVAILABLE|'..tostring(why):sub(1,300))
+        end
+        return ok
+    end
+end)()
 
 local update_match_music=(function()
     local busPath='/Game/Audio/Submixes/MUS_Game_Submix.MUS_Game_Submix'
@@ -2770,7 +2804,10 @@ local function client_tick(sys)
         local modes=FindAllOf("TopGameMode_Topaz") or {};if #modes~=1 or not valid(modes[1]) then return end
         local gm=modes[1]
         assert(gm:GetClass():GetFullName()==MODE and gm:GetFullName():find("/Game/Maps/Active/Drydock/Arena_Drydock_P.Arena_Drydock_P:",1,true) and gm:HasAuthority() and sys:IsStandalone(gm)==true,"initial_standalone_drydock_required")
-        apply_saved_sound_settings(gm:GetWorld())
+        local world=gm:GetWorld()
+        local pcs=FindAllOf('ValPlayerController') or {}
+        if #pcs==1 and valid(pcs[1]) and pcs[1]:IsLocalPlayerController()
+            and same_object(pcs[1]:GetWorld(),world) then apply_saved_sound_settings(world,pcs[1]) end
         signature("/Script/Engine.GameplayStatics:OpenLevel",{{"WorldContextObject","ObjectProperty",0},{"LevelName","NameProperty",8},{"bAbsolute","BoolProperty",16},{"Options","StrProperty",24}})
         local name=FName(DESTINATION);assert(name:ToString()==DESTINATION)
         joined=true;lastJoin=os.time();report("JOIN_REQUESTED")
@@ -2788,7 +2825,7 @@ local function client_tick(sys)
     local world=pc:GetWorld()
     local pawnReady=SPECTATOR_ROLE=="player" and valid(pc.Pawn) and pc.Pawn.bInitialized==true
     local sessionReady=pawnReady or (SPECTATOR_ROLE=="spectator" and valid(pc.PlayerState))
-    local settingsApplied=same_object(world,gs:GetWorld()) and apply_saved_sound_settings(world,sessionReady)
+    local settingsApplied=same_object(world,gs:GetWorld()) and apply_saved_sound_settings(world,pc,sessionReady)
     if not valid(pc.PlayerState) then return end
     configure_weather(gs,pc)
     configure_base_lighting(gs)

@@ -12,12 +12,12 @@ class StartupAudioTest(unittest.TestCase):
     def setUp(self):
         self.lua = LuaRuntime()
         match = SOURCE[SOURCE.index('local function same_object('):].split('\nend', 1)[0] + '\nend'
-        sound = SOURCE[SOURCE.index('local soundSettingsWorld'):SOURCE.index('local update_match_music=')]
+        sound = SOURCE[SOURCE.index('local apply_saved_sound_settings='):SOURCE.index('local update_match_music=')]
         tick = SOURCE[SOURCE.index('local function client_tick('):SOURCE.index('\nlocal schedule\n')]
         tick = (tick.replace('@@SPECTATOR_RUNTIME@@', '"spectator fixture"')
                 .replace('@@SPECTATOR_MATERIAL_RUNTIME@@', '"materials fixture"'))
         self.runtime = self.lua.execute('''
-local observations = {calls=0, applied=0, joined=0, events={}, order={}, fail=false}
+local observations = {calls=0, applied=0, joined=0, events={}, order={}, fail=false, master=1, levels={}}
 local function object(world)
     return {
         IsValid=function() return true end,
@@ -33,28 +33,56 @@ local bootstrap = object(object())
 bootstrap.GetClass = function() return {GetFullName=function() return MODE end} end
 bootstrap.GetFullName = function() return '/Game/Maps/Active/Drydock/Arena_Drydock_P.Arena_Drydock_P:' end
 bootstrap.HasAuthority = function() return true end
+local function controller(world)
+    local pc=object(world)
+    pc.IsLocalPlayerController=function() return true end
+    pc.HasAuthority=function() return false end
+    pc.MyHUD=object(world)
+    return pc
+end
+local function factory(owner)
+    return {
+        IsValid=function() return true end,
+        GetOuter=function() return owner end,
+        GetClass=function() return {GetFullName=function() return 'Class /Script/RallyHereStart.RHSettingsDataFactory' end} end,
+        ApplySettingAsFloat=function(_,key,value)
+            local name=key.ToString()
+            observations.levels[name]=value
+            if name=='MasterSoundVolume' then observations.master=value end
+        end,
+    }
+end
+local boot=controller(bootstrap:GetWorld())
+local bootFactory=factory(boot.MyHUD)
 local world = object()
-local gs, pc
+local gs, pc, matchFactory
 local function travel()
     world = object()
     gs = object(world)
     gs.GetFullName = function() return 'fixture match' end
     gs.HasAuthority = function() return false end
-    pc = object(world)
-    pc.IsLocalPlayerController = function() return true end
-    pc.HasAuthority = function() return false end
+    pc = controller(world)
+    matchFactory = factory(pc.MyHUD)
 end
 travel()
 local function state() return gs end
 local function FindAllOf(class)
     if class == 'TopGameMode_Topaz' then return {bootstrap} end
-    if class == 'ValPlayerController' then return {pc} end
+    if class == 'ValPlayerController' then return {joined and pc or boot} end
+    if class == 'RHSettingsDataFactory' then
+        if matchFactory then return {bootFactory,matchFactory} end
+        return {bootFactory}
+    end
     error('unexpected class '..class)
 end
 local function signature() end
 local class = object()
 local settings = object()
 settings.IsA = function(_, candidate) return candidate == class end
+local saved = {MasterSoundVolume='.25', SFXSoundVolume='0', AmbienceSoundVolume='1.5', FieldOfView='120'}
+settings.SavedSettingsConfig = {ForEach=function(_,callback)
+    for name,value in pairs(saved) do callback(name,{get=function() return value end}) end
+end}
 settings.ApplySoundSettings = function()
     observations.calls = observations.calls + 1
     assert(not observations.fail, 'audio device not ready')
@@ -86,6 +114,14 @@ local sys = {IsStandalone=function() return true end}
 return {
     tick=function() client_tick(sys) end,
     travel=travel,
+    settings_factory_ready=function(ready) matchFactory=ready and factory(pc.MyHUD) or nil end,
+    player_mode=function() SPECTATOR_ROLE='player' end,
+    player_ready=function()
+        pc.Pawn=object(world)
+        pc.Pawn.bInitialized=true
+        -- Simulate the native mixer returning to its default during spawn.
+        observations.master=1
+    end,
     spectator_ready=function() pc.PlayerState=object(world) end,
     lagging_controller=function() pc.GetWorld=function() return bootstrap:GetWorld() end end,
     observed=observations
@@ -107,6 +143,32 @@ return {
         runtime.tick()
         self.assertEqual(runtime.observed.applied, 3)
         self.assertEqual(list(runtime.observed.events.values()).count('SAVED_SOUND_SETTINGS_APPLIED_READY'), 1)
+
+    def test_player_ready_restores_saved_levels_after_native_spawn_resets_the_mix(self):
+        runtime = self.runtime
+        runtime.player_mode()
+        runtime.tick()
+        runtime.tick()
+        self.assertEqual(runtime.observed.master, .25)
+
+        runtime.player_ready()
+        self.assertEqual(runtime.observed.master, 1)
+        runtime.tick()
+        self.assertEqual(runtime.observed.master, .25)
+
+        runtime.tick()
+        self.assertEqual(runtime.observed.calls, 3)
+
+    def test_waits_for_local_factory_and_applies_only_valid_saved_levels(self):
+        runtime = self.runtime
+        runtime.tick()
+        runtime.settings_factory_ready(False)
+        runtime.tick()
+        self.assertEqual(runtime.observed.calls, 1)
+        runtime.settings_factory_ready(True)
+        runtime.tick()
+        self.assertEqual(runtime.observed.calls, 2)
+        self.assertEqual(dict(runtime.observed.levels), {'MasterSoundVolume': .25, 'SFXSoundVolume': 0})
 
     def test_retries_failed_application_until_success_without_reapplying_afterward(self):
         runtime = self.runtime
