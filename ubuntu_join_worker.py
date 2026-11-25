@@ -115,7 +115,10 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
     if (directory/'cancel').exists():
         status(directory,'stopped')
         return 0
-    public = request['role'] == 'public'
+    role = request['role']
+    if role not in ('player', 'public', 'spectator', 'ranked'):
+        raise ValueError('Invalid Clan Wars handoff role.')
+    public = role == 'public'
     team = request.get('team', 'auto') if public else 'auto'
     if team not in ('auto', 'blue', 'red'):
         raise ValueError('Invalid Public CTF team choice.')
@@ -137,7 +140,7 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
     if session is not None:
         lobby.direct_session = session
     game = None
-    spectator = request['role'] == 'spectator'
+    spectator = role == 'spectator'
     try:
         if spectator:
             watch_id, token = request.get('watch_id'), request.get('watch_token')
@@ -189,6 +192,8 @@ def serve(directory: Path, package: Path, game_dir: Path, workspace: Path, conte
                         game.start_public(request['name'], team=team)
                 elif spectator:
                     game.start_spectating(watch_id)
+                elif role == 'ranked':
+                    game.start_pug(request['ranked_room'], request['ranked_game'])
                 else:
                     game.start(expected_map=request['map'], expected_match_id=request['match'])
             except Exception as exc:

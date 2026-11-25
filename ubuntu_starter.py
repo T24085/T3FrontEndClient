@@ -279,13 +279,16 @@ class GameHandoff:
                 raise
             self.directory = request
             self.deadline = time.monotonic() + HANDOFF_WAIT
-            self.role = role
+            self.role = 'player' if role == 'ranked' else role
             self.watch_id = values.get('watch_id')
             self.match_id = values.get('match')
             return 'starting'
 
     def start(self, *, expected_map=None, expected_match_id=None):
         return self._send('player', map=expected_map, match=expected_match_id)
+
+    def start_pug(self, room_id, game):
+        return self._send('ranked', ranked_room=room_id, ranked_game=game, match=game['matchId'])
 
     def start_public(self, name, *, team='auto'):
         return self._send('public', name=name, team=team)
@@ -440,6 +443,7 @@ def show_starter(lobby, state, on_ready=None, *, directory=None):
     class UbuntuDesktop(Desktop):
         public_panel = None
         armor_panel = None
+        pug_panel = None
         tool_tips = None
 
         def label(self, parent, text, *args, **kwargs):
@@ -482,6 +486,10 @@ def show_starter(lobby, state, on_ready=None, *, directory=None):
                 self.armor_panel.panel.pack_forget()
             if self.public_panel is not None:
                 self.public_panel.panel.pack_forget()
+            if self.pug_panel is not None and self.pug_panel.show_page(name):
+                if self.maps_panel is not None:
+                    self.maps_panel.pack_forget()
+                return
             panel = {'armor': self.armor_panel, 'public': self.public_panel}.get(name)
             if panel is not None:
                 self.current_panel = name
@@ -667,6 +675,8 @@ def show_starter(lobby, state, on_ready=None, *, directory=None):
     if lobby.public_supported:
         app.public_panel = direct_client.PublicCTFPanel(tk, app, lobby)
         app.show_panel('public' if lobby.public_only else 'lobbies')
+    if getattr(lobby, 'pug_supported', False):
+        app.pug_panel = direct_client.RankedPugPanel(tk, app, lobby)
     armor_panel = getattr(direct_client, 'ArmorPanel', None)
     if armor_panel is not None and getattr(lobby, 'armor_supported', False):
         viewport = armor_viewport(tk, direct_client.ArmorViewport)

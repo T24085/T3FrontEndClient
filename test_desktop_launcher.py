@@ -2,6 +2,7 @@
 import time
 import gc
 from pathlib import Path
+import json
 import sys
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -9,7 +10,7 @@ import tkinter as tk
 import unittest
 from unittest.mock import Mock, patch
 
-from desktop_launcher import Desktop, match_phase_text, normalize_lobby_code
+from desktop_launcher import Desktop, art_bytes, match_phase_text, maximize_window, normalize_lobby_code
 from community_transport import CommunityError
 from community_maps import options
 from steam_identity import SteamIdentityError, read_local_name, save_local_name
@@ -46,6 +47,102 @@ class FakeGame:
 class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
+
+    def test_starter_requests_window_manager_maximization(self):
+        root = Mock()
+        root.state.return_value = 'normal'
+        root.tk.call.return_value = 'win32'
+        maximize_window(root)
+        root.state.assert_called_with('zoomed')
+        root.tk.call.return_value = 'x11'
+        maximize_window(root)
+        root.attributes.assert_called_once_with('-zoomed', True)
+        root.reset_mock()
+        root.state.return_value = 'withdrawn'
+        maximize_window(root)
+        root.tk.call.assert_not_called()
+
+    def test_starter_skin_switches_in_place_and_restores_after_relaunch(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'starter-skin.json'
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                lobby = FakeLobby()
+                app = Desktop(root, lobby, lambda _: FakeGame(), name_settings_dir=directory)
+                app.code.set('ABC234')
+                app.render(lobby.room)
+                original_background = app.backdrop.source[0][0]
+                original_emblem = str(app.emblem)
+                app.skin_menu.invoke(1)
+                self.assertEqual(app.skin_selector.cget('text'), 'Skin · Blood Eagle')
+                self.assertEqual(app.lobby_create_button.cget('background'), '#ffb46f')
+                self.assertNotEqual(str(app.emblem), original_emblem)
+                self.assertNotEqual(app.backdrop.source[0][0], original_background)
+                self.assertEqual(app.code.get(), 'ABC234')
+                self.assertIs(app.room, lobby.room)
+                self.assertEqual(lobby.calls, [])
+                app.skin_menu.invoke(2)
+                self.assertEqual(app.skin_choice.get(), 'diamond-sword')
+                self.assertEqual(app.lobby_create_button.cget('background'), '#85ddff')
+                self.assertEqual(app.skin_style.lookup('Live.Treeview', 'background'), '#0c2031')
+                self.assertEqual(json.loads(path.read_bytes()), 'diamond-sword')
+            finally:
+                root.destroy()
+
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                app = Desktop(root, FakeLobby(), lambda _: FakeGame(), name_settings_dir=directory)
+                self.assertEqual(app.skin_choice.get(), 'diamond-sword')
+                self.assertEqual(app.sidebar.cget('background'), '#101d2c')
+                app.skin_menu.invoke(0)
+                self.assertEqual(app.skin_choice.get(), 'phoenix')
+                self.assertEqual(app.sidebar.cget('background'), '#0d1927')
+                self.assertEqual(app.backdrop.source[0][0], original_background)
+                self.assertEqual(json.loads(path.read_bytes()), 'phoenix')
+            finally:
+                root.destroy()
+
+    def test_invalid_starter_skin_preference_falls_back_to_phoenix(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'starter-skin.json'
+            path.write_text('{"skin":"retired"}', encoding='utf-8')
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                app = Desktop(root, FakeLobby(), lambda _: FakeGame(), name_settings_dir=directory)
+                self.assertEqual(app.skin_choice.get(), 'phoenix')
+                self.assertEqual(app.skin_selector.cget('text'), 'Skin · Phoenix Rising')
+                self.assertEqual(json.loads(path.read_bytes()), {'skin': 'retired'})
+            finally:
+                root.destroy()
+
+    def test_blood_eagle_2_has_distinct_artwork_and_persists(self):
+        for artwork in ('world', 'emblem'):
+            self.assertNotEqual(art_bytes(f'blood-eagle-{artwork}.png'),
+                                art_bytes(f'blood-eagle-2-{artwork}.png'))
+        with TemporaryDirectory() as directory:
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                app = Desktop(root, FakeLobby(), lambda _: FakeGame(), name_settings_dir=directory)
+                app.skin_menu.invoke(1)
+                original = app.backdrop.source
+                self.assertEqual(app.skin_selector.cget('text'), 'Skin · Blood Eagle')
+                app.skin_menu.invoke(3)
+                self.assertEqual(app.skin_selector.cget('text'), 'Skin · Blood Eagle 2')
+                self.assertNotEqual(app.backdrop.source, original)
+            finally:
+                root.destroy()
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                app = Desktop(root, FakeLobby(), lambda _: FakeGame(), name_settings_dir=directory)
+                self.assertEqual(app.skin_choice.get(), 'blood-eagle-2')
+                self.assertEqual(app.skin_selector.cget('text'), 'Skin · Blood Eagle 2')
+            finally:
+                root.destroy()
 
     def test_private_match_browser_displays_lock_and_rejoin(self):
         root = tk.Tk()

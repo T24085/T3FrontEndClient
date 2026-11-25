@@ -42,11 +42,22 @@ class RankedLauncherTests(unittest.TestCase):
         self.assertEqual(panel.launch.cget('state'), 'normal')
         self.assertIn('13/14', panel.status.get())
         row = dict(id=45, rank=2, name='Test Player', mu=32.4, sigma=4.3, wins=2, losses=1, draws=0,
-                   stats={'flagGrabs': 3, 'flagHeldSeconds': 130, 'native.Stat.Kills': 5})
-        panel.render_stats({'players': [row], 'profile': row, 'hasMore': False})
+                   stats={'flagGrabs': 3, 'flagHeldSeconds': 130, 'native.Kills': 5, 'native.Stat.Kills': 99,
+                          'native.Deaths': 2, 'native.Assists': 4, 'native.Captures': 1, 'native.Returns': 6,
+                          'native.Bot_Kills': 8})
+        legacy = dict(row, id=46, stats={'native.Stat.Kills': 7, 'native.STAT_Assists': 9})
+        panel.render_stats({'players': [row, legacy], 'profile': row, 'hasMore': False})
         self.assertIn('32.40', panel.profile.get())
-        self.assertEqual(panel.table.set('45', 'held'), '2:10')
-        self.assertTrue(any(panel.detail.set(item, 'stat') == 'Kills' for item in panel.detail.get_children()))
+        visible = {'kills': '5', 'deaths': '2', 'assists': '4', 'captures': '1', 'returns': '6',
+                   'grabs': '3', 'held': '2:10'}
+        self.assertEqual({name: panel.table.set('45', name) for name in visible}, visible)
+        self.assertEqual(panel.table.set('46', 'kills'), '7')
+        self.assertEqual(panel.table.set('46', 'assists'), '9')
+        self.assertEqual(panel.table.set('46', 'returns'), '0')
+        detail = [(panel.detail.set(item, 'stat'), panel.detail.set(item, 'total'))
+                  for item in panel.detail.get_children()]
+        self.assertEqual(detail, [(panel.table.heading(name, 'text'), value) for name, value in visible.items()]
+                         + [('Bot_Kills', '8')])
 
 
 if __name__ == '__main__':

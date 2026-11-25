@@ -37,6 +37,9 @@ RETAIL_INPUT_SECTION = '/Script/Valhalla.ValPlayerInput'
 RETAIL_PROMPT_FILE = "retail-import-prompt.json"
 RETAIL_GAME_SECTIONS = ('/Script/Valhalla.ValGameUserSettings', '/Script/Engine.GameUserSettings', 'ScalabilityGroups')
 
+# Signed Starter packages embed extra skin artwork in this inventoried module.
+STARTER_SKIN_ART = {}
+
 
 def user_profile_root():
     """Use the OS known folder, without packaged-Python LOCALAPPDATA redirection."""

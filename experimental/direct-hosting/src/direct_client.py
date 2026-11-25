@@ -1392,6 +1392,23 @@ class PublicCTFPanel:
             self.submit('poll', lambda: self.lobby.public_state(renew=public))
         self.root.after(150, self.tick)
 
+RANKED_TOTALS = (
+    ('kills', 'Kills', 51, ('kills', 'kill')),
+    ('deaths', 'Deaths', 62, ('deaths', 'death')),
+    ('assists', 'Assists', 63, ('assists', 'assist', 'killassists')),
+    ('captures', 'Captures', 75, ('captures', 'capture', 'flagcaptures', 'flagcapture', 'flagcaps')),
+    ('returns', 'Returns', 68, ('returns', 'return', 'flagreturns', 'flagreturn')),
+    ('grabs', 'Grabs', 57, ('flaggrabs',)),
+    ('held', 'Flag time', 75, ('flagheldseconds',)),
+)
+RANKED_SUMMARY_KEYS = {key for _, _, _, keys in RANKED_TOTALS for key in keys}
+
+
+def ranked_stat_key(key):
+    name = key.rsplit('.', 1)[-1].lower().removeprefix('stat_')
+    return re.sub(r'[^a-z0-9]', '', name)
+
+
 class RankedPugPanel:
     """Launcher views for the current ranked room and its published statistics."""
 
@@ -1464,22 +1481,27 @@ class RankedPugPanel:
         self.next = desktop.button(search, 'Next', lambda: self.page(25), False)
         self.next.pack(side='right')
         self.back.pack(side='right', padx=6)
-        headings = (('rank', 'Rank', 50), ('name', 'Player', 150), ('mu', 'μ', 56),
-                    ('record', 'W–L–D', 80), ('grabs', 'Grabs', 57), ('held', 'Flag time', 75))
+        headings = (('rank', 'Rank', 50), ('name', 'Player', 145), ('mu', 'μ', 56),
+                    ('record', 'W–L–D', 80)) + tuple((key, title, width) for key, title, width, _ in RANKED_TOTALS)
         board = tk.Frame(stats, bg=BG)
         board.pack(fill='both', expand=True)
         self.table = ttk.Treeview(board, columns=[item[0] for item in headings],
                                   show='headings', style='Live.Treeview', selectmode='browse', height=8)
         scroll = ttk.Scrollbar(board, orient='vertical', command=self.table.yview)
-        self.table.configure(yscrollcommand=scroll.set)
-        self.table.pack(side='left', fill='both', expand=True)
-        scroll.pack(side='right', fill='y')
+        horizontal = ttk.Scrollbar(board, orient='horizontal', command=self.table.xview)
+        self.table.configure(yscrollcommand=scroll.set, xscrollcommand=horizontal.set)
+        board.rowconfigure(0, weight=1)
+        board.columnconfigure(0, weight=1)
+        self.table.grid(row=0, column=0, sticky='nsew')
+        scroll.grid(row=0, column=1, sticky='ns')
+        horizontal.grid(row=1, column=0, sticky='ew')
         sorts = {'rank': 'mu', 'mu': 'mu', 'record': 'wins', 'grabs': 'flagGrabs', 'held': 'flagHeldSeconds'}
         for key, title, width in headings:
             self.table.heading(key, text=title)
             if key in sorts:
                 self.table.heading(key, command=lambda sort=sorts[key]: self.sort_board(sort))
-            self.table.column(key, width=width, minwidth=width, stretch=key == 'name')
+            self.table.column(key, width=width, minwidth=width, stretch=key == 'name',
+                              anchor='w' if key == 'name' else 'center')
         self.table.bind('<<TreeviewSelect>>', self.select_ranked_player)
         self.profile = tk.StringVar()
         ttk.Label(stats, textvariable=self.profile, wraplength=575, justify='left').pack(
@@ -1487,7 +1509,7 @@ class RankedPugPanel:
         profile_box = tk.Frame(stats, bg=BG)
         profile_box.pack(fill='both', pady=(4, 0))
         self.detail = ttk.Treeview(profile_box, columns=('stat', 'total'), show='headings',
-                                   style='Live.Treeview', height=5)
+                                   style='Live.Treeview', height=len(RANKED_TOTALS))
         self.detail.heading('stat', text='Statistic')
         self.detail.heading('total', text='Career total')
         detail_scroll = ttk.Scrollbar(profile_box, orient='vertical', command=self.detail.yview)
@@ -1526,6 +1548,19 @@ class RankedPugPanel:
             self.poll()
         else:
             self.load_stats()
+
+    def show_page(self, name):
+        self.panel.pack_forget()
+        self.stats_panel.pack_forget()
+        if name not in ('pug', 'stats'):
+            return False
+        self.ui.current_panel = name
+        self.ui.lobby_panel.pack_forget()
+        self.ui.live_panel.pack_forget()
+        panel = self.panel if name == 'pug' else self.stats_panel
+        panel.pack(side='left', fill='both', expand=True, padx=32, pady=24)
+        self.open(name)
+        return True
 
     def join_queue(self):
         try:
@@ -1621,14 +1656,26 @@ class RankedPugPanel:
         minutes, rest = divmod(int(seconds), 60)
         return f'{minutes}:{rest:02d}'
 
+    @classmethod
+    def summary(cls, stats):
+        by_name = {}
+        for key, value in stats.items():
+            by_name.setdefault(ranked_stat_key(key), value)
+        totals = []
+        for column, label, _, keys in RANKED_TOTALS:
+            value = stats.get(f'native.{label}')
+            if value is None:
+                value = next((by_name[key] for key in keys if key in by_name), 0)
+            totals.append((label, cls.duration(value) if column == 'held' else f'{value:,.0f}'))
+        return totals
+
     def render_stats(self, result):
         self.table.delete(*self.table.get_children())
         self.ranked_rows = {str(row['id']): row for row in result['players']}
         for identity, row in self.ranked_rows.items():
-            stats = row['stats']
             self.table.insert('', 'end', iid=identity, values=(
                 row['rank'], row['name'], f"{row['mu']:.2f}", f"{row['wins']}–{row['losses']}–{row['draws']}",
-                f"{stats.get('flagGrabs', 0):g}", self.duration(stats.get('flagHeldSeconds', 0))))
+                *(value for _, value in self.summary(row['stats']))))
         self.back.configure(state='normal' if self.offset else 'disabled')
         self.next.configure(state='normal' if result['hasMore'] else 'disabled')
         self.render_profile(result['profile'])
@@ -1644,12 +1691,13 @@ class RankedPugPanel:
             self.profile.set('No completed ranked matches for this player yet. Starting μ is 25.')
             return
         self.profile.set(f"#{row['rank']}  {row['name']}   ·   μ {row['mu']:.2f}   ·   σ {row['sigma']:.2f}")
+        for label, total in self.summary(row['stats']):
+            self.detail.insert('', 'end', values=(label, total))
         for key, value in sorted(row['stats'].items()):
-            if key == 'flagHeldSeconds':
-                label, total = 'Flag time', self.duration(value)
-            else:
-                label = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', key.removeprefix('native.').split('.')[-1])
-                label, total = label[:1].upper() + label[1:], f'{value:,.3f}'.rstrip('0').rstrip('.') if value % 1 else f'{int(value):,}'
+            if ranked_stat_key(key) in RANKED_SUMMARY_KEYS:
+                continue
+            label = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', key.removeprefix('native.').split('.')[-1])
+            label, total = label[:1].upper() + label[1:], f'{value:,.3f}'.rstrip('0').rstrip('.') if value % 1 else f'{int(value):,}'
             self.detail.insert('', 'end', values=(label, total))
 
     def tick(self):
@@ -2081,17 +2129,8 @@ def run_starter(root, *, on_ready=None, weapon_directory=None, selected=None):
                 self.public_panel.panel.pack_forget()
             if self.maps_panel is not None:
                 self.maps_panel.pack_forget()
-            if self.pug_panel is not None:
-                self.pug_panel.panel.pack_forget()
-                self.pug_panel.stats_panel.pack_forget()
-                if name in ('pug', 'stats'):
-                    self.current_panel = name
-                    self.lobby_panel.pack_forget()
-                    self.live_panel.pack_forget()
-                    panel = self.pug_panel.panel if name == 'pug' else self.pug_panel.stats_panel
-                    panel.pack(side='left', fill='both', expand=True, padx=32, pady=24)
-                    self.pug_panel.open(name)
-                    return
+            if self.pug_panel is not None and self.pug_panel.show_page(name):
+                return
             if name == 'armor' and self.armor_panel is not None:
                 self.current_panel = 'armor'
                 self.lobby_panel.pack_forget()
