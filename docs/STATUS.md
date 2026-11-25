@@ -67,6 +67,14 @@ A local native join on a cooked map draft with powered shields verified a
 normal zero-to-two bind and a spawned player with client `34d0a57`.
 The fixture covers the partial canvas. Native reconnect recovery remains open.
 
+# Team radar with backup sensors
+
+On a community map with multiple sensors per team, the client reconciles
+its native team radar flag from the complete set of replicated sensors.
+Radar stays online while any sensor still has power and is operational.
+The hook retires with the remote world, and the radar status service runs
+independently of minimap capture and icon binding.
+
 # Community server browser
 
 A Direct package with a signed seed opens a directory browser with sortable
