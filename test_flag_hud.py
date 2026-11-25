@@ -386,10 +386,14 @@ assert(flags==nil and minimap[friendly] and minimap[enemy] and not minimap[repla
 hud.minimap(f.pc,f.world,minimap,2)
 assert(map.Flags:GetChildrenCount()==2 and map.Flags:GetChildAt(1).CachedActor==enemy)
 
+map.Flags:RemoveChildAt(1)
+hud.minimap(f.pc,f.world,minimap,5)
+assert(map.Flags:GetChildrenCount()==2 and map.Flags:GetChildAt(1).CachedActor==enemy)
+
 enemy.invalid=true
 flags,minimap=hud.prepare(f.pc,f.world)
 assert(flags and flags[replacement] and not flags[enemy])
-hud.minimap(f.pc,f.world,minimap,6)
+hud.minimap(f.pc,f.world,minimap,9)
 assert(map.Flags:GetChildrenCount()==2 and map.Flags:GetChildAt(1).CachedActor==replacement)
 return true
 ''')

@@ -987,7 +987,11 @@ local ctfFlagHud=(function()
                     -- building it. Never clear a layer with unrelated children.
                     if missing and not view.other and retry_binding(widget,now) then
                         widget:BindFlags()
-                        view=inspect(widget.Flags,mapMarkerClass,flags) or view
+                        local rebound=inspect(widget.Flags,mapMarkerClass,flags)
+                        if rebound then
+                            view=rebound
+                            remove_stale(view)
+                        end
                     end
                     for key,marker in pairs(view.icons) do
                         local row=flags[key]
