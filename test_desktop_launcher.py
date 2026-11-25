@@ -43,6 +43,51 @@ class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
 
+    def test_private_match_browser_displays_lock_and_rejoin(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        app = Desktop(root, lobby, lambda _: FakeGame())
+        try:
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            app.caps.update(privateLobbyAdmission=True, gameClientReady=True)
+            app.render(None)
+            self.assertEqual(app.lobby_lock.winfo_manager(), 'grid')
+            app.lock_lobby.set(True)
+            app.name.set('Player')
+            with patch.object(app, 'run_async') as enter, patch.object(lobby, 'create') as create:
+                app.create()
+                enter.call_args.args[0]()
+                create.assert_called_once_with('Player', locked=True)
+            match_id = 'a'*32
+            locked = {'id':match_id, 'label':'Stonehenge', 'playerCount':2, 'playerCapacity':24,
+                      'spectatorCount':0, 'spectatorCapacity':0, 'canSpectate':False,
+                      'locked':True, 'rejoin':False, 'canJoin':False,
+                      'joinReason':'Match in progress, lobby locked.', 'teamCounts':{'blue':1,'red':1}}
+            app.render_live_matches([locked])
+            app.live_list.selection_set(match_id)
+            app.render_live_controls()
+            self.assertEqual(app.live_join_button.cget('state'), 'disabled')
+            self.assertEqual(app.live_join_reason.get(), 'Match in progress, lobby locked.')
+            self.assertIn('Locked', app.live_list.item(match_id, 'values')[1])
+            app.render_live_matches([dict(locked, rejoin=True, canJoin=True, joinReason='')])
+            self.assertEqual(app.live_join_button.cget('text'), 'Rejoin')
+            self.assertEqual(app.live_join_button.cget('state'), 'normal')
+            self.assertEqual(str(app.live_team.cget('state')), 'disabled')
+            app.render_live_matches([dict(locked, locked=False, canJoin=True, joinReason='')])
+            self.assertEqual(str(app.live_team.cget('state')), 'readonly')
+            app.live_team.current(2)
+            with patch.object(app, 'run_async') as enter, patch.object(lobby, 'join_match', create=True) as join:
+                app.join_live_selected()
+                enter.call_args.args[0]()
+                join.assert_called_once_with(match_id, 'Player', team='red')
+        finally:
+            app.close()
+            app.close_worker.join(2)
+
     @unittest.skipUnless(sys.platform == 'win32', 'Retail profile import is a Windows Starter control.')
     def test_settings_import_button_uses_saved_profile_only_after_game_exits(self):
         root = tk.Tk()

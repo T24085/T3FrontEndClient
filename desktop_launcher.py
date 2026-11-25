@@ -112,7 +112,7 @@ class Desktop:
         self.allow_bots = tk.BooleanVar(value=False)
         self.bot_count = tk.StringVar(value='2')
         self.retail_capture_point = tk.BooleanVar(value=True)
-        self.live_status = tk.StringVar(value='Checking spectator support…')
+        self.live_status = tk.StringVar(value='Checking live matches…')
         side = tk.Frame(root, bg='#0d1927', width=225)
         self.sidebar = side
         side.pack(side='left', fill='y')
@@ -167,6 +167,9 @@ class Desktop:
         entry.columnconfigure(0,weight=1);entry.columnconfigure(1,weight=1)
         self.create_button = self.button(entry,'Create lobby',self.create)
         self.create_button.grid(row=2,column=0,sticky='w')
+        self.lock_lobby = tk.BooleanVar(value=False)
+        self.lobby_lock = tk.Checkbutton(entry, text='Lock lobby after start', variable=self.lock_lobby,
+            bg=PANEL, fg=TEXT, selectcolor='#20374a', activebackground=PANEL, activeforeground=TEXT)
         self.join_button = self.button(entry,'Join lobby',self.join,False)
         self.join_button.grid(row=2,column=1,sticky='w',padx=(12,0))
         card = tk.Frame(main,bg=PANEL,padx=18,pady=14)
@@ -282,8 +285,21 @@ class Desktop:
         self.stop_watch_button.pack(side='left',padx=(0,8))
         self.live_refresh_button=self.button(live_actions,'Refresh',self.refresh_live_matches,False)
         self.live_refresh_button.pack(side='left')
-        tk.Label(self.live_panel,textvariable=self.live_status,bg=BG,fg=MUTED,font=('Segoe UI',10),
-                 anchor='w',justify='left',wraplength=650).pack(fill='x',pady=(12,0))
+        self.live_join_row = tk.Frame(self.live_panel, bg=BG)
+        self.live_join_button = self.button(self.live_join_row, 'Join match', self.join_live_selected)
+        self.live_join_button.pack(side='left', padx=(0, 8))
+        self.live_join_tip = None
+        self.live_join_button.bind('<Enter>', self.show_live_join_tip)
+        self.live_join_button.bind('<Leave>', self.hide_live_join_tip)
+        self.live_join_row.bind('<Unmap>', self.hide_live_join_tip)
+        self.live_team = ttk.Combobox(self.live_join_row, width=16, state='disabled')
+        self.live_team.pack(side='left')
+        self.live_join_reason = tk.StringVar()
+        tk.Label(self.live_join_row, textvariable=self.live_join_reason, bg=BG, fg=MUTED,
+                 anchor='w', justify='left', wraplength=260).pack(side='left', padx=8)
+        self.live_status_label = tk.Label(self.live_panel, textvariable=self.live_status, bg=BG, fg=MUTED,
+                                         font=('Segoe UI',10), anchor='w', justify='left', wraplength=650)
+        self.live_status_label.pack(fill='x', pady=(12,0))
         self.render_live_controls()
         self.render(None)
         if steam_name_loader:
@@ -490,7 +506,13 @@ class Desktop:
         for widget in (self.name_entry,self.code_entry,self.create_button,self.join_button): widget.configure(state='disabled' if in_room or self.controls_busy else 'normal')
         if self.steam_name_loader and not in_room and not self.controls_busy:
             self.name_entry.configure(state='readonly', readonlybackground='#20374a')
-        self.room_heading.set('Lobby  '+room['code'] if in_room else 'Not in a lobby')
+        if self.caps.get('privateLobbyAdmission') is True:
+            self.lobby_lock.grid(row=3, column=0, sticky='w', pady=(4, 0))
+            self.lobby_lock.configure(state='disabled' if in_room or self.controls_busy else 'normal')
+        else:
+            self.lobby_lock.grid_remove()
+        self.room_heading.set(('Lobby  '+room['code']+('  ·  Locked' if room.get('locked') else ''))
+                              if in_room else 'Not in a lobby')
         self.phase.set(match_phase_text(room))
         available=room.get('availableMaps') if in_room else self.caps.get('maps')
         if available is None: available=options(LEGACY_MAPS)
@@ -523,7 +545,8 @@ class Desktop:
         for widget in (self.blue_button,self.red_button): widget.configure(state='normal' if setup and not self.controls_busy else 'disabled')
         for widget in (self.move_blue,self.move_red): widget.configure(state='normal' if setup and leader and not self.controls_busy else 'disabled')
         self.start_button.configure(state='normal' if setup and leader and not self.controls_busy and self.pending_map is None and self.caps.get('matchStartEnabled') else 'disabled')
-        self.game_button.configure(state='normal' if in_room and phase=='ready' and not self.controls_busy and self.pending_map is None and self.caps.get('gameClientReady') else 'disabled')
+        join_pending = in_room and (room.get('match') or {}).get('status') == 'starting'
+        self.game_button.configure(state='normal' if in_room and phase=='ready' and not join_pending and not self.controls_busy and self.pending_map is None and self.caps.get('gameClientReady') else 'disabled')
         self.stop_button.configure(state='normal' if leader and phase in ('starting','ready') else 'disabled')
         self.reset_button.configure(state='normal' if leader and phase in ('stopped','ended','failed') else 'disabled')
         self.leave_button.configure(state='normal' if in_room and not self.controls_busy else 'disabled')
@@ -538,11 +561,12 @@ class Desktop:
                 self.preparation.set('Game preparation: '+str(exc))
 
     def create(self):
+        settings = {'locked': self.lock_lobby.get()} if self.caps.get('privateLobbyAdmission') is True else {}
         if self.steam_name_loader:
-            self.enter_with_steam(lambda name:self.lobby.create(name))
+            self.enter_with_steam(lambda name: self.lobby.create(name, **settings))
         else:
             name = self.name.get()
-            self.run_async(lambda:self.lobby.create(name),self.render)
+            self.run_async(lambda: self.lobby.create(name, **settings), self.render)
 
     def join(self):
         code, name = self.code.get().strip().upper(), self.name.get()
@@ -551,14 +575,14 @@ class Desktop:
         else:
             self.run_async(lambda:self.lobby.join(code,name),self.render)
 
-    def enter_with_steam(self, operation):
+    def enter_with_steam(self, operation, *, success=None):
         def work():
             name=self.steam_name_loader()
             return name,operation(name)
         def entered(value):
             name,room=value
             self.name.set(name)
-            self.render(room)
+            (success or self.render)(room)
             if not self.capabilities_loaded:
                 self.run_async(self.lobby.capabilities, self.set_capabilities)
         self.run_async(work,entered)
@@ -758,16 +782,41 @@ class Desktop:
                  justify='left', wraplength=420, anchor='w').pack(fill='x', pady=(12, 0))
         window.bind('<Escape>', lambda _event: window.destroy())
 
+    def live_browser_supported(self):
+        return self.caps.get('spectateEnabled') is True or self.caps.get('privateLobbyAdmission') is True
+
     def render_live_controls(self):
         supported=self.caps.get('spectateEnabled')is True
+        player_admission = self.caps.get('privateLobbyAdmission') is True
         selected=self.live_list.selection()
         target=self.live_targets.get(selected[0])if selected else None
         active=self.game_status not in ('idle','stopped','finished','failed')
         can_watch=supported and target is not None and target.get('canSpectate')is True and not active and self.watch_id is None
         self.spectate_button.configure(state='normal'if can_watch and not self.controls_busy else'disabled')
         self.stop_watch_button.configure(state='normal'if self.watch_id is not None and not self.controls_busy else'disabled')
-        self.live_refresh_button.configure(state='normal'if supported and not self.controls_busy else'disabled')
-        if not supported and self.capabilities_loaded:self.live_status.set('Spectating is unavailable on this server version.')
+        self.live_refresh_button.configure(state='normal' if self.live_browser_supported() and not self.controls_busy else 'disabled')
+        if not self.live_browser_supported() and self.capabilities_loaded:
+            self.live_status.set('Live matches are unavailable on this server version.')
+        if not player_admission:
+            self.live_join_row.pack_forget()
+            return
+        if not self.live_join_row.winfo_manager():
+            self.live_join_row.pack(before=self.live_status_label, fill='x', pady=(8, 0))
+        returning = bool(target and target.get('rejoin'))
+        ready = bool(target and target.get('canJoin') and self.caps.get('gameClientReady')
+                     and not (active or self.watch_id or self.controls_busy or self.closing))
+        self.live_join_button.configure(text='Rejoin' if returning else 'Join match', state='normal' if ready else 'disabled')
+        self.live_join_reason.set(target.get('joinReason', '') if target else '')
+        if not self.live_join_reason.get():
+            self.hide_live_join_tip()
+        counts = target.get('teamCounts', {}) if target else {}
+        values = ('Auto Balance', *(f'{side.title()} ({counts[side]})' if side in counts else side.title()
+                                    for side in ('blue', 'red')))
+        if tuple(self.live_team['values']) != values:
+            selected_team = self.live_team.current()
+            self.live_team.configure(values=values)
+            self.live_team.current(max(0, selected_team))
+        self.live_team.configure(state='readonly' if ready and not returning else 'disabled')
 
     def render_live_matches(self,matches):
         selected=self.live_list.selection()
@@ -783,17 +832,17 @@ class Desktop:
             time_label = f'{minutes} min' if minutes is not None else 'Default time'
             limit_label = 'Map defaults' if limits == DEFAULT_MATCH_LIMITS else f'{score_label} / {time_label}'
             self.live_list.insert('',tk.END,iid=item['id'],values=(
-                'Match '+item['id'][:6].upper(),item['label'],
+                'Match '+item['id'][:6].upper(), ('Locked · ' if item.get('locked') else '') + item['label'],
                 str(item['playerCount'])+' / '+str(item['playerCapacity']),
                 str(item['spectatorCount'])+' / '+str(item['spectatorCapacity']), limit_label))
         if previous in self.live_targets:self.live_list.selection_set(previous)
         self.live_list.yview_moveto(scroll)
         if self.watch_id is None:
-            self.live_status.set('Select a match to watch.'if matches else'No spectator-enabled matches are live right now.')
+            self.live_status.set('Select a match.' if matches else 'No matches are live right now.')
         self.render_live_controls()
 
     def refresh_live_matches(self, *, background=False):
-        if self.controls_busy or self.closing or self.caps.get('spectateEnabled')is not True:return
+        if self.controls_busy or self.closing or not self.live_browser_supported():return
         if background and self.busy:return
         if self.current_panel!='live'and self.watch_id is None:return
         watch_id=self.watch_id
@@ -818,6 +867,41 @@ class Desktop:
         if self.closing:return
         self.refresh_live_matches(background=True)
         self.live_refresh_handle=self.root.after(3000,self.live_tick)
+
+    def show_live_join_tip(self, _event):
+        if self.live_join_tip is not None or not self.live_join_reason.get():
+            return
+        button = self.live_join_button
+        tip = self.live_join_tip = tk.Toplevel(button)
+        tip.wm_overrideredirect(True)
+        tip.wm_geometry(f'+{button.winfo_rootx()}+{button.winfo_rooty() + button.winfo_height() + 4}')
+        tk.Label(tip, textvariable=self.live_join_reason, bg=PANEL, fg=TEXT, padx=8, pady=4).pack()
+
+    def hide_live_join_tip(self, _event=None):
+        if self.live_join_tip is not None:
+            self.live_join_tip.destroy()
+            self.live_join_tip = None
+
+    def join_live_selected(self):
+        if self.live_join_button.cget('state') != 'normal':
+            return
+        selected = self.live_list.selection()
+        if not selected:
+            return
+        match_id = selected[0]
+        target = self.live_targets.get(match_id, {})
+        team = ('auto', 'blue', 'red')[max(0, self.live_team.current())] if not target.get('rejoin') else 'auto'
+
+        def joined(room):
+            self.join_attempted_match = None
+            self.render(room)
+            self.show_panel('lobbies')
+
+        if self.steam_name_loader:
+            self.enter_with_steam(lambda name: self.lobby.join_match(match_id, name, team=team), success=joined)
+        else:
+            name = self.name.get()
+            self.run_async(lambda: self.lobby.join_match(match_id, name, team=team), joined)
 
     def spectate_selected(self):
         if self.controls_busy or self.closing or self.watch_id is not None:return
