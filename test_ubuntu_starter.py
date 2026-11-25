@@ -48,7 +48,7 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
                 self.assertIn('already in use' if first_launch else 'imported.', result)
 
     def join(self, sync, caps, *, session=None, through_bridge=False, spectator=False,
-             public=False, team=None, switch=False):
+             public=False, team=None, switch=False, ranked=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             directory = root/'joins'/'fixture'
@@ -69,6 +69,9 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
                 request.update(role='public', name='Pilot')
                 if team is not None:
                     request['team'] = team
+            ranked_game = {'map': 'Stonehenge2026', 'matchId': 'a'*32, 'contentHash': 'b'*64}
+            if ranked:
+                request.update(role='ranked', ranked_room='c'*32, ranked_game=ranked_game)
             (directory/'claimed.json').write_text(json.dumps(request), encoding='utf-8')
             observed = []
             switched = threading.Event()
@@ -105,7 +108,7 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
                 return {'status': 'stopped' if switched.is_set() else 'playing'}
 
             game = SimpleNamespace(start=Mock(side_effect=start), snapshot=snapshot, public_round=None,
-                                   thread=None, stop=Mock())
+                                   thread=None, stop=Mock(), start_pug=Mock())
 
             def change_team(round_id, target):
                 switched.set()
@@ -165,6 +168,9 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
                     game.start_public.assert_called_once_with('Pilot', team=team)
                 game.start.assert_not_called()
                 game.start_spectating.assert_not_called()
+            elif ranked:
+                game.start_pug.assert_called_once_with('c'*32, ranked_game)
+                game.start.assert_not_called()
             else:
                 game.start.assert_called_once_with(expected_map='Stonehenge2026', expected_match_id='match')
             self.assertEqual(outcome['status'], 'finished')
@@ -194,6 +200,11 @@ class UbuntuJoinWorkerTest(unittest.TestCase):
     def test_proton_bridge_passes_cli_paths_to_the_join_worker(self):
         sync = SimpleNamespace(session_enabled=False, start=Mock(), cancelled=threading.Event())
         self.join(sync, {'mapFileSync': 2, 'mapSessionSync': 3}, through_bridge=True)
+
+    def test_proton_bridge_passes_the_ranked_room_and_verified_map(self):
+        sync = SimpleNamespace(session_enabled=False, start=Mock(), cancelled=threading.Event())
+        self.join(sync, {'mapFileSync': 2, 'mapSessionSync': 3}, through_bridge=True, ranked=True)
+        sync.start.assert_called_once_with(2, session_version=3)
 
     def test_proton_worker_preserves_public_team_or_defaults_to_auto(self):
         for team in ('blue', 'red', 'auto', None):

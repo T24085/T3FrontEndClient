@@ -12,6 +12,7 @@ from map_sync import overlay
 from map_sync_contract import map_catalog
 from community_maps import declared_definitions
 from starter_update import DIRECT_CHANNEL, INDEX, decode_index, encoded
+from tools.build_signed_desktop import ART
 from tools.verify_player_release import safe_name
 
 
@@ -37,7 +38,7 @@ def build(source, proof_path, output, *, feed=None, catalog=None, assets=None,
         'branding/clan-wars.png': (branding/'clan-wars.png').read_bytes(),
         'branding/clan-wars.ico': (branding/'clan-wars.ico').read_bytes(),
     }
-    for name in ('phoenix.ico', 'phoenix-icon.png', 'phoenix-emblem.png', 'phoenix-world.png'):
+    for name in ART:
         additions['branding/' + name] = (branding / name).read_bytes()
     if any(item is not None for item in (feed, catalog, assets)) and not all(
             item is not None for item in (feed, catalog, assets)):

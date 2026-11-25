@@ -57,6 +57,26 @@ APP_TITLE = 'Tribes 3 Mod Community Edition: Phoenix Rising'
 NOTICE_MS = 10000
 TEAM_NAMES = {'blue': 'Children of The Phoenix', 'red': 'Diamond Sword'}
 BG, PANEL, TEXT, MUTED, ACCENT = '#0a111b', '#132335', '#eff7ff', '#9fb3c6', '#4be4c1'
+SKIN_NAMES = {'phoenix': 'Phoenix Rising', 'blood-eagle': 'Blood Eagle',
+              'diamond-sword': 'Diamond Sword', 'blood-eagle-2': 'Blood Eagle 2'}
+BASE_COLORS = (BG, PANEL, MUTED, ACCENT, '#0d1927', '#20374a', '#263e52', '#0b1a29',
+               '#31566c', '#192c3d', '#a9c1d4', '#182c3d', '#6ff0d4', '#237939', '#19632d')
+SKIN_COLORS = {
+    'phoenix': {},
+    'blood-eagle': dict(zip(BASE_COLORS, (
+        '#181115', '#291a20', '#d4b5ab', '#ffb46f', '#23161b', '#42282e', '#513039', '#21151a',
+        '#773b3b', '#342228', '#d9bab2', '#35232b', '#ffd49c', '#993b29', '#7d2c21',
+    ))),
+    'diamond-sword': dict(zip(BASE_COLORS, (
+        '#08131f', '#102a40', '#aec8dd', '#85ddff', '#101d2c', '#1c3c57', '#234966', '#0c2031',
+        '#2d597a', '#17334b', '#bed5e6', '#192e44', '#abebff', '#215887', '#19496f',
+    ))),
+}
+SKIN_COLORS['blood-eagle-2'] = SKIN_COLORS['blood-eagle']
+SKIN_COLOR_OPTIONS = ('background', 'foreground', 'activebackground', 'activeforeground',
+                      'disabledforeground', 'readonlybackground', 'insertbackground',
+                      'selectbackground', 'selectforeground', 'selectcolor', 'highlightbackground',
+                      'highlightcolor')
 
 
 # The signed updater distributes inventoried modules. Its build embeds the artwork here.
@@ -66,6 +86,11 @@ PHOENIX_ART = {}
 def art_bytes(name):
     if name in PHOENIX_ART:
         return base64.b85decode(PHOENIX_ART[name])
+    import player_profile
+
+    embedded = getattr(player_profile, 'STARTER_SKIN_ART', {}).get(name)
+    if embedded is not None:
+        return base64.b85decode(embedded)
     return (ROOT / 'branding' / name).read_bytes()
 
 
@@ -82,28 +107,60 @@ def set_phoenix_icon(root, icon):
             root.iconbitmap(str(path))
 
 
+def saved_skin(path):
+    try:
+        with path.open('rb') as stream:
+            value = json.loads(stream.read(129))
+        if isinstance(value, str) and value in SKIN_NAMES:
+            return value
+    except (OSError, ValueError, RecursionError):
+        pass
+    return 'phoenix'
+
+
+def maximize_window(root):
+    if root.state() == 'withdrawn':
+        return
+    window_system = root.tk.call('tk', 'windowingsystem')
+    if window_system == 'win32':
+        root.state('zoomed')
+    elif window_system == 'x11':
+        root.attributes('-zoomed', True)
+
+
 class PhoenixBackdrop:
     """Paint matching portions of one cover-scaled image into Tk's opaque frames."""
     def __init__(self, root):
         self.root = root
-        image = art_photo(root, 'phoenix-world.png')
-        rgb = root.tk.call(str(image), 'data', '-format', 'ppm').split(b'\n', 3)[3]
-        packed = bytearray(image.width() * image.height() * 4)
-        for channel in range(3):
-            packed[channel::4] = rgb[channel::3]
-        pixels = array('I')
-        pixels.frombytes(packed)
-        self.source = [pixels[i:i+image.width()] for i in range(0, len(pixels), image.width())]
         self.layers = {}
         self.regions = {}
         self.rows = []
         self.size = None
         self.pending = None
         self.closed = False
+        self.set_skin('phoenix')
         self.attach(root)
         root.bind('<Configure>', self.changed, add='+')
         root.bind('<Map>', self.changed, add='+')
         root.bind('<Destroy>', self.destroyed, add='+')
+
+    def set_skin(self, skin):
+        image = art_photo(self.root, skin + '-world.png')
+        width = image.width()
+        rgb = self.root.tk.call(str(image), 'data', '-format', 'ppm').split(b'\n', 3)[3]
+        packed = bytearray(width * image.height() * 4)
+        for channel in range(3):
+            packed[channel::4] = rgb[channel::3]
+        pixels = array('I')
+        pixels.frombytes(packed)
+        self.source = [pixels[i:i+width] for i in range(0, len(pixels), width)]
+        self.align_right = skin != 'phoenix'
+        self.size = None
+        self.schedule()
+
+    def schedule(self):
+        if self.pending is None:
+            self.pending = self.root.after_idle(self.paint)
 
     def attach(self, frame, tint=0):
         image = tk.Label(frame, bd=0, highlightthickness=0, anchor='nw', takefocus=False, bg=BG)
@@ -124,14 +181,15 @@ class PhoenixBackdrop:
         # Public CTF and Armor are supplied by the Direct client after Desktop starts.
         if isinstance(widget, tk.Frame) and widget.master is self.root and widget not in self.layers:
             self.attach(widget, .60)
-        if widget in self.layers and self.pending is None:
-            self.pending = self.root.after_idle(self.paint)
+        if widget in self.layers:
+            self.schedule()
 
     def scale(self, width, height):
         sw, sh = len(self.source[0]), len(self.source)
         scale = max(width / sw, height / sh)
         top = (sh - height / scale) / 2
-        columns = [min(sw-1, int((x+.5)/scale)) for x in range(width)]
+        left = max(0, sw - width / scale) if self.align_right else 0
+        columns = [min(sw-1, int(left + (x+.5)/scale)) for x in range(width)]
         select = itemgetter(*columns)
         self.rows = []
         last_y = -1
@@ -254,6 +312,8 @@ class Desktop:
         self.root, self.lobby, self.game_factory = root, lobby, game_factory
         self.steam_name_loader = steam_name_loader
         name_settings = Path(name_settings_dir) if name_settings_dir is not None else local_directory()
+        self.skin_path = name_settings / 'starter-skin.json'
+        self.skin = 'phoenix'
         self.warrior_name_path = name_settings / 'warrior-name.json'
         self.steam_name_path = name_settings / 'steam-persona.json'
         self.warrior_name = read_local_name(self.warrior_name_path) if steam_name_loader else ''
@@ -300,28 +360,12 @@ class Desktop:
         root.after_idle(root.title, APP_TITLE)
         root.geometry('1030x800')
         root.minsize(850, 740)
+        maximize_window(root)
         root.configure(bg=BG)
         root.protocol('WM_DELETE_WINDOW', self.close)
-        style = ttk.Style(root)
-        style.theme_use('clam')
-        style.configure('TCombobox', fieldbackground='#20374a', background='#20374a', foreground=TEXT, arrowcolor=ACCENT, padding=8)
-        style.map(
-            'TCombobox',
-            fieldbackground=[('disabled', '#192c3d'), ('readonly', '#20374a')],
-            foreground=[('disabled', '#a9c1d4'), ('readonly', TEXT)],
-            selectbackground=[('readonly', '#31566c')],
-            selectforeground=[('readonly', TEXT)],
-        )
-        root.option_add('*TCombobox*Listbox.background', '#182c3d', 'widgetDefault')
-        root.option_add('*TCombobox*Listbox.foreground', TEXT, 'widgetDefault')
-        root.option_add('*TCombobox*Listbox.selectBackground', '#31566c', 'widgetDefault')
-        root.option_add('*TCombobox*Listbox.selectForeground', TEXT, 'widgetDefault')
-        root.option_add('*TCombobox.font', '{Segoe UI} 11', 'widgetDefault')
-        root.option_add('*TCombobox*Listbox.font', '{Segoe UI} 11', 'widgetDefault')
-        style.configure('Live.Treeview',background='#0b1a29',fieldbackground='#0b1a29',foreground=TEXT,
-                        rowheight=28,font=('Segoe UI',10))
-        style.configure('Live.Treeview.Heading',background='#20374a',foreground=TEXT,font=('Segoe UI',9,'bold'))
-        style.map('Live.Treeview',background=[('selected','#31566c')])
+        self.skin_style = ttk.Style(root)
+        self.skin_style.theme_use('clam')
+        self.configure_skin_styles()
         self.name = tk.StringVar(value=self.warrior_name or self.steam_name)
         self.code = tk.StringVar()
         self.map_name = tk.StringVar(value='Stonehenge')
@@ -347,10 +391,21 @@ class Desktop:
         self.app_icon = art_photo(root, 'phoenix-icon.png')
         root.after_idle(set_phoenix_icon, root, self.app_icon)
         self.emblem = art_photo(root, 'phoenix-emblem.png')
-        logo = tk.Label(side, image=self.emblem, width=self.emblem.width(), height=self.emblem.height(),
-                        borderwidth=0, highlightthickness=0, bg='#0d1927')
-        logo.pack(pady=(12, 14))
-        self.backdrop.logo(logo, self.emblem)
+        self.logo = tk.Label(side, image=self.emblem, width=self.emblem.width(), height=self.emblem.height(),
+                             borderwidth=0, highlightthickness=0, bg='#0d1927')
+        self.logo.pack(pady=(12, 6))
+        self.backdrop.logo(self.logo, self.emblem)
+        self.skin_choice = tk.StringVar(root, value=self.skin)
+        self.skin_selector = ttk.Menubutton(side, text='Skin · Phoenix Rising', style='Skin.TMenubutton',
+                                            takefocus=True)
+        self.skin_menu = tk.Menu(self.skin_selector, tearoff=False, bg='#20374a', fg=TEXT,
+                                 activebackground='#31566c', activeforeground=TEXT,
+                                 selectcolor=ACCENT, font=('Segoe UI', 10))
+        for skin, label in SKIN_NAMES.items():
+            self.skin_menu.add_radiobutton(label=label, variable=self.skin_choice, value=skin,
+                                           command=lambda selected=skin: self.change_skin(selected))
+        self.skin_selector.configure(menu=self.skin_menu)
+        self.skin_selector.pack(fill='x', padx=18, pady=(0, 10))
         self.lobbies_nav = self.button(side, 'PLAY', lambda: self.show_panel('lobbies'), False)
         self.lobbies_nav.configure(anchor='center', bg='#237939', fg=TEXT, activebackground='#19632d',
                                    activeforeground=TEXT, font=('Segoe UI', 11, 'bold'))
@@ -587,11 +642,92 @@ class Desktop:
             self.build_maps_panel()
         self.render_live_controls()
         self.render(None)
+        root.bind_all('<Map>', self.skin_widget_mapped, add='+')
+        self.change_skin(saved_skin(self.skin_path), persist=False)
         self.run_async(self.lobby.capabilities, self.set_capabilities)
         self.refresh_steam_name()
         self.poll_handle=root.after(150,self.poll)
         self.refresh_handle=root.after(2000,self.refresh)
         self.live_refresh_handle=root.after(3000,self.live_tick)
+
+    def skin_color(self, color):
+        return SKIN_COLORS[self.skin].get(color, color)
+
+    def configure_skin_styles(self):
+        color = self.skin_color
+        style = self.skin_style
+        field, selected = color('#20374a'), color('#31566c')
+        style.configure('TCombobox', fieldbackground=field, background=field, foreground=TEXT,
+                        arrowcolor=color(ACCENT), padding=8)
+        style.map('TCombobox', fieldbackground=[('disabled', color('#192c3d')), ('readonly', field)],
+                  foreground=[('disabled', color('#a9c1d4')), ('readonly', TEXT)],
+                  selectbackground=[('readonly', selected)], selectforeground=[('readonly', TEXT)])
+        prefix = '*TCombobox*Listbox.'
+        for key, value in (('background', color('#182c3d')), ('foreground', TEXT),
+                           ('selectBackground', selected), ('selectForeground', TEXT),
+                           ('font', '{Segoe UI} 11')):
+            self.root.option_add(prefix + key, value, 'widgetDefault')
+        self.root.option_add('*TCombobox.font', '{Segoe UI} 11', 'widgetDefault')
+        surface = color('#0b1a29')
+        style.configure('Live.Treeview', background=surface, fieldbackground=surface, foreground=TEXT,
+                        rowheight=28, font=('Segoe UI', 10))
+        style.configure('Live.Treeview.Heading', background=field, foreground=TEXT,
+                        font=('Segoe UI', 9, 'bold'))
+        style.map('Live.Treeview', background=[('selected', selected)])
+        style.configure('Skin.TMenubutton', background=surface, foreground=TEXT,
+                        bordercolor=field, arrowcolor=color(ACCENT), padding=(10, 5),
+                        font=('Segoe UI', 9, 'bold'))
+        style.map('Skin.TMenubutton', background=[('active', field)], bordercolor=[('focus', color(ACCENT))])
+
+    def recolor_widget(self, widget, colors):
+        keys = widget.keys()
+        changes = {}
+        for option in SKIN_COLOR_OPTIONS:
+            if option in keys:
+                value = str(widget.cget(option)).lower()
+                if value in colors and colors[value] != value:
+                    changes[option] = colors[value]
+        if changes:
+            widget.configure(**changes)
+
+    def skin_widget_mapped(self, event):
+        colors = SKIN_COLORS[self.skin]
+        if colors and isinstance(event.widget, tk.Misc):
+            self.recolor_widget(event.widget, colors)
+
+    def change_skin(self, skin, *, persist=True):
+        if skin not in SKIN_NAMES or skin == self.skin:
+            return
+        try:
+            emblem = art_photo(self.root, skin + '-emblem.png')
+            self.backdrop.set_skin(skin)
+        except (OSError, tk.TclError):
+            self.skin_choice.set(self.skin)
+            if persist:
+                self.status.set('This skin could not be loaded.')
+            return
+        previous, selected = SKIN_COLORS[self.skin], SKIN_COLORS[skin]
+        colors = dict(selected)
+        colors.update({value: selected.get(base, base) for base, value in previous.items()})
+        self.skin = skin
+        self.skin_choice.set(skin)
+        self.skin_selector.configure(text='Skin · ' + SKIN_NAMES[skin])
+        self.emblem = emblem
+        self.logo.configure(image=emblem)
+        self.backdrop.logo(self.logo, emblem)
+        self.configure_skin_styles()
+        widgets = [self.root]
+        while widgets:
+            widget = widgets.pop()
+            self.recolor_widget(widget, colors)
+            widgets.extend(widget.winfo_children())
+        if persist:
+            from client_support import save
+            try:
+                self.skin_path.parent.mkdir(parents=True, exist_ok=True)
+                save(self.skin_path, skin)
+            except OSError:
+                self.status.set('Skin changed. The preference could not be saved.')
 
     def show_lobby_controls(self, in_room):
         if self.lobby_layout == in_room:
@@ -982,10 +1118,10 @@ class Desktop:
                        self.lobby_create_button, self.join_button):
             widget.configure(state='disabled' if in_room or self.controls_busy else 'normal')
         if self.steam_name_loader and not in_room and not self.controls_busy:
-            self.name_entry.configure(state='readonly', readonlybackground='#20374a')
+            self.name_entry.configure(state='readonly', readonlybackground=self.skin_color('#20374a'))
         self.browser_name.configure(state=('disabled' if in_room or self.controls_busy else
                                            'readonly' if self.steam_name_loader else 'normal'),
-                                    readonlybackground='#20374a')
+                                    readonlybackground=self.skin_color('#20374a'))
         if self.caps.get('privateLobbyAdmission') is True:
             self.lobby_lock.grid(row=3, column=2, sticky='w', padx=(12, 0), pady=(4, 0))
             self.browser_lock.pack(side='right', before=self.create_button, padx=(0, 6))
