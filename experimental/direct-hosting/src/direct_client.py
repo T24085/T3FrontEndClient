@@ -21,7 +21,8 @@ from direct_network import (DIRECTORY_GUEST_LIMIT, DIRECTORY_GUEST_OFFSET, ENDPO
                             VOICE_RELEASE, VOICE_ROUTE, VOICE_SAMPLE_RATE,
                             locked_state, read_json, valid_public_address, validate_endpoint, validate_group, write_json)
 from direct_network import TOOL_TIPS_ROUTE, TOOL_TIPS_LIMIT, decode_tool_tips
-from community_transport import CommunityClient, CommunityConnectionError, CommunityError, PinnedHTTPSConnection
+from community_transport import (PUBLIC_CTF_TEAM_COUNTS, CommunityClient, CommunityConnectionError, CommunityError,
+                                 PinnedHTTPSConnection)
 from community_game import CommunityGame
 from dynamic_destination import DIRECT_BRIDGE_POLICY
 
@@ -1235,21 +1236,24 @@ class PublicCTFPanel:
 
     def render_teams(self, state, can_join, *, can_switch=False, switching_controls=False):
         teams = state.get('teams')
+        team_counts = state.get(PUBLIC_CTF_TEAM_COUNTS)
         self.switching_controls = switching_controls
         choices = state.get('switchChoices' if switching_controls else 'joinChoices')
         rejoin = state.get('rejoin') is True
         has_roster = isinstance(teams, dict)
+        show_counts = has_roster or isinstance(team_counts, dict)
         counts = {}
         for team, (label, heading, names) in self.team_lists.items():
             roster = teams.get(team, []) if has_roster else []
             players = tuple(name for name in roster if isinstance(name, str)) if isinstance(roster, list) else ()
-            counts[team] = len(players)
-            heading.configure(text=f'{label} ({len(players)})' if has_roster else label)
+            count = team_counts.get(team) if isinstance(team_counts, dict) else None
+            counts[team] = count if type(count) is int and count >= 0 else len(players)
+            heading.configure(text=f'{label} ({counts[team]})' if show_counts else label)
             if names.get(0, 'end') != players:
                 names.delete(0, 'end')
                 for name in players:
                     names.insert('end', name)
-        if has_roster and not any(counts.values()):
+        if show_counts and not any(counts.values()):
             if not self.empty_roster.winfo_manager():
                 self.empty_roster.pack(anchor='w', before=self.team_buttons['auto'].master, pady=(0, 8))
         else:
@@ -1265,7 +1269,7 @@ class PublicCTFPanel:
             else:
                 action = 'Switch to' if switching_controls else 'Join'
                 label = f'{action} {"A" if team == "blue" else "B"}'
-                if has_roster:
+                if show_counts:
                     label += f' ({counts[team]})'
             button.configure(text=label, state='normal' if enabled else 'disabled')
 

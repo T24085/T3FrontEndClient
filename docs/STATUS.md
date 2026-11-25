@@ -159,7 +159,8 @@ writer and keeps the option disabled pending the isolated two-client test.
 
 # Public CTF team selection and the Maps tab
 
-Public CTF shows player names and live counts by team. Auto Balance picks a
+Public CTF shows live counts by team and lists player names after admission
+to that match. Auto Balance picks a
 team, Join A and Join B request a specific team, and disabled choices show the
 host's reason. Returning roster members see Rejoin. Hosts with the original
 Public CTF API continue to accept Auto Balance.

@@ -17,6 +17,7 @@ from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION, LIVE_ROSTER_HEADE
 from player_names import display_name
 
 MAX_LOBBY_BOTS = 12
+PUBLIC_CTF_TEAM_COUNTS = 'teamCounts'
 PRIVATE_ADMISSION_HEADER = 'X-T3-Private-Join'
 LOBBY_MATCH_TYPES = ('standard', 'competition', 'scrim', 'pug')
 
