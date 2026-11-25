@@ -1423,7 +1423,7 @@ local bind_blink_movement=(function()
   local alpha='/Script/Valhalla.ValCharacter:GetThirdPersonCameraAlpha'
   local remote='/Script/GameplayAbilities.AbilitySystemComponent:NetMulticast_InvokeGameplayCueExecuted_WithParams'
   local startCue,endCue='GameplayCue.Blink.Start','GameplayCue.Blink.End'
-  local active,replaying,installed,failed
+  local active,replaying,installed,failed,gameplay
 
   local function point(value)
    return {X=value.X,Y=value.Y,Z=value.Z}
@@ -1431,6 +1431,10 @@ local bind_blink_movement=(function()
 
   local function distance(a,b)
    return math.sqrt((a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2)
+  end
+
+  local function along(value,axis)
+   return value.X*axis.X+value.Y*axis.Y+value.Z*axis.Z
   end
 
   local function current()
@@ -1453,24 +1457,31 @@ local bind_blink_movement=(function()
    if executed and name==endCue and cast.predictionFrame and not replaying then cast.skipFlash=true end
   end
 
-  local function end_frame(cast)
+  local function pulse(cast)
    if current()~=cast or cast.finished then return end
-   -- The host provides the two actual endpoints, including blocked landings.
-   local span=distance(cast.departure,cast.landing)
-   if span<25 then cast.finished=true;return end
-   local position=cast.pawn:K2_GetActorLocation()
-   local tolerance=math.min(450,math.max(65,span*.22))
-   if distance(position,cast.landing)>tolerance or distance(position,cast.origin)<span*.55 then
-    ExecuteInGameThreadWithDelay(16,function()end_frame(cast)end)
+   local pawn=cast.pawn
+   local position=point(pawn:K2_GetActorLocation())
+   local now=gameplay:GetTimeSeconds(pawn)
+   local speed=along(pawn:GetVelocity(),cast.axis)
+   local progress=along(position,cast.axis)
+   local elapsed=math.max(0,now-cast.sampleTime)
+   -- Movement replay can carry a skier many meters beyond the host's cue
+   -- position. Count the Blink step after accounting for ordinary motion.
+   local ordinary=math.max(0,speed,cast.speed)*elapsed
+   cast.warp=math.max(cast.warp,progress-cast.progress-ordinary)
+   cast.progress,cast.speed,cast.sampleTime=progress,speed,now
+   local span=cast.departure and cast.landing and distance(cast.departure,cast.landing)
+   if span and span<25 then cast.finished=true;return end
+   if not span or cast.warp<span*.55 then
+    ExecuteInGameThreadWithDelay(16,function()pulse(cast)end)
     return
    end
-   local pawn=cast.pawn
    cast.finished=true
    replaying=cast
    local ok,reason=pcall(function()
-    local params={Location=cast.landing,GameplayEffectLevel=1,AbilityLevel=1}
+    local params={Location=position,GameplayEffectLevel=1,AbilityLevel=1}
     cast.asc:NetMulticast_InvokeGameplayCueExecuted_WithParams({TagName=FName(endCue)},{Current=0},params)
-    if valid(cast.ability) and pawn:IsLocallyViewed() then cast.ability:PlayFX(cast.departure,cast.landing) end
+    if valid(cast.ability) and pawn:IsLocallyViewed() then cast.ability:PlayFX(cast.departure,position) end
     report('BLINK_LOCAL_ARRIVAL|source=host')
    end)
    replaying=nil
@@ -1492,9 +1503,6 @@ local bind_blink_movement=(function()
    else
     return
    end
-   if cast.departure and cast.landing then
-    ExecuteInGameThreadWithDelay(1,function()end_frame(cast)end)
-   end
   end
 
   local function defer_flash(context)
@@ -1507,6 +1515,7 @@ local bind_blink_movement=(function()
   end
 
   local function install()
+   gameplay=loaded('/Script/Engine.Default__GameplayStatics','GameplayStatics /Script/Engine.Default__GameplayStatics')
    signature(add,{{'GameplayCueTag','StructProperty',0},{'GameplayCueParameter','StructProperty',8},
     {'bRemoveOnAbilityEnd','BoolProperty',224}})
    signature(execute,{{'GameplayCueTag','StructProperty',0},{'GameplayCueParameters','StructProperty',8}})
@@ -1537,12 +1546,16 @@ local bind_blink_movement=(function()
     installed,failed=ok,not ok
     if not ok then report('BLINK_VISUAL_HOOKS_UNAVAILABLE|'..tostring(reason):sub(1,400)) end
    end,
-   hold=function(pawn,instance,origin)
+   hold=function(pawn,instance,origin,target)
     if not installed or not valid(pawn.AbilitySystemComponent) then return end
-    local cast={pawn=pawn,asc=pawn.AbilitySystemComponent,ability=instance,origin=point(origin),
-     expires=os.clock()+2.5,predictionFrame=true}
+    local length=math.max(1,distance(target,origin))
+    local axis={X=(target.X-origin.X)/length,Y=(target.Y-origin.Y)/length,Z=(target.Z-origin.Z)/length}
+    local cast={pawn=pawn,asc=pawn.AbilitySystemComponent,ability=instance,
+     expires=os.clock()+2.5,predictionFrame=true,axis=axis,warp=0,progress=along(origin,axis),
+     speed=along(pawn:GetVelocity(),axis),sampleTime=gameplay:GetTimeSeconds(pawn)}
     active=cast
     ExecuteInGameThreadWithDelay(1,function()cast.predictionFrame,cast.skipFlash=false,false end)
+    ExecuteInGameThreadWithDelay(1,function()pulse(cast)end)
    end,
    clear=function()active=nil end,
   }
@@ -1573,7 +1586,7 @@ local bind_blink_movement=(function()
   local origin=pawn:K2_GetActorLocation()
   destination:set({X=origin.X,Y=origin.Y,Z=origin.Z})
   teleport:set(false)
-  visuals.hold(pawn,attempt.ability,origin)
+  visuals.hold(pawn,attempt.ability,origin,{X=attempt.x,Y=attempt.y,Z=attempt.z})
  end
 
  local function install()

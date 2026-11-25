@@ -10,6 +10,7 @@ PRESENTATION = r'''
 local frames, effects, camera = {}, {}, {}
 function ExecuteInGameThreadWithDelay(_,callback) frames[#frames+1]=callback end
 local function frame()
+ time=time+.016
  local queued=frames;frames={}
  for _,callback in ipairs(queued)do callback()end
 end
@@ -19,6 +20,7 @@ destination={X=2526,Y=2,Z=3}
 ability.CurrentStepLocation=destination
 pawn.AbilitySystemComponent=entity(false)
 function pawn:IsLocallyViewed()return true end
+function pawn:GetVelocity()return self.velocity or {X=0,Y=0,Z=0}end
 function ability:GetAddress()return self end
 function ability:PlayFX(first,finish)
  camera[#camera+1]={first,finish}
@@ -100,6 +102,15 @@ class BlinkPresentationTests(unittest.TestCase):
         cue(pawn.AbilitySystemComponent,ending,clipped)
         pawn.origin=clipped;frame()
         assert(#effects==1 and effects[1][2].X==1150 and camera[1][2].X==1150)''')
+
+    def test_ski_momentum_is_not_a_blink_and_does_not_hide_the_visual_landing(self):
+        self.check('''pawn.velocity={X=6000,Y=3600,Z=-2600};predict();frame()
+        cue(pawn.AbilitySystemComponent,start,pawn.origin)
+        cue(pawn.AbilitySystemComponent,ending,destination)
+        for i=1,12 do pawn.origin={X=1+96*i,Y=2+58*i,Z=3-42*i};frame() end
+        assert(#effects==0 and #camera==0)
+        pawn.origin={X=3700,Y=760,Z=-600};frame()
+        assert(#effects==1 and effects[1][2].X==3700 and camera[1][2].Y==760)''')
 
     def test_other_player_and_other_cues_keep_their_presentation(self):
         self.check('''predict()
