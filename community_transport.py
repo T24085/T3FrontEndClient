@@ -14,9 +14,37 @@ import threading
 from dynamic_destination import destination,isolated_source
 from community_maps import BY_ID, MAX_MAPS, valid_id, valid_label
 from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION
+from player_names import display_name
 
 MAX_LOBBY_BOTS = 12
 DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True, 'fallDamage': False}
+RESULT_STATS = ('kills', 'deaths', 'assists', 'captures', 'returns', 'flagGrabs', 'flagHeldSeconds')
+RESULT_STAT_LIMIT = 1_000_000_000
+RESULT_PLAYER_LIMIT = 64
+
+
+def validated_match_result(result):
+    """Accept only the scoreboard's bounded wire fields."""
+    if (not isinstance(result, dict) or result.keys() != {'matchId', 'map', 'scores', 'players'}
+            or not isinstance(result['matchId'], str) or not re.fullmatch('[0-9a-f]{32}', result['matchId'])
+            or not valid_id(result['map'])):
+        raise ValueError('Invalid match result.')
+    scores, players = result['scores'], result['players']
+    if (not isinstance(scores, dict) or scores.keys() != {'blue', 'red'}
+            or any(type(value) is not int or not 0 <= value <= RESULT_STAT_LIMIT for value in scores.values())
+            or not isinstance(players, list) or len(players) > RESULT_PLAYER_LIMIT):
+        raise ValueError('Invalid match result scores.')
+    for player in players:
+        if (not isinstance(player, dict) or player.keys() != {'name', 'team', 'stats'}
+                or player['team'] not in ('blue', 'red') or not isinstance(player['stats'], dict)
+                or player['stats'].keys() != set(RESULT_STATS)):
+            raise ValueError('Invalid match result player.')
+        display_name(player['name'])
+        for key, value in player['stats'].items():
+            allowed = (int, float) if key == 'flagHeldSeconds' else (int,)
+            if type(value) not in allowed or not 0 <= value <= RESULT_STAT_LIMIT:
+                raise ValueError('Invalid match result statistic.')
+    return result
 
 
 def validated_lobby_rules(value, *, partial=False):

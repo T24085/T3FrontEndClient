@@ -13,13 +13,25 @@ from tkinter import ttk
 
 from community_game import CommunityGame
 from startup_paths import installation_options
-from community_transport import CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES, MAX_LOBBY_BOTS
+from community_transport import (CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES,
+                                 MAX_LOBBY_BOTS, validated_match_result)
 from community_maps import BY_ID, options, read_options, LEGACY_MAPS
 from map_sync_contract import CATALOG_VERSION
 
 ROOT = Path(__file__).resolve().parent
 CLIENT_PACKAGE = ROOT if (ROOT / 'connection-policy.json').is_file() else ROOT / 'dynamic-client-development'
 BG, PANEL, TEXT, MUTED, ACCENT = '#0a111b', '#132335', '#eff7ff', '#9fb3c6', '#4be4c1'
+SCOREBOARD_COLUMNS = (
+    ('name', 'Player', 165),
+    ('team', 'Team', 64),
+    ('kills', 'Kills', 55),
+    ('deaths', 'Deaths', 60),
+    ('assists', 'Assists', 61),
+    ('captures', 'Caps', 55),
+    ('returns', 'Returns', 66),
+    ('flagGrabs', 'Grabs', 58),
+    ('flagHeldSeconds', 'Flag time', 78),
+)
 
 
 def starter_version(package=ROOT):
@@ -40,6 +52,11 @@ def starter_version(package=ROOT):
 def match_phase_text(room):
     if room is None:
         return 'Create a lobby or enter a code.'
+    result = match_result_for(room)
+    match = room.get('match')
+    if result and isinstance(match, dict) and match.get('id') == result['matchId']:
+        scores = result['scores']
+        return f"Final score   Blue {scores['blue']} – {scores['red']} Red"
     text = 'Match: ' + room['phase']
     if room['phase']=='setup':
         preparation=room.get('preparation')
@@ -56,6 +73,13 @@ def match_phase_text(room):
     return text
 
 
+def match_result_for(state):
+    try:
+        return validated_match_result((state or {}).get('lastResult'))
+    except ValueError:
+        return None
+
+
 class Desktop:
     def __init__(self, root, lobby, game_factory, *, steam_name_loader=None, server_access=None, map_sync=None):
         self.root, self.lobby, self.game_factory = root, lobby, game_factory
@@ -63,6 +87,7 @@ class Desktop:
         self.map_sync = map_sync
         self.game = None
         self.room = None
+        self.result_window = None
         self.pending_map = None
         self.map_inflight = None
         self.map_retry_count = 0
@@ -243,6 +268,8 @@ class Desktop:
         self.stop_button = self.button(actions,'Stop match',lambda:self.call_action('stop'),False);self.stop_button.pack(side='left',padx=(0,8))
         self.reset_button = self.button(actions,'New setup',lambda:self.call_action('reset'),False);self.reset_button.pack(side='left',padx=(0,8))
         self.leave_button = self.button(actions,'Leave',lambda:self.call_action('leave'),False);self.leave_button.pack(side='left')
+        self.result_button = self.button(actions, 'Match results',
+                                         lambda: self.show_match_result(match_result_for(self.room)), False)
         tk.Label(main,textvariable=self.status,bg=BG,fg=MUTED,font=('Segoe UI',10),anchor='w',wraplength=700).pack(side='bottom',before=actions,fill='x',pady=(12,0))
         self.live_panel=tk.Frame(root,bg=BG)
         self.label(self.live_panel,'Lobby Browser',27,True).pack(anchor='w')
@@ -459,6 +486,11 @@ class Desktop:
         if (self.room or {}).get('code') != (room or {}).get('code'):
             self.reset_copy_feedback()
         self.room = room
+        result = match_result_for(room)
+        if result:
+            self.result_button.pack(side='left', padx=(8, 0))
+        else:
+            self.result_button.pack_forget()
         in_room = room is not None
         self.copy_code_button.configure(state='normal' if in_room else 'disabled')
         phase = room['phase'] if in_room else None
@@ -507,7 +539,10 @@ class Desktop:
         for widget in (self.blue_button,self.red_button): widget.configure(state='normal' if setup and not self.controls_busy else 'disabled')
         for widget in (self.move_blue,self.move_red): widget.configure(state='normal' if setup and leader and not self.controls_busy else 'disabled')
         self.start_button.configure(state='normal' if setup and leader and not self.controls_busy and self.pending_map is None and self.caps.get('matchStartEnabled') else 'disabled')
-        self.game_button.configure(state='normal' if in_room and phase=='ready' and not self.controls_busy and self.pending_map is None and self.caps.get('gameClientReady') else 'disabled')
+        match_finished = result and result['matchId'] == (room.get('match') or {}).get('id')
+        can_join = (in_room and phase == 'ready' and not match_finished and not self.controls_busy
+                    and self.pending_map is None and self.caps.get('gameClientReady'))
+        self.game_button.configure(state='normal' if can_join else 'disabled')
         self.stop_button.configure(state='normal' if leader and phase in ('starting','ready') else 'disabled')
         self.reset_button.configure(state='normal' if leader and phase in ('stopped','ended','failed') else 'disabled')
         self.leave_button.configure(state='normal' if in_room and not self.controls_busy else 'disabled')
@@ -520,6 +555,47 @@ class Desktop:
                 if prepare:prepare()
             except Exception as exc:
                 self.preparation.set('Game preparation: '+str(exc))
+
+    def show_match_result(self, result):
+        if result is None:
+            return
+        if self.result_window is not None and self.result_window.winfo_exists():
+            self.result_window.destroy()
+        window = self.result_window = tk.Toplevel(self.root)
+        window.title('Match results')
+        window.configure(bg=BG)
+        window.transient(self.root)
+        window.bind('<Escape>', lambda _event: window.destroy())
+        content = tk.Frame(window, bg=BG, padx=20, pady=18)
+        content.pack(fill='both', expand=True)
+        map_id = result['map']
+        label = self.lobby.map_label(map_id) or map_id
+        self.label(content, label, 20, True).pack(anchor='w')
+        scores = result['scores']
+        self.label(content, f"Blue {scores['blue']} – {scores['red']} Red", 15, True).pack(anchor='w', pady=(2, 14))
+        if result['players']:
+            body = tk.Frame(content, bg=PANEL)
+            body.pack(fill='both', expand=True)
+            keys = tuple(key for key, _, _ in SCOREBOARD_COLUMNS)
+            board = ttk.Treeview(body, columns=keys, show='headings', style='Live.Treeview',
+                                 height=min(12, len(result['players'])))
+            for key, heading, width in SCOREBOARD_COLUMNS:
+                board.heading(key, text=heading)
+                board.column(key, width=width, minwidth=48, anchor='w' if key == 'name' else 'center')
+            board.tag_configure('blue', foreground='#78b8ff')
+            board.tag_configure('red', foreground='#ff9393')
+            scroll = ttk.Scrollbar(body, orient='vertical', command=board.yview)
+            board.configure(yscrollcommand=scroll.set)
+            scroll.pack(side='right', fill='y')
+            board.pack(side='left', fill='both', expand=True)
+            for player in sorted(result['players'], key=lambda row: (row['team'], row['name'].casefold())):
+                team = player['team']
+                stats = player['stats']
+                minutes, seconds = divmod(int(stats['flagHeldSeconds']), 60)
+                values = (player['name'], team.title(), *[stats[key] for key in keys[2:-1]],
+                          f'{minutes}:{seconds:02d}')
+                board.insert('', 'end', values=values, tags=(team,))
+        self.button(content, 'Close', window.destroy, False).pack(anchor='e', pady=(12, 0))
 
     def create(self):
         if self.steam_name_loader:

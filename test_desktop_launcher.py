@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from desktop_launcher import Desktop
-from community_transport import CommunityError
+from community_transport import CommunityError, RESULT_STATS
 from community_maps import options
 
 
@@ -42,6 +42,34 @@ class FakeGame:
 class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
+
+    def test_match_results_show_final_scores_and_remain_available_in_setup(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        lobby.map_label = lambda _: 'Stonehenge'
+        app = Desktop(root, lobby, lambda _: FakeGame())
+        try:
+            stats = dict.fromkeys(RESULT_STATS, 0)
+            stats.update(kills=4, deaths=2, assists=1, captures=3,
+                         returns=5, flagGrabs=7, flagHeldSeconds=65.9)
+            match_id = '1' * 32
+            result = {'matchId': match_id, 'map': 'Stonehenge', 'scores': {'blue': 3, 'red': 2},
+                      'players': [{'name': 'One', 'team': 'blue', 'stats': stats}]}
+            app.render(dict(lobby.room, phase='ended', match={'id': match_id}, lastResult=result))
+            self.assertIn('Blue 3', app.phase.get())
+            app.result_button.invoke()
+            panel = app.result_window.winfo_children()[0]
+            board = next(w for w in panel.winfo_children()[2].winfo_children() if w.winfo_class() == 'Treeview')
+            self.assertEqual(board.item(board.get_children()[0], 'values'),
+                             ('One', 'Blue', '4', '2', '1', '3', '5', '7', '1:05'))
+            app.render(dict(lobby.room, lastResult=result))
+            self.assertEqual(app.result_button.winfo_manager(), 'pack')
+            app.render(dict(lobby.room, lastResult=dict(result, players=None)))
+            self.assertFalse(app.result_button.winfo_manager())
+        finally:
+            app.close()
+            app.close_worker.join(2)
 
     @unittest.skipUnless(sys.platform == 'win32', 'Retail profile import is a Windows Starter control.')
     def test_settings_import_button_uses_saved_profile_only_after_game_exits(self):
