@@ -64,6 +64,19 @@ class CommunityGameTest(unittest.TestCase):
         self.assertIn('100.80.168.96:18818', captured['argv'])
         self.assertNotIn('-server', captured['argv'])
 
+    def test_lobby_restart_closes_only_the_replaced_owned_player_session(self):
+        self.game.status = 'playing'
+        self.game.match_id = 'expected'
+        self.game.role = 'spectator'
+        self.assertFalse(self.game.stop_replaced_match('expected'))
+        self.game.role = 'public'
+        self.assertFalse(self.game.stop_replaced_match('expected'))
+        self.game.role = 'player'
+        self.assertFalse(self.game.stop_replaced_match('another'))
+        self.assertEqual(self.game.snapshot()['status'], 'playing')
+        self.assertTrue(self.game.stop_replaced_match('expected'))
+        self.assertEqual(self.game.snapshot()['status'], 'stopping')
+
     def test_direct_reconnect_retires_only_the_disconnected_game(self):
         self.lobby.reconnect_requires_new_game = True
         game = self.game
