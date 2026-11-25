@@ -870,6 +870,83 @@ return function(env)
 end
 
 end)()
+local releaseRadarPowerFactory=(function()
+return function(env)
+ local valid,scope,signature=env.valid,env.scope,env.signature
+ local expected=env.descriptor.radars_per_team or 1
+ local statusPath='/Script/Topaz.TopRadarSensor:SetRadarStatus'
+ local sensorClass='BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_RadarSensor.BP_Objective_RadarSensor_C'
+ local pre,post,world
+ local owners={}
+ local function same(a,b) return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() end
+ local function sync(group)
+  local team=group.team
+  if not valid(team) or team:HasAuthority() or not same(team:GetWorld(),world) then return end
+  local online=false
+  for _,sensor in ipairs(group.sensors) do
+   if not valid(sensor) or not same(sensor:GetWorld(),world) or sensor.r_TeamId~=group.id then return end
+   local comp=sensor.PoweredComp
+   if not valid(comp) or not same(comp:GetOwner(),sensor) or type(comp.r_bGeneratorPowered)~='boolean'
+      or type(comp.r_bOwnerDowned)~='boolean' then return end
+   online=online or (comp.r_bGeneratorPowered and not comp.r_bOwnerDowned)
+  end
+  if team:IsRadarOnline()==online then return end
+  team.r_bIsRadarOnline=online
+  team:OnRep_IsRadarOnline()
+ end
+ local function tick(gs)
+  if expected<=1 or env.descriptor.hide_minimap or gs:HasAuthority() then return end
+  world=gs:GetWorld()
+  local groups={{id=1,sensors={}},{id=2,sensors={}}}
+  owners={}
+  for _,team in ipairs(FindAllOf('TeamState') or {}) do
+   if valid(team) and same(team:GetWorld(),world) and not team:HasAuthority() then
+    local group=groups[team:GetTeamId()]
+    if group then
+     if group.team or type(team.r_bIsRadarOnline)~='boolean' then return end
+     group.team=team
+    end
+   end
+  end
+  for _,sensor in ipairs(FindAllOf('BP_Objective_RadarSensor_C') or {}) do
+   if valid(sensor) and same(sensor:GetWorld(),world) then
+    local group=groups[sensor.r_TeamId]
+    if not group or sensor:HasAuthority() or sensor:GetClass():GetFullName()~=sensorClass then return end
+    group.sensors[#group.sensors+1]=sensor
+   end
+  end
+  for _,group in ipairs(groups) do
+   if not group.team or #group.sensors~=expected then return end
+  end
+  for _,group in ipairs(groups) do
+   for _,sensor in ipairs(group.sensors) do owners[sensor:GetAddress()]={sensor=sensor,group=group} end
+  end
+  if not pre then
+   signature(statusPath,{{'bSetStatus','BoolProperty',0}})
+   local teamPath='/Script/Valhalla.ValTeamState:'
+   signature(teamPath..'IsRadarOnline',{{'ReturnValue','BoolProperty',0}})
+   signature(teamPath..'OnRep_IsRadarOnline',{})
+   -- An individual replicated sensor also updates the client's native team
+   -- flag. The host's aggregate can stay unchanged during that event.
+   pre,post=RegisterHook(statusPath,function()end,function(context)
+    local sensor=context:get()
+    local owned=valid(sensor) and owners[sensor:GetAddress()]
+    if owned and not sensor:HasAuthority() and same(sensor,owned.sensor) then
+     scope()
+     sync(owned.group)
+    end
+   end)
+   assert(type(pre)=='number' and type(post)=='number','radar_client_native_status_hook_required')
+  end
+  for _,group in ipairs(groups) do sync(group) end
+ end
+ local function retire()
+  owners={}
+  if pre then UnregisterHook(statusPath,pre,post);pre,post=nil,nil end
+ end
+ return {tick=tick,retire=retire}
+end
+end)()
 local releaseRadarHelperFactory=(function()
 -- Local minimap capture and display. Native radars, teams, power and authored
 -- authored ValWorldSettings remain owners. The native zoom stays intact.
@@ -950,28 +1027,44 @@ return function(env)
   local canvas=widget.RadarSensors
   if not valid(canvas) then return false end
   local before=canvas:GetChildrenCount();assert(type(before)=='number' and before>=0 and before<=64,'radar_client_native_radar_canvas_capacity')
-  local actors,teams={},{}
+  local perTeam=env.descriptor.radars_per_team or 1
+  local expected=2*perTeam
+  local teams={0,0}
   for _,actor in ipairs(FindAllOf('BP_Objective_RadarSensor_C') or {}) do
    if valid(actor) and same(actor:GetWorld(),state.world) then
     assert(actor:GetClass():GetFullName()=='BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_RadarSensor.BP_Objective_RadarSensor_C','radar_client_original_radar_class_required')
-    actors[#actors+1]=actor
-    local team=actor.r_TeamId;if team==1 or team==2 then assert(not teams[team],'radar_client_ambiguous_native_radar_team');teams[team]=actor end
+    local team=actor.r_TeamId
+    if team~=1 and team~=2 then return false end
+    teams[team]=teams[team]+1
    end
   end
-  if #actors~=2 or not teams[1] or not teams[2] then return false end
+  if teams[1]~=perTeam or teams[2]~=perTeam then return false end
+  -- Native initialization can run while only some replicated sensors exist.
+  -- Rebuild that partial sensor layer once, after every team ID has arrived.
+  if perTeam>1 and before>0 and before<expected and not record.rebuilt_partial_radars then
+   local radarClass=StaticFindObject('/Game/UI/Components/Game/UI_Game_Minimap_Radar.UI_Game_Minimap_Radar_C')
+   if not valid(radarClass) then return false end
+   for index=0,before-1 do
+    local child=canvas:GetChildAt(index)
+    if not valid(child) or not same(child:GetClass(),radarClass) then return false end
+   end
+   record.rebuilt_partial_radars=true
+   canvas:ClearChildren()
+   before=canvas:GetChildrenCount()
+  end
   if before==0 then
    -- Invoke the exact original zero-parameter Blueprint only on its empty
    -- native canvas; it owns creation, binding, friendliness and positions.
    widget:BindRadarSensors()
-   local after=canvas:GetChildrenCount();assert(after==2,'radar_client_original_bind_radar_canvas_count')
+   local after=canvas:GetChildrenCount()
+   if after~=expected then return false end
    record.radar_canvas_ready=true
-   report('BASE_RADAR_CLIENT_RADAR_CANVAS_BOUND|widget='..widget:GetFullName()..'|before=0|after='..after..'|radarActors=2|owner=OriginalBindRadarSensors|onlineFlagWrites=0')
+   report('BASE_RADAR_CLIENT_RADAR_CANVAS_BOUND|widget='..widget:GetFullName()..'|before=0|after='..after..'|radarActors='..expected..'|owner=OriginalBindRadarSensors|onlineFlagWrites=0')
    return true
   end
-  -- Native initialization may already have populated the canvas. Never
-  -- clear/rebind it or create duplicate widgets to repair partial state.
-  if before~=2 then return false end
-  if not record.radar_canvas_ready then report('BASE_RADAR_CLIENT_RADAR_CANVAS_READY|widget='..widget:GetFullName()..'|before=2|nativeBindCalls=0|radarActors=2');record.radar_canvas_ready=true end
+  -- Native initialization may already have populated the full canvas.
+  if before~=expected then return false end
+  if not record.radar_canvas_ready then report('BASE_RADAR_CLIENT_RADAR_CANVAS_READY|widget='..widget:GetFullName()..'|before='..before..'|nativeBindCalls=0|radarActors='..expected);record.radar_canvas_ready=true end
   return true
  end
  local service={}
@@ -1130,7 +1223,7 @@ local releaseRadarRuntimeFactory=(function()
 -- Normal network clients only. Actual remote world owns map selection.
 return function(env)
  local valid,report,scope=assert(env.valid),assert(env.report),assert(env.scope)
- local descriptors=assert(env.map_descriptors);local service=nil;local identity=nil;local retired={}
+ local descriptors=assert(env.map_descriptors);local service,power,identity;local retired={}
  local captureBounds=assert(env.capture_bounds_factory)(env)
  local guard=assert(env.guard_factory)(env)
  local nativeSettings=assert(env.world_settings_guard_factory)(env)
@@ -1140,6 +1233,7 @@ return function(env)
   assert(not pc:HasAuthority() and not gs:HasAuthority(),'radar_runtime_network_client_required')
   local world=pc:GetWorld();local name=gs:GetFullName();local key=name..'|'..gs:GetAddress()..'|'..world:GetAddress()
   if identity~=key then
+   if power then power.retire();power=nil end
    if service then service.retire('remote_world_changed');retired[#retired+1]=service end
    service=nil;identity=key
    local selected
@@ -1153,7 +1247,15 @@ return function(env)
    local e={};for k,v in pairs(env) do e[k]=v end
    e.world_prefix=selected.world;e.client_context_guard=guard;e.descriptor=selected;e.world_settings_guard=nativeSettings
    e.capture_bounds=captureBounds
+   power=releaseRadarPowerFactory(e)
    service=assert(env.helper_factory)(e)
+  end
+  if power then
+   local ok,why=pcall(power.tick,gs)
+   if not ok then
+    report('BASE_RADAR_CLIENT_POWER_ERROR|'..tostring(why):sub(1,500))
+    power.retire();power=nil
+   end
   end
   if not service then return true end
   local ok,result=pcall(service.tick,pc,gs)
