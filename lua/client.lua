@@ -388,10 +388,22 @@ end
 
 local scoreBarClass='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/WBP_Game_ScoreBar_CTF.WBP_Game_ScoreBar_CTF_C'
 local scoreBars={}
-local scoreBarWorld,scoreBarController,scoreBarReported
+local scoreboards={}
+local scoreBarWorld,scoreBarController,scoreBarState,scoreBarReported
 local scoreBarScanDelay=0
+local scoreBarErrors={}
+local lastScoreBoundary
 local function same_object(a,b)
     return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
+end
+
+local function reconcile_score_bar(section,work)
+    local ok,why=pcall(work)
+    if not ok and not scoreBarErrors[section] then
+        scoreBarErrors[section]=true
+        report('CTF_SCORE_BAR_ERROR|'..section..'|'..tostring(why):sub(1,300))
+    end
+    return ok
 end
 
 local function prune_generator_icons(panel,world)
@@ -419,10 +431,13 @@ local function refresh_ctf_score_bar(pc,ps,gs)
     if team~=1 and team~=2 then return end
     local world=pc:GetWorld()
     if not same_object(world,gs:GetWorld()) then return end
-    if not same_object(scoreBarWorld,world) or not same_object(scoreBarController,pc) then
-        scoreBarWorld,scoreBarController=world,pc
+    if not same_object(scoreBarWorld,world) or not same_object(scoreBarController,pc)
+        or not same_object(scoreBarState,gs) then
+        scoreBarWorld,scoreBarController,scoreBarState=world,pc,gs
         scoreBarScanDelay=0
         scoreBarReported=false
+        scoreBarErrors={}
+        lastScoreBoundary=nil
     end
     if scoreBarScanDelay==0 then
         scoreBars={}
@@ -432,15 +447,25 @@ local function refresh_ctf_score_bar(pc,ps,gs)
                 scoreBars[#scoreBars+1]=widget
             end
         end
+        reconcile_score_bar('scoreboard_scan',function()
+            scoreboards={}
+            local class='WidgetBlueprintGeneratedClass /Game/UI/Components/Game/UI_Game_Scoreboard.UI_Game_Scoreboard_C'
+            for _,widget in ipairs(FindAllOf('UI_Game_Scoreboard_C') or {}) do
+                if valid(widget) and widget:GetClass():GetFullName()==class
+                    and same_object(widget:GetWorld(),world) and same_object(widget:GetOwningPlayer(),pc) then
+                    scoreboards[#scoreboards+1]=widget
+                end
+            end
+        end)
         scoreBarScanDelay=3
     end
     scoreBarScanDelay=scoreBarScanDelay-1
-    if #scoreBars==0 then return end
-
-    local rows=gs.r_CurrentTeamScores
-    local count=rows:GetArrayNum()
-    local scores,malformed={},count>4
-    if not malformed then
+    local scores,malformed={},false
+    local read=reconcile_score_bar('replication',function()
+        local rows=gs.r_CurrentTeamScores
+        if not rows then return end
+        local count=rows:GetArrayNum()
+        if count<2 or count>4 then return end
         rows:ForEach(function(_,param)
             local row=param:get()
             local id,score=row.TeamNum,row.Score
@@ -448,13 +473,30 @@ local function refresh_ctf_score_bar(pc,ps,gs)
             if scores[id]~=nil or type(score)~='number' or score<0 or score%1~=0 then malformed=true;return end
             scores[id]=score
         end)
-    end
-    if malformed then scores={} end
+    end)
+    if not read or malformed or scores[1]==nil or scores[2]==nil then scores={} end
     local friendly,enemy=scores[team],scores[3-team]
+    if friendly~=nil then
+        local function sync_score_text(widget,score)
+            if valid(widget) and tonumber(widget:GetText():ToString())~=score then
+                widget:SetText(FText(string.format('%d',score)))
+            end
+        end
+        -- The Tab and Results scenes use UI_Game_Scoreboard, a separate widget
+        -- from the in-match HUD. Keep its native team-result data and row stats.
+        for _,board in ipairs(scoreboards) do
+            if valid(board) then
+                reconcile_score_bar('scoreboard_friendly',function() sync_score_text(board.ScoreText_Friendly,friendly) end)
+                reconcile_score_bar('scoreboard_enemy',function() sync_score_text(board.ScoreText_Enemy,enemy) end)
+            end
+        end
+    end
     for _,widget in ipairs(scoreBars) do
-        if valid(widget) and widget:IsVisible() then
-            prune_generator_icons(widget.FriendlyGenerators,world)
-            prune_generator_icons(widget.EnemyGenerators,world)
+        if valid(widget) then
+            reconcile_score_bar('generators',function()
+                prune_generator_icons(widget.FriendlyGenerators,world)
+                prune_generator_icons(widget.EnemyGenerators,world)
+            end)
             local updated=false
             local function sync_counter(score,fill,counter)
                 if score==nil or not valid(fill) or not valid(counter) or not valid(counter.ScoreText) then return end
@@ -462,17 +504,61 @@ local function refresh_ctf_score_bar(pc,ps,gs)
                     -- Use the original fill and counter update with the absolute
                     -- replicated score for this side, independent of the delta.
                     widget:UpdateScore(score,fill,counter)
+                    if tonumber(counter.ScoreText:GetText():ToString())~=score then
+                        counter.ScoreText:SetText(FText(string.format('%d',score)))
+                    end
                     updated=true
                 end
             end
-            sync_counter(friendly,widget.FriendlyScoreFill,widget.UI_Game_Scorebar_ScoreCount)
-            sync_counter(enemy,widget.EnemyScoreFill,widget.UI_Game_Scorebar_ScoreCount_1)
+            reconcile_score_bar('friendly',function()
+                sync_counter(friendly,widget.FriendlyScoreFill,widget.UI_Game_Scorebar_ScoreCount)
+            end)
+            reconcile_score_bar('enemy',function()
+                sync_counter(enemy,widget.EnemyScoreFill,widget.UI_Game_Scorebar_ScoreCount_1)
+            end)
             if updated and not scoreBarReported then
                 scoreBarReported=true
                 report('CTF_SCORE_BAR_REFRESHED|team='..team..'|friendly='..tostring(friendly)..'|enemy='..tostring(enemy))
             end
         end
     end
+    if friendly~=nil then reconcile_score_bar('round_boundary',function()
+        local info=gs.r_GameplayPhaseInfo
+        if not info then return end
+        local tag=info.Phase.TagName:ToString()
+        local now=gs:GetServerWorldTimeSeconds()
+        local remaining=info.PhaseTimeRemaining-now
+        local boundary
+        if tag=='GamePhase.GameplayEndedPhase' then boundary='result'
+        elseif tag=='GamePhase.OvertimePhase' or tag=='GamePhase.SuddenDeath' then boundary='overtime'
+        elseif tag=='GamePhase.GameplayStartPhase' and remaining<=2 then boundary='time_limit' end
+        if not boundary then return end
+        local shownFriendly,shownEnemy='unavailable','unavailable'
+        for _,bar in ipairs(scoreBars) do
+            if valid(bar) and bar:IsVisible() then
+                local a,b=bar.UI_Game_Scorebar_ScoreCount,bar.UI_Game_Scorebar_ScoreCount_1
+                if valid(a) and valid(b) and valid(a.ScoreText) and valid(b.ScoreText) then
+                    shownFriendly=a.ScoreText:GetText():ToString()
+                    shownEnemy=b.ScoreText:GetText():ToString()
+                    break
+                end
+            end
+        end
+        local resultFriendly,resultEnemy='unavailable','unavailable'
+        for _,board in ipairs(scoreboards) do
+            if valid(board) and board:IsVisible()
+                and valid(board.ScoreText_Friendly) and valid(board.ScoreText_Enemy) then
+                resultFriendly=board.ScoreText_Friendly:GetText():ToString()
+                resultEnemy=board.ScoreText_Enemy:GetText():ToString()
+                break
+            end
+        end
+        local key=table.concat({boundary,team,scores[1],scores[2],shownFriendly,shownEnemy,resultFriendly,resultEnemy},'|')
+        if key==lastScoreBoundary then return end
+        lastScoreBoundary=key
+        report(('CTF_CLIENT_ROUND_SCORE|boundary=%s|phase=%s|team=%d|team1=%d|team2=%d|hudFriendly=%s|hudEnemy=%s|scoreboardFriendly=%s|scoreboardEnemy=%s|worldTime=%.3f'):format(
+            boundary,tag,team,scores[1],scores[2],shownFriendly,shownEnemy,resultFriendly,resultEnemy,now))
+    end) end
 end
 -- END_DIRECT_PLAYTEST_PRESENTATION
 
@@ -732,7 +818,7 @@ local function enabled_flag_markers(env)
  end
 end
 
-local scoreBarFailed,shockLanceVisualFailed
+local shockLanceVisualFailed
 local markerFailed
 local function update_flag_markers(pc,ps,gs)
  if not markerService then
@@ -1353,7 +1439,10 @@ local function configure_shield_wall_preview()
   assert(valid(class) and class:GetFullName()=='BlueprintGeneratedClass '..asset..'.GA_Pack_ForceField_C'
    and valid(defaults) and defaults:IsA(class) and type(defaults.AlwaysUsePreview)=='boolean','shield_wall_preview_defaults_required')
   defaults.AlwaysUsePreview=true
-  assert(defaults.AlwaysUsePreview==true,'shield_wall_preview_defaults_readback_failed')
+  assert(type(defaults.BlockPreviewPlacementNearFlagstand)=='boolean','shield_wall_flagstand_property_required')
+  defaults.BlockPreviewPlacementNearFlagstand=true
+  assert(defaults.AlwaysUsePreview==true and defaults.BlockPreviewPlacementNearFlagstand==true,
+   'shield_wall_preview_defaults_readback_failed')
  end)
  if not ok then report('SHIELD_WALL_PREVIEW_ERROR|'..tostring(why)) end
 end
@@ -1542,10 +1631,7 @@ local function client_tick(sys)
     local settingsApplied=pawnReady and apply_saved_sound_settings(pc)
     update_match_music(pc,gs,settingsApplied)
     configure_shield_wall_preview()
-    if not scoreBarFailed then
-        local ok,why=pcall(refresh_ctf_score_bar,pc,ps,gs)
-        if not ok then scoreBarFailed=true;report('CTF_SCORE_BAR_ERROR|'..tostring(why):sub(1,300)) end
-    end
+    reconcile_score_bar('refresh',function() refresh_ctf_score_bar(pc,ps,gs) end)
     if not shockLanceVisualFailed then
         local ok,why=pcall(configure_shock_lance)
         if not ok then shockLanceVisualFailed=true;report('SHOCK_LANCE_CAMERA_EFFECTS_ERROR|'..tostring(why):sub(1,300)) end
