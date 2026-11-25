@@ -104,6 +104,8 @@ function f.flag(team,foreign)
 end
 function f.pawn()
     local pawn=object('pawn',world)
+    pawn.bInitialized,pawn.alive=true,true
+    function pawn:IsAlive() return self.alive end
     function pawn:setName(name)
         self.PlayerState={GetPlayerName=function()return name end}
     end
@@ -207,10 +209,11 @@ function f.unrelated() return object('OtherWidget',world) end
 class FlagHudTest(unittest.TestCase):
     def run_lua(self, checks):
         source = SOURCE.read_text(encoding='utf-8')
-        block = source.split('local ctfFlagHud=', 1)[1]
-        block = block.split('local function refresh_ctf_score_bar', 1)[0]
+        start = source.index('local function flag_hud_holder')
+        end = source.index('local function refresh_ctf_score_bar', start)
+        block = source[start:end].replace('local ctfFlagHud=', 'local hud=', 1)
         lua = LuaRuntime()
-        self.assertTrue(lua.execute(FIXTURE + '\nlocal hud=' + block + checks))
+        self.assertTrue(lua.execute(FIXTURE + '\n' + block + checks))
 
     def test_score_uses_native_icons_and_recovers_late_names_for_both_teams(self):
         self.run_lua(r'''
@@ -329,14 +332,65 @@ for _,skip in ipairs({foreign,otherPlayer,hidden}) do assert(skip.binds==0 and s
 return true
 ''')
 
-    def test_defers_score_and_minimap_refresh_when_a_team_has_two_live_flag_actors(self):
+    def test_death_and_detachment_override_a_stale_owner_on_the_minimap(self):
+        self.run_lua(r'''
+local own,enemy=f.flag(1),f.flag(2)
+local map,score=f.map(),f.score(1)
+local first,second=f.pawn(),f.pawn()
+first:setName('First runner')
+second:setName('Second runner')
+local function update(now)
+    local flags=assert(hud.prepare(f.pc,f.world))
+    hud.score(score,flags,1,now)
+    hud.minimap(f.pc,f.world,flags,now)
+end
+enemy:take(first)
+update(1)
+local marker=map.Flags:GetChildAt(1)
+local icon=marker.WBP_Game_MinimapFlagIcon
+assert(not icon.visible)
+first.alive=false
+enemy.position=750
+update(2)
+assert(icon.visible and marker.location==7.5 and icon.Text.value=='DROPPED')
+enemy.position=850
+update(3)
+assert(marker.location==8.5 and map.Flags:GetChildrenCount()==2)
+enemy:take(second)
+update(4)
+assert(not icon.visible and score.EnemyObjectives:GetChildAt(0).Text.value=='Second runner')
+enemy.attachment=nil -- Attachment can clear while the live owner's pointer is still set.
+enemy.position=920
+update(5)
+assert(icon.visible and math.abs(marker.location-9.2)<1e-8 and icon.Text.value=='DROPPED')
+enemy:reset()
+update(6)
+assert(icon.visible and marker.location==2 and icon.Text.value=='')
+return true
+''')
+
+    def test_minimap_keeps_only_the_previously_witnessed_flag_during_actor_replacement(self):
         self.run_lua(r'''
 local friendly,enemy=f.flag(1),f.flag(2)
-local expired=f.flag(2)
-assert(hud.prepare(f.pc,f.world)==nil)
-expired.invalid=true
-local flags=assert(hud.prepare(f.pc,f.world))
-assert(flags[friendly] and flags[enemy] and not flags[expired])
+local map=f.map()
+local flags,minimap=hud.prepare(f.pc,f.world)
+assert(flags and minimap)
+hud.minimap(f.pc,f.world,minimap,1)
+assert(map.Flags:GetChildrenCount()==2)
+
+local replacement=f.flag(2)
+map:BindFlags() -- The native binder sees all three actors.
+assert(map.Flags:GetChildrenCount()==3)
+flags,minimap=hud.prepare(f.pc,f.world)
+assert(flags==nil and minimap[friendly] and minimap[enemy] and not minimap[replacement])
+hud.minimap(f.pc,f.world,minimap,2)
+assert(map.Flags:GetChildrenCount()==2 and map.Flags:GetChildAt(1).CachedActor==enemy)
+
+enemy.invalid=true
+flags,minimap=hud.prepare(f.pc,f.world)
+assert(flags and flags[replacement] and not flags[enemy])
+hud.minimap(f.pc,f.world,minimap,6)
+assert(map.Flags:GetChildrenCount()==2 and map.Flags:GetChildAt(1).CachedActor==replacement)
 return true
 ''')
 

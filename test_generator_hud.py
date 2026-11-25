@@ -102,6 +102,7 @@ local team={r_TeamId=1}
 local missing=true
 local scores={{TeamNum=1,Score=3},{TeamNum=2,Score=5}}
 local state={GetWorld=function()return world end,GetAddress=function()return 3 end}
+function state:GetServerWorldTimeSeconds() return 0 end
 state.r_CurrentTeamScores={
  GetArrayNum=function() return #scores end,
  ForEach=function(_,visit)
