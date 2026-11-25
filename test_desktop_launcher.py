@@ -988,7 +988,9 @@ class DesktopTest(unittest.TestCase):
             self.assertTrue(refreshing.wait(1))
             app.exit_lobby()
             self.assertIsNone(app.room)
-            self.assertEqual(app.current_panel, 'live')
+            self.assertEqual(app.current_panel, 'lobbies')
+            self.assertEqual(app.room_card.winfo_manager(), '')
+            self.assertEqual(app.lobby_panel.winfo_manager(), 'pack')
             release.set()
             wait_for(lambda: leaving.is_set() and not app.busy)
             self.assertIsNone(app.room)
@@ -1155,7 +1157,7 @@ class DesktopTest(unittest.TestCase):
         finally:
             app.close()
 
-    def test_expired_session_returns_to_lobby_entry(self):
+    def test_closed_lobby_or_removed_player_returns_to_play(self):
         root=tk.Tk();root.withdraw()
         lobby,game=FakeLobby(),FakeGame()
         app=Desktop(root,lobby,lambda _:game)
@@ -1168,14 +1170,61 @@ class DesktopTest(unittest.TestCase):
             self.fail('Desktop operation did not complete')
         try:
             wait(lambda:not app.busy)
-            app.name.set('One');app.create_button.invoke()
-            wait(lambda:not app.busy and app.room is not None)
-            def expired(*args,**kwargs): raise CommunityError('Lobby expired',code='lobby_missing')
-            lobby.action=expired
-            app.call_action('state')
-            wait(lambda:not app.busy and app.room is None)
-            self.assertEqual(str(app.create_button['state']),'normal')
-            self.assertEqual(app.status.get(),'Lobby expired')
+            app.name.set('One')
+            for code, message in (('lobby_missing', 'Lobby closed'), ('session_invalid', 'Removed from lobby')):
+                with self.subTest(code=code):
+                    app.lobby_create_button.invoke()
+                    wait(lambda:not app.busy and app.room is not None)
+                    app.show_panel('live')
+                    lobby.action = Mock(side_effect=CommunityError(message, code=code))
+                    root.after_cancel(app.refresh_handle)
+                    app.refresh()
+                    wait(lambda:not app.busy and app.room is None)
+                    lobby.action.assert_called_once_with('state')
+                    self.assertEqual(app.current_panel, 'lobbies')
+                    self.assertEqual(app.live_panel.winfo_manager(), '')
+                    self.assertEqual(app.lobby_panel.winfo_manager(), 'pack')
+                    self.assertEqual(app.lobby_create_button.cget('state'), 'normal')
+                    self.assertEqual(app.status.get(), message)
+        finally:
+            app.close()
+
+    def test_match_end_keeps_membership_until_leave(self):
+        from threading import RLock
+
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        lobby.lock = RLock()
+        lobby.code, lobby.token, lobby.player_id = lobby.room['code'], 'fixture-token', 'one'
+        app = Desktop(root, lobby, lambda _: FakeGame())
+
+        def wait(predicate):
+            deadline = time.monotonic() + 5
+            while not predicate() and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.02)
+            self.assertTrue(predicate())
+
+        try:
+            wait(lambda: not app.busy)
+            app.name.set('One')
+            app.code.set(lobby.room['code'])
+            app.join_button.invoke()
+            wait(lambda: not app.busy and app.room is not None)
+            lobby.room = dict(lobby.room, phase='ended')
+            root.after_cancel(app.refresh_handle)
+            app.refresh()
+            wait(lambda: not app.busy and app.room['phase'] == 'ended')
+            self.assertEqual(app.room_card.winfo_manager(), 'pack')
+            self.assertEqual(app.leave_button.cget('state'), 'normal')
+
+            app.leave_button.invoke()
+            wait(lambda: not app.busy and app.room is None)
+            self.assertIn(('leave', {}), lobby.calls)
+            self.assertEqual(app.current_panel, 'lobbies')
+            self.assertEqual(app.room_card.winfo_manager(), '')
+            self.assertEqual(app.status.get(), 'Left lobby.')
         finally:
             app.close()
 

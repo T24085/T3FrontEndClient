@@ -1093,6 +1093,8 @@ class Desktop:
                 self.ignore_departed_game_notices = True
             self.reset_copy_feedback()
         self.room = room
+        if previous.get('code') and room is None and self.current_panel != 'lobbies':
+            self.show_panel('lobbies')
         if self.map_sync is not None and self.caps.get('mapSessionSync') == SESSION_VERSION:
             target = None
             if (room and room.get('phase') in ('setup', 'starting', 'ready')
@@ -1340,7 +1342,6 @@ class Desktop:
 
         if self.run_async(leave, self.status.set):
             self.render(None)
-            self.show_panel('live')
             self.status.set('Closing lobby on this device…')
 
     def move(self,team):
