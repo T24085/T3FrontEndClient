@@ -97,8 +97,12 @@ class FlagMarkerProjectionTest(unittest.TestCase):
     def test_hud_pulse_updates_pickup_toss_and_return_without_a_native_widget_tick(self):
         start = SOURCE.index('local function enabled_flag_markers(env)')
         end = SOURCE.index('local shockLanceVisualFailed', start)
+        helper = SOURCE[SOURCE.index('local function flag_hud_holder'):SOURCE.index('local ctfFlagHud=')]
         result = LuaRuntime().execute(r"""
             local function valid(o) return type(o)=='table' and not o.destroyed end
+            local function same_object(a,b)
+                return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
+            end
             local world={GetAddress=function(self)return self end}
             local function actor(x)
                 local a={x=x}
@@ -117,6 +121,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             function pc:HasAuthority() return false end
             pawn.bInitialized=true
             function pawn:GetHealth() return 1000 end
+            function pawn:IsAlive() return true end
             local flags={actor(500),actor(1500)}
             for i,flag in ipairs(flags) do
                 flag.r_TeamId,flag.mode=i,1
@@ -128,10 +133,12 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             end
             local parent,widgets={visibility=1},{}
             function parent:GetWorld() return world end
+            function parent:GetAddress() return self end
             function parent:GetVisibility() return self.visibility end
             function parent:SetVisibility(value) self.visibility=value end
             function parent:GetChildrenCount() return #widgets end
             function parent:GetChildAt(i) return widgets[i+1] end
+            function parent:RemoveChildAt(i) table.remove(widgets,i+1) end
             function parent:AddChildToCanvas(widget) table.insert(widgets,widget) end
             local overlay={Flags=parent,GetWorld=parent.GetWorld,GetFullName=function()return '/Engine/Transient.test' end}
             local bases={actor(500),actor(1500),actor(2500)}
@@ -203,7 +210,7 @@ class FlagMarkerProjectionTest(unittest.TestCase):
                 entry.widget.lift=lift
                 return true
             end end
-        """ + SOURCE[start:end] + r"""
+        """ + helper + SOURCE[start:end] + r"""
             local noop=function()end
             local tick=enabled_flag_markers({valid=valid,signature=noop,report=noop,scope=noop})
             flags[2].holderInfo.bReturned=true
@@ -214,6 +221,14 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             assert(enemy.TickFrequency==0 and enemy.stoppedAnimations)
             assert(enemy.scale.X==0.25 and enemy.scale.Y==0.25)
             assert(enemy.pivot.X==0.5 and enemy.pivot.Y==0.5)
+            local duplicate=library:Create()
+            duplicate:UpdateFlagActor(flags[2])
+            parent:AddChildToCanvas(duplicate)
+            local other=actor(0)
+            function other:IsA() return false end
+            parent:AddChildToCanvas(other)
+            tick(pc,ps,gs)
+            assert(#widgets==3 and widgets[2]==enemy and widgets[3]==other)
             assert(bases[2].scale.X==0.25)
             assert(enemy.Content:GetParent().Slot.anchors.Minimum.X==0.5)
             assert(enemy.Content.Slot.alignment.Y==0.5)
@@ -223,6 +238,8 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             assert(parent.visibility==4 and enemy.shown and enemy.projectedX==1500)
             assert(enemy.projectedY==15 and enemy.projectedZ==120 and enemy.lift==8)
             local carrier=actor(1300)
+            carrier.bInitialized,carrier.alive=true,true
+            function carrier:IsAlive() return self.alive end
             carrier.Mesh={K2_GetComponentLocation=function()return {X=carrier.x,Y=-35,Z=100}end}
             carrier.CapsuleComponent={
                 K2_GetComponentLocation=function()return {X=carrier.x,Y=5,Z=208}end,
@@ -245,6 +262,11 @@ class FlagMarkerProjectionTest(unittest.TestCase):
             carrier.Mesh=nil
             nextPulse()
             assert(enemy.projectedX==1400 and enemy.projectedY==0 and enemy.projectedZ==190)
+            carrier.alive=false -- The corpse and its owner pointer are still replicated.
+            flags[2].x=1600
+            nextPulse()
+            assert(enemy.projectedX==1600 and enemy.projectedZ==120 and enemy.shown)
+            carrier.alive=true
             flags[2].owner=nil -- A stale Holder must not keep the glyph on the thrower.
             flags[2].x=1000
             flags[2].mode=4

@@ -722,6 +722,25 @@ local function refresh_generator_icons(widget,gs,world,team)
     end
 end
 
+local function flag_hud_holder(flag,info,previousAttachment)
+    local holder=info.Holder
+    if info.bReturned or not valid(holder) then return end
+    if holder.bInitialized==true and holder:IsAlive()==false then return nil,nil,true end
+
+    local address=holder:GetAddress()
+    local root=flag.RootComponent
+    local attached=valid(root) and root:GetAttachParent() or nil
+    if valid(attached) and same_object(attached:GetOwner(),holder) then
+        return holder,address,false,true
+    end
+    if valid(root) and not valid(attached) and previousAttachment==address then
+        -- Attachment can clear before the replicated flag owner or holder.
+        return nil,address,true
+    end
+    -- A new holder can replicate before its attachment or owner.
+    return holder,previousAttachment==address and address or nil,false,same_object(flag:GetOwner(),holder)
+end
+
 local ctfFlagHud=(function()
     local directory='/Game/UI/Components/Game/'
     local scoreIconClass='WidgetBlueprintGeneratedClass '..directory..'WBP_Game_ScoreBar_CTF_FlagIcon.WBP_Game_ScoreBar_CTF_FlagIcon_C'
@@ -731,7 +750,7 @@ local ctfFlagHud=(function()
     local worldIdentity,controllerIdentity
     local retry={}
     local mapWidgets={}
-    local observedAttachments={}
+    local observedAttachments,previousFlag={},{}
     local stolenBorders={}
     local scanDelay=0
 
@@ -740,43 +759,37 @@ local ctfFlagHud=(function()
     end
 
     local function snapshot(world)
-        local flags,teams,attachments={},{},{}
+        local flags,teams,attachments,ambiguous={},{},{},{}
         for _,flag in ipairs(FindAllOf('TopPickup_Flag') or {}) do
             if valid(flag) and same_object(flag:GetWorld(),world) then
                 local team=flag.r_TeamId
-                if (team~=1 and team~=2) or teams[team] then return end
+                if team~=1 and team~=2 then goto next_flag end
                 local info=flag:GetHeldBy()
-                if type(info.bReturned)~='boolean' then return end
+                if type(info.bReturned)~='boolean' then goto next_flag end
                 local key=flag:GetAddress()
-                local holder=info.Holder
-                if info.bReturned then
-                    holder=nil
-                elseif valid(holder) then
-                    local root=flag.RootComponent
-                    local attached=valid(root) and root:GetAttachParent() or nil
-                    local address=holder:GetAddress()
-                    if same_object(flag:GetOwner(),holder)
-                        or (valid(attached) and same_object(attached:GetOwner(),holder)) then
-                        attachments[key]=address
-                    elseif observedAttachments[key]==address then
-                        attachments[key]=address
-                        if valid(root) then
-                            -- A witnessed detachment can precede the replicated
-                            -- holder clearing. A newly seen carrier can arrive
-                            -- before attachment and must not look dropped.
-                            info={bReturned=false}
-                            holder=nil
-                        end
-                    end
-                end
+                if teams[team] and teams[team]~=key then ambiguous[team]=true end
+                teams[team]=key
+                local holder,attachment,released=flag_hud_holder(flag,info,observedAttachments[key])
+                attachments[key]=attachment
+                if released then info={bReturned=false} end
                 flags[key]={flag=flag,team=team,info=info,holder=holder}
-                teams[team]=true
             end
+            ::next_flag::
         end
-        if teams[1] and teams[2] then
-            observedAttachments=attachments
-            return flags
+        local markers={}
+        for team=1,2 do
+            local key=teams[team]
+            if ambiguous[team] then key=previousFlag[team] end
+            local row=flags[key]
+            if row and row.team==team then markers[key]=row else key=nil end
+            previousFlag[team]=key
         end
+        observedAttachments=attachments
+        -- Keep pruning stale minimap widgets while a flag actor is replaced.
+        if previousFlag[1] and previousFlag[2] and not ambiguous[1] and not ambiguous[2] then
+            return markers,markers
+        end
+        return nil,markers
     end
 
     local function inspect(panel,expected,flags,team)
@@ -913,7 +926,7 @@ local ctfFlagHud=(function()
     function runtime.prepare(pc,world)
         if not same_object(controllerIdentity,pc) or not same_object(worldIdentity,world) then
             controllerIdentity,worldIdentity=pc,world
-            retry,mapWidgets,observedAttachments,stolenBorders,scanDelay={},{},{},{},0
+            retry,mapWidgets,observedAttachments,previousFlag,stolenBorders,scanDelay={},{},{},{},{},0
         end
         for key,entry in pairs(stolenBorders) do
             if not valid(entry.icon) or not valid(entry.icon:GetParent()) then stolenBorders[key]=nil end
@@ -974,7 +987,11 @@ local ctfFlagHud=(function()
                     -- building it. Never clear a layer with unrelated children.
                     if missing and not view.other and retry_binding(widget,now) then
                         widget:BindFlags()
-                        view=inspect(widget.Flags,mapMarkerClass,flags) or view
+                        local rebound=inspect(widget.Flags,mapMarkerClass,flags)
+                        if rebound then
+                            view=rebound
+                            remove_stale(view)
+                        end
                     end
                     for key,marker in pairs(view.icons) do
                         local row=flags[key]
@@ -1022,11 +1039,11 @@ local function refresh_ctf_score_bar(pc,ps,gs)
         scoreBarScanDelay=3
     end
     scoreBarScanDelay=scoreBarScanDelay-1
-    local flags
-    reconcile_score_bar('flags',function() flags=ctfFlagHud.prepare(pc,world) end)
-    if flags then
+    local flags,minimapFlags
+    reconcile_score_bar('flags',function() flags,minimapFlags=ctfFlagHud.prepare(pc,world) end)
+    if minimapFlags then
         reconcile_score_bar('minimap_flags',function()
-            ctfFlagHud.minimap(pc,world,flags,gs:GetServerWorldTimeSeconds())
+            ctfFlagHud.minimap(pc,world,minimapFlags,gs:GetServerWorldTimeSeconds())
         end)
     end
     local scores,malformed={},false
@@ -1195,14 +1212,10 @@ local function enabled_flag_markers(env)
  local function current(s)
   return valid(s.pc) and valid(s.ps) and valid(s.gs) and same(s.pc.PlayerState,s.ps) and same(s.pc:GetWorld(),s.gs:GetWorld()) and s.gs:GetFullName()==s.gameState and not s.pc:HasAuthority() and s.pc:IsLocalPlayerController()
  end
- local function flag_holder(flag,info)
-  if info.bReturned then return nil end
-  local holder=info.Holder
-  if not valid(holder) then return nil end
-  -- The replicated holder can still name the thrower after detachment.
-  local root=flag.RootComponent
-  local attached=valid(root) and root:GetAttachParent() or nil
-  if same(flag:GetOwner(),holder) or (valid(attached) and same(attached:GetOwner(),holder)) then return holder end
+ local function flag_holder(entry,info)
+  local holder,attachment,released,anchored=flag_hud_holder(entry.flag,info,entry.attachment)
+  entry.attachment=attachment
+  return anchored and holder or nil,released
  end
  local function loose_flag_anchor(flag,root)
   -- The pickup root is a collision sphere. The flag's visible mesh has its
@@ -1246,7 +1259,7 @@ local function enabled_flag_markers(env)
   if team~=1 and team~=2 then return end
   local carrying=false
   for _,e in pairs(s.entries) do
-   if valid(e.flag) and e.flag.r_TeamId~=team and same(flag_holder(e.flag,e.flag:GetHeldBy()),pawn) then carrying=true end
+   if valid(e.flag) and e.flag.r_TeamId~=team and same(flag_holder(e,e.flag:GetHeldBy()),pawn) then carrying=true end
   end
   for _,e in pairs(s.entries) do
    local flag,w=e.flag,e.widget
@@ -1255,7 +1268,11 @@ local function enabled_flag_markers(env)
     local flagState=flag:GetFlagState(pawn)
     local holderInfo=flag:GetHeldBy()
     local returned=holderInfo.bReturned==true
-    local holder=flag_holder(flag,holderInfo)
+    local holder,released=flag_holder(e,holderInfo)
+    if released then
+     holderInfo={bReturned=false}
+     flagState=4 -- The drop can reach this HUD before the stock flag state changes.
+    end
     local holderAddress=valid(holder) and holder:GetAddress() or nil
     if e.returned~=returned or e.holderAddress~=holderAddress then
      -- Refresh the retail Tick on detachment as well as return. Both native
@@ -1362,10 +1379,17 @@ local function enabled_flag_markers(env)
    if valid(flag) and same(flag:GetWorld(),pc:GetWorld()) and (flag.r_TeamId==1 or flag.r_TeamId==2) then
     local key=flag:GetFullName()..'|'..tostring(flag:GetAddress())
     local e=state.entries[key]
-    if not e or not valid(e.widget) or not same(e.widget:GetParent(),parent) then
+    local bound=e and valid(e.widget) and same(e.widget:GetParent(),parent)
+    local widget=bound and e.widget or nil
+    for i=parent:GetChildrenCount()-1,0,-1 do
+     local child=parent:GetChildAt(i)
+     if valid(child) and child:IsA(cls) and same(child.CachedActor,flag) then
+      if not widget then widget=child
+      elseif not same(child,widget) then parent:RemoveChildAt(i) end
+     end
+    end
+    if not bound then
      if e and e.owned and valid(e.widget) then e.widget:RemoveFromParent() end
-     local widget
-     for i=0,parent:GetChildrenCount()-1 do local child=parent:GetChildAt(i);if valid(child) and child:IsA(cls) and same(child.CachedActor,flag) then assert(not widget,'duplicate_native_flag_marker');widget=child end end
      local owned=not valid(widget)
      if owned then widget=library:Create(pc,cls,pc);assert(valid(widget),'original_flag_marker_creation_failed') end
      -- The stock widget's Tick writes a second pixel position while the flag
