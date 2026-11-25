@@ -17,6 +17,21 @@ from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION
 
 MAX_LOBBY_BOTS = 12
 DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True, 'fallDamage': False}
+MAX_SCORE_LIMIT = 50
+MAX_MATCH_MINUTES = 60
+DEFAULT_MATCH_LIMITS = {'scoreLimit': None, 'matchMinutes': None}
+
+
+def validated_match_limits(value):
+    if not isinstance(value, dict) or value.keys() != DEFAULT_MATCH_LIMITS.keys():
+        raise ValueError('Invalid score or time limit settings.')
+    score = value['scoreLimit']
+    if score is not None and (type(score) is not int or not 0 <= score <= MAX_SCORE_LIMIT):
+        raise ValueError(f'Choose a score limit from 1 to {MAX_SCORE_LIMIT}, Unlimited, or Map default.')
+    minutes = value['matchMinutes']
+    if minutes is not None and (type(minutes) is not int or not 1 <= minutes <= MAX_MATCH_MINUTES):
+        raise ValueError(f'Choose a time limit from 1 to {MAX_MATCH_MINUTES} minutes or Map default.')
+    return dict(value)
 
 
 def validated_lobby_rules(value, *, partial=False):
@@ -147,6 +162,9 @@ class CommunityClient:
                 if code not in ('lobby_missing', 'session_invalid','spectator_session_invalid',
                                 'spectator_unavailable','spectator_forbidden','spectator_conflict','spectator_capacity'): code = None
                 raise CommunityError(str(value.get('error', 'Lobby request failed.'))[:256], code=code)
+            room = value.get('room')
+            if isinstance(room, dict) and 'matchLimits' in room:
+                validated_match_limits(room['matchLimits'])
             return value
         except CommunityError:
             raise
@@ -290,6 +308,9 @@ class CommunityClient:
             value=self._request('matches',use_lobby_token=False)
             matches=value.get('matches')
             if not isinstance(matches,list):raise CommunityError('Invalid live match list.')
+            limits = value.get('matchLimits', {})
+            if not isinstance(limits, dict):
+                raise CommunityError('Invalid live match limits.')
             seen=set();result=[]
             fields={'id','map','label','playerCount','playerCapacity','spectatorCount','spectatorCapacity','canSpectate'}
             for item in matches:
@@ -302,6 +323,14 @@ class CommunityClient:
                         or item['playerCount']>item['playerCapacity']):
                     raise CommunityError('Invalid live match list.')
                 seen.add(item['id']);result.append(dict(item))
+            if not limits.keys() <= seen:
+                raise CommunityError('Invalid live match limits.')
+            for item in result:
+                if item['id'] in limits:
+                    try:
+                        item['matchLimits'] = validated_match_limits(limits[item['id']])
+                    except ValueError as exc:
+                        raise CommunityError(str(exc)) from exc
             # _request's existing64KiB wire bound limits the whole projection.
             return result
 
