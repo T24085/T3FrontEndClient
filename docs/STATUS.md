@@ -13,6 +13,60 @@ without ranked support continues to expose its existing launcher views.
 The retained client modules support the same Windows and native Ubuntu
 launch paths. Full native ranked play still requires a 14-player test.
 
+# Authored mission boundary warnings
+
+The connected client reads opt-in warning markers and the local sound
+actor from the cooked map. Crossing the boundary shows a HUD message
+and plays the map's cue for the controlling player. The warning service
+clears its own label on reentry, death or travel. Source verification
+checks that the signed runtime embeds the same code as the offline
+preview. Retail runtime HUD and audio qualification remains open.
+
+The same HUD service displays an explicit host notification for a
+boundary-related flag drop or return, including on a map with only a
+flag boundary. The client ignores notifications for another controller
+and clears its label after four seconds, on death or on travel.
+
+The flag carrier receives a private HUD warning while the host's
+out-of-bounds return timer runs. It clears on reentry, flag loss,
+death or travel.
+
+Maps can target the general HUD warning and sound at characters on foot
+or occupied vehicles. The filtered cue uses a separate marker from the
+original all-player warning. The signed Lua matches the shared module,
+including its exclusion of spectator pawns and its handling of mount
+and dismount. Native vehicle qualification remains open.
+
+# Filtered mission perimeter collision
+
+The client reapplies an authored map's native Pawn and Vehicle collision
+responses once in each remote world. The shared Direct Host module scopes
+changes to marked perimeter actors with valid native components.
+The desktop, dynamic and Windows release builders include the module.
+Cooked multiplayer qualification remains open.
+
+# Generator-linked interior lighting in portable drafts
+
+The client reads optional lighting links from the verified map descriptor.
+It matches replicated native generators by team and approved placement,
+then switches a room's baked material slots when its circuit loses or
+regains power. A Lua fixture covers same-team circuit isolation, multiple
+generators on one circuit, incomplete replication, and duplicate generator
+references after warmup. Two headless Windows clients read the red room's
+material value through normal, alarm, and restored states. Both kept the
+blue room normal. The isolated host fixture used a 40-second auto-revive.
+The test confirmed material values on a cooked draft.
+
+# Partial radar binding after join
+
+The client refreshes a partially populated radar canvas once both teams'
+sensors have replicated. This also covers the usual one-sensor-per-team
+layout. A regression fixture pre-populates a single radar, delivers the late
+sensor, and checks that the native binder runs once and keeps both entries.
+A local native join on a cooked map draft with powered shields verified a
+normal zero-to-two bind and a spawned player with client `34d0a57`.
+The fixture covers the partial canvas. Native reconnect recovery remains open.
+
 # Community server browser
 
 A Direct package with a signed seed opens a directory browser with sortable

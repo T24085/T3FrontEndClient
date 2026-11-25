@@ -76,8 +76,10 @@ local function loaded(path)
 end
 local function FName(text) return {ToString=function() return text end} end
 local function noop() end
+local configure_perimeter = noop
 local configure_geometry, configure_community_lighting, configure_stock_clouds = noop, noop, noop
 local configure_weather, configure_base_lighting, configure_water = noop, noop, noop
+local configure_draft_interior_lighting = noop
 local spectatorRuntime = {tick=noop}
 local sys = {IsStandalone=function() return true end}
 ''' + match + '\n' + sound + '\n' + tick + '''

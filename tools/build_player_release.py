@@ -17,8 +17,9 @@ SOURCE_MEMBERS={name:name for name in (
  'lua/client.lua','lua/spectator_client.lua','lua/spectator_materials.lua')}
 SOURCE_MEMBERS['client.py']='client_entry.py'
 NEW_SOURCE_MEMBERS={'map_sync.py','map_sync_contract.py','starter_update.py','starter_update_signing.py',
-                    'lua/weather.lua','lua/damnation_water.lua'}
+                    'lua/weather.lua','lua/damnation_water.lua','lua/mission_perimeter_collision.lua'}
 SOURCE_MEMBERS.update({name:name for name in NEW_SOURCE_MEMBERS})
+SOURCE_MEMBERS['lua/mission_perimeter_collision.lua']='runtime-fixes/mission_perimeter_collision.lua'
 
 def encoded(value):return (json.dumps(value,indent=2)+'\n').encode()
 def sha(raw):return hashlib.sha256(raw).hexdigest()

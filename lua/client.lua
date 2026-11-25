@@ -187,6 +187,173 @@ local configure_base_lighting=(function()
  end
 end)()
 local configure_water=assert(loadfile(@@DAMNATION_WATER@@))()({valid=valid,report=report,descriptors=mapDefinitions})
+local configure_draft_interior_lighting=(function()
+ local current
+ local generatorClass='BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_Generator.BP_Objective_Generator_C'
+ -- Native placement can move a reviewed marker horizontally. Never choose
+ -- a circuit from an ambiguous or incompletely replicated registry.
+ local horizontal,vertical=425,650
+ local function same(a,b)
+  return valid(a) and valid(b) and a:GetAddress()==b:GetAddress()
+ end
+ local function position(value)
+  return type(value)=='table' and #value==3 and math.abs(value[1])<=2e6
+   and math.abs(value[2])<=2e6 and math.abs(value[3])<=2e6
+ end
+ local function prepare(descriptor)
+  local source=descriptor.interior_power
+  assert(type(source.interiors)=='table' and #source.interiors>=1 and #source.interiors<=128
+         and type(source.groups)=='table' and type(source.entries)=='table' and #source.entries<=60,
+         'draft_interior_lighting_contract')
+  local providers,counts,rooms,total={}, {}, {}, 0
+  for _,entry in ipairs(source.entries) do
+   if entry.role=='generator' then
+    local id=entry.power_group
+    local group=source.groups[id]
+    assert(type(id)=='string' and id:match('^T2Group[1-9]%d*$') and group and group.mode=='generators'
+           and (entry.team==1 or entry.team==2) and group.team==entry.team
+           and position(entry.anchor_position_cm),'draft_interior_lighting_generator')
+    providers[#providers+1]={team=entry.team,group=id,point=entry.anchor_position_cm}
+    counts[id]=(counts[id] or 0)+1
+   end
+  end
+  for _,room in ipairs(source.interiors) do
+   assert(type(room.actor)=='string' and room.actor:match('^[%w_]+$') and #room.actor<=128 and not rooms[room.actor]
+          and type(room.asset)=='string' and room.asset:match('^/Game/Community/[%w_/]+%.[%w_]+$')
+          and counts[room.power_group] and type(room.materials)=='table' and #room.materials>0,
+          'draft_interior_lighting_room')
+   local seen={}
+   for _,row in ipairs(room.materials) do
+    assert(math.type(row.slot)=='integer' and row.slot>=0 and row.slot<=1023 and not seen[row.slot]
+           and type(row.asset)=='string'
+           and row.asset:match('^/Game/Community/T2ModelTextures/(M_T2Baked_%x+)%.%1$'),
+           'draft_interior_lighting_material')
+    seen[row.slot]=true
+    total=total+1
+    assert(total<=256,'draft_interior_lighting_slot_limit')
+   end
+   rooms[room.actor]=room
+  end
+  return {providers=providers,counts=counts,rooms=rooms,powered={}}
+ end
+ local function read_power(gs,world,state)
+  local live=gs.r_Generators
+  local count=live and live:GetArrayNum() or 0
+  if count<#state.providers or count>128 then return end
+  local counts,powered,seen={},{},{}
+  for index=1,count do
+   local weak=live[index]
+   local generator=weak and weak:Get()
+   if not valid(generator) or not same(generator:GetWorld(),world)
+      or generator:GetClass():GetFullName()~=generatorClass then return end
+   local id=generator:GetAddress()
+   -- The original client can append a second set of references after warmup.
+   -- Count each native actor once, then require the authored count per circuit.
+   if not seen[id] then
+    seen[id]=true
+    local place=generator:K2_GetActorLocation()
+    local group
+    for _,row in ipairs(state.providers) do
+     local dx,dy=place.X-row.point[1],place.Y-row.point[2]
+     if row.team==generator.r_TeamId and dx*dx+dy*dy<=horizontal*horizontal
+        and math.abs(place.Z-row.point[3])<=vertical then
+      if group and group~=row.group then return end
+      group=row.group
+     end
+    end
+    if not group then return end
+    local online=generator:IsOnline()
+    if type(online)~='boolean' then return end
+    counts[group]=(counts[group] or 0)+1
+    powered[group]=powered[group] or online
+   end
+  end
+  for group,count in pairs(state.counts) do if counts[group]~=count then return end end
+  return powered
+ end
+ local function bind_rooms(descriptor,world,state)
+  local prefix=descriptor.world..'PersistentLevel.'
+  local found={}
+  for _,actor in ipairs(FindAllOf('StaticMeshActor') or {}) do
+   if valid(actor) and same(actor:GetWorld(),world) then
+    local name=actor:GetFullName()
+    local start=name:find(prefix,1,true)
+    if start then
+     local key=name:sub(start+#prefix)
+     if state.rooms[key] then
+      assert(not found[key],'draft_interior_lighting_duplicate_actor')
+      found[key]=actor
+     end
+    end
+   end
+  end
+  for key in pairs(state.rooms) do if not found[key] then return false end end
+  local library=loaded('/Script/Engine.Default__KismetMaterialLibrary',
+                       'KismetMaterialLibrary /Script/Engine.Default__KismetMaterialLibrary')
+  local bindings={}
+  for key,room in pairs(state.rooms) do
+   local component=found[key].StaticMeshComponent
+   assert(valid(component) and same(component:GetOwner(),found[key]) and valid(component.StaticMesh)
+          and component.StaticMesh:GetFullName()=='StaticMesh '..room.asset,'draft_interior_lighting_mesh_identity')
+   for _,row in ipairs(room.materials) do
+    local parent=component:GetMaterial(row.slot)
+    assert(valid(parent) and parent:GetFullName()=='Material '..row.asset,'draft_interior_lighting_material_identity')
+    local clone=library:CreateDynamicMaterialInstance(component,parent,FName('None'),0)
+    assert(valid(clone),'draft_interior_lighting_material_instance')
+    bindings[#bindings+1]={component=component,index=row.slot,clone=clone,group=room.power_group}
+   end
+  end
+  for _,row in ipairs(bindings) do row.component:SetMaterial(row.index,row.clone) end
+  state.assets=bindings
+  return true
+ end
+ return function(gs)
+  local world=gs:GetWorld()
+  if not valid(world) then return end
+  if not current or not same(current.world,world) or not same(current.gs,gs) then
+   current={world=world,gs=gs}
+   local prefix=gs:GetFullName():match(' (/Game/.+:)PersistentLevel%.')
+   for _,descriptor in pairs(mapDefinitions) do
+    if descriptor.world==prefix and descriptor.interior_power then current.descriptor=descriptor;break end
+   end
+  end
+  local descriptor=current.descriptor
+  if not descriptor or current.failed then return end
+  local ok,why=pcall(function()
+   if not current.state then current.state=prepare(descriptor) end
+   local state=current.state
+   local power=read_power(gs,world,state)
+   if not power then return end
+   if not state.assets then
+    local now=os.time()
+    if current.lastScan==now then return end
+    current.lastScan=now
+    if not bind_rooms(descriptor,world,state) then return end
+   end
+   local changed={}
+   local parameter=FName('T2 Alarm Blend')
+   for _,row in ipairs(state.assets) do
+    local powered=power[row.group]
+    if state.powered[row.group]~=powered then
+     assert(valid(row.component) and same(row.component:GetMaterial(row.index),row.clone),
+            'draft_interior_lighting_material_replaced')
+     local value=powered and 0 or 1
+     row.clone:SetScalarParameterValue(parameter,value)
+     assert(row.clone:K2_GetScalarParameterValue(parameter)==value,'draft_interior_lighting_readback')
+     changed[row.group]=powered
+    end
+   end
+   for group,value in pairs(changed) do
+    state.powered[group]=value
+    report('DRAFT_INTERIOR_LIGHTING|group='..group..'|alarm='..tostring(not value))
+   end
+  end)
+  if not ok then
+   current.failed=true
+   report('DRAFT_INTERIOR_LIGHTING_UNAVAILABLE|'..tostring(why):sub(1,300))
+  end
+ end
+end)()
 local allowedMaps={}
 for name,row in pairs(mapDefinitions)do
  assert(name==row.name,"map_descriptor_identity_disagreement");allowedMaps[#allowedMaps+1]=row
@@ -1248,6 +1415,334 @@ end
 
 local clientWorld=nil
 local lastJoin=0
+-- Embedded in the signed client script so an update needs no new package path.
+local warn_mission_boundary=(function()
+-- BEGIN SHARED mission_boundary_warning.lua
+-- Local presentation for an authored boundary. No match state is changed.
+return function(env)
+ local valid,scope,report=assert(env.valid),assert(env.scope),assert(env.report)
+ local now=env.now or os.time
+ local state
+ local prefix='T3MissionWarning'
+ local max_vertices=32
+ local out_of_bounds='OUT OF BOUNDS  ·  RETURN TO THE PLAY AREA'
+ local flag_grace='RETURN TO THE FLAG AREA  ·  FLAG RETURN TIMER ACTIVE'
+ local flag_messages={
+  t3flagboundarydrop='FLAG DROPPED AT THE MISSION BOUNDARY',
+  t3flagboundaryreturn='FLAG RETURNED HOME  ·  OUT OF BOUNDS',
+ }
+ local hook_attempted=false
+ local function same(a,b)
+  return a~=nil and b~=nil and valid(a) and valid(b)
+     and a:GetAddress()==b:GetAddress() and a:GetFullName()==b:GetFullName()
+ end
+ local function tagged(actor,name)return actor:ActorHasTag(FName(prefix..name))end
+ local function signature(path,fields)
+  local fn=StaticFindObject(path)
+  assert(valid(fn) and fn:GetFullName()=='Function '..path,'boundary_warning_function_required='..path)
+  local count=0
+  fn:ForEachProperty(function(prop)
+   count=count+1
+   local field=assert(fields[count],'boundary_warning_signature_changed='..path)
+   assert(prop:GetFullName()==field[2]..' '..path..':'..field[1] and prop:GetOffset_Internal()==field[3],
+          'boundary_warning_signature_changed='..path)
+  end)
+  assert(count==#fields,'boundary_warning_signature_changed='..path)
+ end
+ local function numbered(actor,prefix,min)
+  local number
+  for i=min,max_vertices do
+   if tagged(actor,prefix..i)then
+    assert(not number,'ambiguous_boundary_warning_marker')
+    number=i
+   end
+  end
+  return assert(number,'missing_boundary_warning_marker')
+ end
+ local function point(actor)
+  local p=actor:K2_GetActorLocation()
+  for _,axis in ipairs({'X','Y','Z'})do
+   assert(type(p[axis])=='number' and math.abs(p[axis])<=1e7,'invalid_boundary_warning_location')
+  end
+  return {X=p.X,Y=p.Y,Z=p.Z}
+ end
+ local function cross(ax,ay,bx,by)return ax*by-ay*bx end
+ local function next_index(i,vertices)return i%#vertices+1 end
+ local function contains(zone,p)
+  if (zone.floor and p.Z<zone.floor) or (zone.ceiling and p.Z>zone.ceiling) then return false end
+  local vertices,inside=zone.vertices,false
+  for i,a in ipairs(vertices)do
+   local b=vertices[next_index(i,vertices)]
+   local side=cross(b.X-a.X,b.Y-a.Y,p.X-a.X,p.Y-a.Y)
+   if side==0 and p.X>=math.min(a.X,b.X) and p.X<=math.max(a.X,b.X)
+      and p.Y>=math.min(a.Y,b.Y) and p.Y<=math.max(a.Y,b.Y) then return true end
+   if (a.Y>p.Y)~=(b.Y>p.Y) and (side>0)==(b.Y>a.Y) then inside=not inside end
+  end
+  return inside
+ end
+ local function crossed_notch(zone,a,b)
+  -- The endpoints may both be in bounds on a fast pass through a concave notch.
+  local dx,dy=b.X-a.X,b.Y-a.Y
+  if dx==0 and dy==0 then return false end
+  local vertices,cuts=zone.vertices,{0,1}
+  for i,c in ipairs(vertices) do
+   local d=vertices[next_index(i,vertices)]
+   local ex,ey=d.X-c.X,d.Y-c.Y
+   local denominator=cross(dx,dy,ex,ey)
+   if denominator~=0 then
+    local t=cross(c.X-a.X,c.Y-a.Y,ex,ey)/denominator
+    local u=cross(c.X-a.X,c.Y-a.Y,dx,dy)/denominator
+    if t>0 and t<1 and u>=0 and u<=1 then cuts[#cuts+1]=t end
+   end
+  end
+  table.sort(cuts)
+  for i=2,#cuts do
+   if cuts[i]-cuts[i-1]>1e-7 then
+    local t=(cuts[i-1]+cuts[i])/2
+    if not contains(zone,{X=a.X+t*dx,Y=a.Y+t*dy,Z=a.Z+t*(b.Z-a.Z)}) then return true end
+   end
+  end
+  return false
+ end
+ local function read_zone(world)
+  local cue
+  for _,actor in ipairs(FindAllOf('AmbientSound') or {})do
+   if valid(actor) and same(actor:GetWorld(),world) and (tagged(actor,'Cue') or tagged(actor,'FilteredCue'))then
+    assert(not cue,'duplicate_boundary_warning_cue')
+    cue=actor
+   end
+  end
+  if not cue then return end
+  local component=cue.AudioComponent
+  assert(valid(component) and same(component:GetOwner(),cue) and valid(component.Sound),
+         'boundary_warning_cue_required')
+  local size=numbered(cue,'Count',3)
+  local zone={vertices={},cue=cue,audio=component}
+  local filtered=tagged(cue,'FilteredCue')
+  local foot,vehicle=tagged(cue,'WarnFoot'),tagged(cue,'WarnVehicle')
+  assert(filtered~=tagged(cue,'Cue') and (filtered and foot~=vehicle or not filtered and not foot and not vehicle),
+         'invalid_boundary_warning_audience')
+  if filtered then
+   signature('/Script/Engine.Actor:GetAttachParentActor',{{'ReturnValue','ObjectProperty',0}})
+   signature('/Script/Engine.PrimitiveComponent:GetCollisionObjectType',{{'ReturnValue','ByteProperty',0}})
+   zone.audience=foot and 'foot' or 'vehicle'
+   zone.character=StaticFindObject('/Script/Valhalla.ValCharacter')
+   zone.pawn=StaticFindObject('/Script/Engine.Pawn')
+   zone.primitive=StaticFindObject('/Script/Engine.PrimitiveComponent')
+   zone.wheeled=StaticFindObject('/Script/ChaosVehicles.WheeledVehiclePawn')
+   assert(valid(zone.character) and valid(zone.pawn) and valid(zone.primitive),
+          'boundary_warning_audience_types_required')
+  end
+  for _,actor in ipairs(FindAllOf('TargetPoint') or {})do
+   if valid(actor) and same(actor:GetWorld(),world) and tagged(actor,'')then
+    if tagged(actor,'Floor') or tagged(actor,'Ceiling')then
+     local cap=tagged(actor,'Floor') and 'floor' or 'ceiling'
+     assert(not zone[cap],'duplicate_boundary_warning_cap')
+     zone[cap]=point(actor).Z
+    else
+     local i=numbered(actor,'Vertex',1)
+     assert(i<=size and not zone.vertices[i],'duplicate_boundary_warning_vertex')
+     zone.vertices[i]=point(actor)
+    end
+   end
+  end
+  for i=1,size do assert(zone.vertices[i],'missing_boundary_warning_vertex') end
+  assert(tagged(cue,'Floor')==(zone.floor~=nil) and tagged(cue,'Ceiling')==(zone.ceiling~=nil),
+         'missing_boundary_warning_cap')
+  assert(not zone.floor or not zone.ceiling or zone.floor<zone.ceiling,'invalid_boundary_warning_height')
+  return zone
+ end
+ local function is_vehicle(zone,world,actor)
+  if not valid(actor) or not same(actor:GetWorld(),world) or not actor:IsA(zone.pawn) then return false end
+  if valid(zone.wheeled) and actor:IsA(zone.wheeled) then return true end
+  local root=actor.RootComponent
+  return valid(root) and root:IsA(zone.primitive) and same(root:GetOwner(),actor) and root:GetCollisionObjectType()==6
+ end
+ local function warning_actor(zone,world,pawn)
+  if not zone.audience then return pawn end
+  if pawn:IsA(zone.character) then
+   local parent=pawn:GetAttachParentActor()
+   if is_vehicle(zone,world,parent) then
+    if zone.audience=='vehicle' then return parent end
+   elseif zone.audience=='foot' then return pawn end
+  elseif zone.audience=='vehicle' and is_vehicle(zone,world,pawn) then return pawn end
+ end
+ local function detach(row)
+  if row and row.label and valid(row.label)then row.label:RemoveFromParent()end
+  if row then row.label,row.text=nil,nil end
+ end
+ local function canvas(world)
+  local cls=StaticFindObject('/Script/UMG.CanvasPanel')
+  if not valid(cls)then return end
+  for _,overlay in ipairs(FindAllOf('UI_Game_Overlays_C') or {})do
+   if valid(overlay) and overlay:GetFullName():find('/Engine/Transient.',1,true)
+      and same(overlay:GetWorld(),world) and valid(overlay.Flags)then
+    local parent=overlay.Flags:GetParent()
+    for _=1,12 do
+     if not valid(parent)then break end
+     if parent:IsA(cls)then return parent,overlay end
+     parent=parent:GetParent()
+    end
+   end
+  end
+ end
+ local function show(row,text)
+  local panel,overlay=canvas(row.world)
+  if not panel then detach(row);return end
+  if valid(row.label) and same(row.label:GetParent(),panel)then
+   if row.text~=text then row.label:SetText(FText(text));row.text=text end
+   return
+  end
+  detach(row)
+  local cls=StaticFindObject('/Script/UMG.TextBlock')
+  assert(valid(cls),'boundary_warning_text_block_required')
+  local label=StaticConstructObject(cls,overlay)
+  assert(valid(label),'boundary_warning_create_failed')
+  row.label,row.text=label,text
+  label:SetText(FText(text))
+  label:SetColorAndOpacity({SpecifiedColor={R=1,G=0.65,B=0.19,A=1},ColorUseRule=0})
+  label:SetShadowColorAndOpacity({R=0,G=0,B=0,A=0.95})
+  label:SetShadowOffset({X=2,Y=2})
+  label:SetVisibility(4) -- SelfHitTestInvisible
+  local slot=panel:AddChildToCanvas(label)
+  assert(valid(slot),'boundary_warning_canvas_slot_required')
+  -- Keep the boundary text below the native match-start announcement.
+  local anchor={X=0.5,Y=0.36}
+  slot:SetAnchors({Minimum=anchor,Maximum=anchor})
+  slot:SetAlignment({X=0.5,Y=0.5})
+  slot:SetAutoSize(true)
+  slot:SetPosition({X=0,Y=0})
+  slot:SetZOrder(50)
+ end
+ local function tick(row)
+  local pc,ps,zone=row.pc,row.ps,row.zone
+  if not valid(pc) or not valid(ps) or not pc:IsLocalPlayerController() or not same(pc.PlayerState,ps)
+     or not same(pc:GetWorld(),row.world)then
+   detach(row);return false
+  end
+  local pawn=pc.Pawn
+  if not valid(pawn) or not same(pawn:GetWorld(),row.world) or ps.r_bDead==true then
+   row.pawn,row.warning_actor,row.last,row.hold,row.notice,row.grace=nil,nil,nil,nil,nil,nil
+   detach(row);return true
+  end
+  if not same(row.pawn,pawn)then
+   row.pawn,row.warning_actor,row.last,row.hold=pawn,nil,nil,nil
+   detach(row)
+  end
+  local warning
+  if zone and valid(zone.cue) and same(zone.cue:GetWorld(),row.world)then
+   local sampled=warning_actor(zone,row.world,pawn)
+   if not same(row.warning_actor,sampled) then
+    row.warning_actor,row.last,row.hold=sampled,nil,nil
+   end
+   if sampled then
+    local at=point(sampled)
+    local inside=contains(zone,at)
+    if row.last and row.inside and (not inside or crossed_notch(zone,row.last,at))then
+     if inside then row.hold=now()+3 end
+     assert(valid(zone.audio) and same(zone.audio:GetOwner(),zone.cue),'boundary_warning_cue_changed')
+     zone.audio:Play(0)
+     report('MISSION_BOUNDARY_WARNING|crossed=true')
+    end
+    row.last,row.inside=at,inside
+    if not inside or row.hold and now()<row.hold then warning=out_of_bounds end
+   end
+  end
+  if row.grace then warning=flag_grace end
+  local notice=row.notice
+  if notice and now()<notice.expires then warning=notice.text else row.notice=nil end
+  if warning then show(row,warning) else detach(row)end
+  return true
+ end
+ local function hook_flag_notices(world)
+  local found=false
+  for _,marker in ipairs(FindAllOf('TargetPoint') or {})do
+   if valid(marker) and same(marker:GetWorld(),world)
+      and (marker:ActorHasTag(FName('T3MissionFlagMin')) or marker:ActorHasTag(FName('T3MissionFlagPolygon')))then
+    found=true;break
+   end
+  end
+  if not found then return false end
+  if not hook_attempted then
+   hook_attempted=true
+   local installed,why=pcall(function()
+    local path='/Script/Engine.PlayerController:ClientMessage'
+    signature(path,{{'S','StrProperty',0},{'Type','NameProperty',16},{'MsgLifeTime','FloatProperty',24}})
+    local pre,post=RegisterHook(path,function()end,function(context,_,kind)
+     local row=state
+     if not row or not row.flag_notices then return end
+     local ok,problem=pcall(function()
+      scope()
+      local pc=context:get()
+      if not same(pc,row.pc) or not same(pc:GetWorld(),row.world) or not pc:IsLocalPlayerController()
+         or not same(pc.PlayerState,row.ps) then return end
+      local tag=kind:get():ToString():lower()
+      local text=flag_messages[tag]
+      if text then
+       row.grace=nil
+       row.notice={text=text,expires=now()+4}
+       report('MISSION_FLAG_LIMIT_NOTICE_RECEIVED')
+      elseif tag=='t3flagboundarygrace' then
+       row.grace=true
+       row.notice=nil
+       report('MISSION_FLAG_LIMIT_GRACE_NOTICE_RECEIVED')
+      elseif tag=='t3flagboundarygracecleared' then
+       row.grace=nil
+       report('MISSION_FLAG_LIMIT_GRACE_NOTICE_CLEARED')
+      end
+     end)
+     if not ok then report('MISSION_FLAG_LIMIT_HUD_UNAVAILABLE|'..tostring(problem):sub(1,260)) end
+    end)
+    assert(type(pre)=='number' and type(post)=='number','boundary_flag_notice_hook_required')
+   end)
+   if not installed then report('MISSION_FLAG_LIMIT_HUD_UNAVAILABLE|'..tostring(why):sub(1,260)) end
+  end
+  return true
+ end
+ local function schedule(row)
+  local handle=ExecuteInGameThreadWithDelay(100,function()
+   if state~=row then return end
+   local ok,why=pcall(function()
+    scope()
+    if tick(row)then schedule(row)end
+   end)
+   if not ok then detach(row);report('MISSION_BOUNDARY_WARNING_UNAVAILABLE|'..tostring(why):sub(1,300))end
+  end)
+  assert(type(handle)=='number','boundary_warning_timer_required')
+ end
+ return function(pc,ps)
+  if not valid(pc) or not valid(ps) or not pc:IsLocalPlayerController() or not same(pc.PlayerState,ps)then return end
+  local world=pc:GetWorld()
+  if not valid(world)then return end
+  if state and same(state.pc,pc) and same(state.ps,ps) and same(state.world,world)then return end
+  detach(state)
+  state={pc=pc,ps=ps,world=world}
+  local ok,why=pcall(function()
+   scope()
+   state.flag_notices=hook_flag_notices(world)
+   local read,zone=pcall(read_zone,world)
+   if read then state.zone=zone
+   else report('MISSION_BOUNDARY_WARNING_UNAVAILABLE|'..tostring(zone):sub(1,300))end
+   if state.zone or state.flag_notices then schedule(state)end
+   if state.zone then report('MISSION_BOUNDARY_WARNING_READY')end
+  end)
+  if not ok then report('MISSION_BOUNDARY_WARNING_UNAVAILABLE|'..tostring(why):sub(1,300))end
+ end
+end
+-- END SHARED mission_boundary_warning.lua
+end)()({valid=valid,scope=scope,report=report})
+local configure_perimeter=(function()
+ local apply=assert(loadfile(@@MISSION_PERIMETER_COLLISION@@))()({valid=valid,scope=scope,report=report})
+ local previousAddress,previousName
+ return function(gs)
+  local world=gs:GetWorld()
+  if not valid(world)then return end
+  local address,name=world:GetAddress(),world:GetFullName()
+  if address~=previousAddress or name~=previousName then
+   apply(gs);previousAddress,previousName=address,name
+  end
+ end
+end)()
 local function community_radar_group(descriptor)
  local package=descriptor and descriptor.package
  return type(package)=='string' and package:match('^/Game/Maps/Community/([^/]+)/') or nil
@@ -1542,7 +2037,7 @@ return function(env)
   if teams[1]~=perTeam or teams[2]~=perTeam then return false end
   -- Native initialization can run while only some replicated sensors exist.
   -- Rebuild that partial sensor layer once, after every team ID has arrived.
-  if perTeam>1 and before>0 and before<expected and not record.rebuilt_partial_radars then
+  if before>0 and before<expected and not record.rebuilt_partial_radars then
    local radarClass=StaticFindObject('/Game/UI/Components/Game/UI_Game_Minimap_Radar.UI_Game_Minimap_Radar_C')
    if not valid(radarClass) then return false end
    for index=0,before-1 do
@@ -2283,6 +2778,7 @@ local function client_tick(sys)
         return
     end
     local gs=state();if not gs or gs:HasAuthority() then return end
+    configure_perimeter(gs)
     configure_geometry(gs)
     configure_community_lighting(gs)
     configure_stock_clouds(gs,sys)
@@ -2296,6 +2792,7 @@ local function client_tick(sys)
     if not valid(pc.PlayerState) then return end
     configure_weather(gs,pc)
     configure_base_lighting(gs)
+    configure_draft_interior_lighting(gs)
     configure_water(gs,pc)
     local ps=pc.PlayerState
     if SPECTATOR_ROLE=="spectator" then
@@ -2303,6 +2800,7 @@ local function client_tick(sys)
         spectatorRuntime.tick(pc,ps,gs);return
     end
     assert(SPECTATOR_ROLE=="player","unknown_client_role")
+    warn_mission_boundary(pc,ps)
     request_public_team_departure(pc,gs)
     if nativeSpectatorPresentation~=false and (nativeSpectatorPresentation or ps.r_bDead==true) then
         local ok,why=pcall(function()

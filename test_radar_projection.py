@@ -395,6 +395,20 @@ class RadarProjectionTest(unittest.TestCase):
         self.assertEqual((f.requests, f.updates), (1, 3))
         self.assertEqual((f.widget.MapTexture.visibility, f.widget.EmptyTexture.visibility), (4, 1))
 
+    def test_one_radar_per_team_repairs_a_partially_prebound_canvas(self):
+        f = self.fixture(*MAPS[-1], radar_count=1)
+        f.add_radars()
+        late_radar = f.radars[2]
+        f.radars[2] = None
+        f.widget.RadarSensors.children = 1
+        self.assertTrue(f.tick())
+        self.assertEqual((f.widget.RadarSensors.children, f.binds), (1, None))
+
+        f.radars[2] = late_radar
+        self.assertTrue(f.tick())
+        self.assertTrue(f.tick())
+        self.assertEqual((f.widget.RadarSensors.children, f.binds), (2, 1))
+
     def test_two_radars_per_team_bind_once_after_both_pairs_arrive(self):
         f = self.fixture(*MAPS[-1], radar_count=2)
         f.add_radars()

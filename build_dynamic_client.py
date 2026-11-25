@@ -97,6 +97,7 @@ def build_candidate(source, output):
     copy_spectator_runtime(manifest, output)
     for name in ('lua/client.lua', 'lua/weather.lua', 'lua/damnation_water.lua'):
         shutil.copyfile(ROOT/name, output/name)
+    shutil.copyfile(ROOT/'runtime-fixes/mission_perimeter_collision.lua', output/'lua/mission_perimeter_collision.lua')
     shutil.copyfile(ROOT / 'dynamic_destination.py', output / 'lib/dynamic_destination.py')
     for name in CANONICAL_HELPERS:
         shutil.copyfile(ROOT / name, output / name)

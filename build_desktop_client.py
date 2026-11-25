@@ -162,6 +162,7 @@ def main():
     copy_spectator_runtime(manifest, OUTPUT)
     for name in ('lua/client.lua', 'lua/weather.lua', 'lua/damnation_water.lua'):
         shutil.copyfile(ROOT/name, OUTPUT/name)
+    shutil.copyfile(ROOT/'runtime-fixes/mission_perimeter_collision.lua', OUTPUT/'lua/mission_perimeter_collision.lua')
     shutil.copyfile(ROOT/'player_profile.py', OUTPUT/'player_profile.py')
     shutil.copyfile(PYTHON/'pythonw.exe',OUTPUT/'python/pythonw.exe')
     shutil.copytree(PYTHON/'Lib/tkinter',OUTPUT/'python/tkinter',ignore=shutil.ignore_patterns('__pycache__','*.pyc','test'))
