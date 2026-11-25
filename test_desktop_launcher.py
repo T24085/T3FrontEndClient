@@ -94,6 +94,23 @@ class DesktopTest(unittest.TestCase):
             app.render(lobby.room)
             self.assertEqual(app.rules_row.winfo_manager(), 'pack')
             self.assertFalse(app.fall_toggle.winfo_manager())
+            self.assertFalse(app.limits_row.winfo_manager())
+            app.caps['matchLimitsEnabled'] = True
+            app.render(lobby.room)
+            self.assertEqual(app.limits_row.winfo_manager(), 'pack')
+            self.assertEqual(app.score_limit.get(), 'Map default')
+            self.assertEqual(str(app.score_limit.cget('state')), 'readonly')
+            app.score_limit.set('Unlimited')
+            app.match_minutes.set('21')
+            limits = {'scoreLimit': 0, 'matchMinutes': 21}
+            with patch.object(app, 'call_action') as call:
+                app.change_match_limits()
+                call.assert_called_once_with('rules', matchLimits=limits)
+            lobby.room['matchLimits'] = limits
+            app.render_live_matches([{'id': '1'*32, 'label': 'Katabatic', 'playerCount': 1,
+                                      'playerCapacity': 24, 'spectatorCount': 0,
+                                      'spectatorCapacity': 25, 'matchLimits': limits}])
+            self.assertEqual(app.live_list.item('1'*32, 'values')[-1], 'Unlimited / 21 min')
             app.caps['fallDamageEnabled'] = True
             lobby.room['rules']['fallDamage'] = True
             app.render(lobby.room)
@@ -127,6 +144,9 @@ class DesktopTest(unittest.TestCase):
             self.assertEqual(app.fall_toggle.cget('state'), 'disabled')
             self.assertEqual(app.bot_toggle.cget('state'), 'disabled')
             self.assertEqual(str(app.side_combo.cget('state')), 'disabled')
+            self.assertEqual(str(app.score_limit.cget('state')), 'disabled')
+            self.assertEqual(app.score_limit.get(), 'Unlimited')
+            self.assertEqual(app.match_minutes.get(), '21')
         finally:
             app.close()
             app.close_worker.join(2)

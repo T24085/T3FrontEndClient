@@ -13,7 +13,10 @@ from tkinter import ttk
 
 from community_game import CommunityGame
 from startup_paths import installation_options
-from community_transport import CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES, MAX_LOBBY_BOTS
+from community_transport import (
+    CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES,
+    DEFAULT_MATCH_LIMITS, MAX_LOBBY_BOTS, MAX_MATCH_MINUTES, MAX_SCORE_LIMIT,
+)
 from community_maps import BY_ID, options, read_options, LEGACY_MAPS
 from map_sync_contract import CATALOG_VERSION
 
@@ -211,6 +214,19 @@ class Desktop:
         self.capture_toggle = tk.Checkbutton(self.rules_row,text='Retail capture point',variable=self.retail_capture_point,
             command=lambda:self.call_action('rules',retailCapturePoint=self.retail_capture_point.get()),**check_style)
         self.capture_toggle.pack(side='left')
+        self.limits_row = tk.Frame(card, bg=PANEL)
+        self.label(self.limits_row, 'Score limit (caps)', 9, color=ACCENT, bg=PANEL).pack(side='left', padx=(0, 6))
+        self.score_limit = ttk.Combobox(self.limits_row,
+            values=('Map default', 'Unlimited', *(str(value) for value in range(1, MAX_SCORE_LIMIT + 1))),
+            width=12, state='disabled')
+        self.score_limit.pack(side='left', padx=(0, 16))
+        self.label(self.limits_row, 'Time limit (min)', 9, color=ACCENT, bg=PANEL).pack(side='left', padx=(0, 6))
+        self.match_minutes = ttk.Combobox(self.limits_row,
+            values=('Map default', *(str(value) for value in range(1, MAX_MATCH_MINUTES + 1))),
+            width=12, state='disabled')
+        self.match_minutes.pack(side='left')
+        for control in (self.score_limit, self.match_minutes):
+            control.bind('<<ComboboxSelected>>', self.change_match_limits)
         self.rosters = {}
         self.roster_players = {}
         roster_frame.columnconfigure((0, 1), weight=1, uniform='teams')
@@ -252,8 +268,8 @@ class Desktop:
         self.live_summary.pack(anchor='w',pady=(4,18))
         live_card=tk.Frame(self.live_panel,bg=PANEL,padx=18,pady=18)
         live_card.pack(fill='both',expand=True)
-        self.live_list=ttk.Treeview(live_card,columns=('match','map','players','spectators'),show='headings',height=10,selectmode='browse',style='Live.Treeview')
-        for key,title,width in (('match','Match',90),('map','Map',220),('players','Assigned players',115),('spectators','Spectator seats',115)):
+        self.live_list=ttk.Treeview(live_card,columns=('match','map','players','spectators','limits'),show='headings',height=10,selectmode='browse',style='Live.Treeview')
+        for key,title,width in (('match','Match',90),('map','Map',180),('players','Assigned players',115),('spectators','Spectator seats',115),('limits','Score / time',135)):
             self.live_list.heading(key,text=title);self.live_list.column(key,width=width,minwidth=70,stretch=True)
         live_scroll=ttk.Scrollbar(live_card,orient='vertical',command=self.live_list.yview)
         self.live_list.configure(yscrollcommand=live_scroll.set)
@@ -648,6 +664,7 @@ class Desktop:
     def render_match_rules(self, room, editable):
         if self.caps.get('matchRulesEnabled') is not True:
             self.rules_row.pack_forget()
+            self.limits_row.pack_forget()
             return
         if not self.rules_row.winfo_manager():
             self.rules_row.pack(fill='x',before=self.roster_frame,pady=(6,0))
@@ -670,6 +687,28 @@ class Desktop:
             control.configure(state='normal' if editable else 'disabled')
         self.bot_spinner.configure(state='readonly' if editable and count else 'disabled')
         self.capture_toggle.configure(state='normal' if editable and definition and definition.native else 'disabled')
+        self.render_match_limits(room, editable)
+
+    def render_match_limits(self, room, editable):
+        if room is None or self.caps.get('matchLimitsEnabled') is not True:
+            self.limits_row.pack_forget()
+            return
+        if not self.limits_row.winfo_manager():
+            self.limits_row.pack(fill='x', before=self.roster_frame, pady=(4, 0))
+        limits = room.get('matchLimits', DEFAULT_MATCH_LIMITS)
+        score, minutes = limits['scoreLimit'], limits['matchMinutes']
+        score_label = 'Unlimited' if score == 0 else str(score) if score is not None else 'Map default'
+        self.score_limit.set(score_label)
+        self.match_minutes.set(str(minutes) if minutes is not None else 'Map default')
+        for control in (self.score_limit, self.match_minutes):
+            control.configure(state='readonly' if editable else 'disabled')
+
+    def change_match_limits(self, _event=None):
+        score, minutes = self.score_limit.get(), self.match_minutes.get()
+        self.call_action('rules', matchLimits={
+            'scoreLimit': None if score == 'Map default' else 0 if score == 'Unlimited' else int(score),
+            'matchMinutes': None if minutes == 'Map default' else int(minutes),
+        })
 
     def change_bots(self):
         self.call_action('rules',botCount=int(self.bot_count.get()) if self.allow_bots.get() else 0)
@@ -738,10 +777,15 @@ class Desktop:
         children=self.live_list.get_children()
         if children:self.live_list.delete(*children)
         for item in matches:
+            limits = item.get('matchLimits', DEFAULT_MATCH_LIMITS)
+            score, minutes = limits['scoreLimit'], limits['matchMinutes']
+            score_label = 'Unlimited' if score == 0 else f'{score} caps' if score is not None else 'Default score'
+            time_label = f'{minutes} min' if minutes is not None else 'Default time'
+            limit_label = 'Map defaults' if limits == DEFAULT_MATCH_LIMITS else f'{score_label} / {time_label}'
             self.live_list.insert('',tk.END,iid=item['id'],values=(
                 'Match '+item['id'][:6].upper(),item['label'],
                 str(item['playerCount'])+' / '+str(item['playerCapacity']),
-                str(item['spectatorCount'])+' / '+str(item['spectatorCapacity'])))
+                str(item['spectatorCount'])+' / '+str(item['spectatorCapacity']), limit_label))
         if previous in self.live_targets:self.live_list.selection_set(previous)
         self.live_list.yview_moveto(scroll)
         if self.watch_id is None:
