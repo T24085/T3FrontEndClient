@@ -29,6 +29,23 @@ STOCK_CLOUD_MAPS = frozenset({
 # The signed Direct release can refresh weather independently of the archive.
 # A full archive can also supply the runtime and map descriptors on its own.
 _SIGNED_WEATHER_MODULE = None
+_SIGNED_PROJECTILE_INHERITANCE_MODULE = None
+
+
+def install_projectile_runtime(template, run, settings):
+    from community_transport import projectile_runtime_lua, projectile_settings_payload
+    runtime = _SIGNED_PROJECTILE_INHERITANCE_MODULE
+    if runtime is None:
+        runtime = (ROOT/'runtime-fixes/projectile_inheritance.lua').read_text(encoding='utf-8')
+    path = run/'projectile-inheritance.txt'
+    definition, tick = 'local configure_weather=', '    configure_weather(gs,pc)\n'
+    if template.count(definition) != 1 or template.count(tick) != 1:
+        raise ValueError('The client projectile runtime cannot bind this version of the client.')
+    with path.open('xb') as stream:
+        stream.write(projectile_settings_payload(settings))
+    return (template.replace(definition, projectile_runtime_lua(runtime, file=path.as_posix()) + definition)
+            .replace(tick, tick + '    applyProjectileInheritance(gs:GetWorld(),pc)\n'))
+
 
 def weather_runtime_path(root, run, package):
     if _SIGNED_WEATHER_MODULE is not None:
@@ -154,6 +171,7 @@ def main():
     parser.add_argument('--spectate', action='store_true')
     parser.add_argument('--public-session', action='store_true')
     parser.add_argument('--show-flag-indicators', action='store_true')
+    parser.add_argument('--projectile-inheritance', help=argparse.SUPPRESS)
     parser.add_argument('--match-id')
     parser.add_argument('--watch-id')
     parser.add_argument('--test-source', choices=ISOLATED_TEST_SOURCES, help=argparse.SUPPRESS)
@@ -164,6 +182,12 @@ def main():
     parser.add_argument('--headless', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--seconds', type=float, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    projectile_settings = {}
+    if args.projectile_inheritance is not None:
+        from community_transport import validated_projectile_settings
+        if args.spectate or args.prepare_only or args.check:
+            raise ValueError('Projectile settings require an admitted player match.')
+        projectile_settings = validated_projectile_settings(json.loads(args.projectile_inheritance))
     if args.public_session and (args.spectate or args.prepare_only or args.check or not args.expected_map):
         raise ValueError('Public CTF requires an admitted match and its verified map.')
     if args.spectate:
@@ -262,6 +286,8 @@ def main():
     selected_bootstrap = bootstrap_map(bootstrap_contract, bootstrap_id, definitions=definitions)
     template = bootstrap_runtime((ROOT / 'lua/client.lua').read_text(encoding='utf-8'), bootstrap_contract,
                                  bootstrap_id, definitions=definitions)
+    if projectile_settings:
+        template = install_projectile_runtime(template, run, projectile_settings)
     map_definitions = write_map_definitions(ROOT, run, definitions, definitions.get(args.expected_map),
                                             package, public=args.public_session,
                                             objectives=prepared.get('map_objectives'))

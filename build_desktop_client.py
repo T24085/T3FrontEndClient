@@ -159,6 +159,9 @@ def main():
     # The entry has one canonical producer; desktop wrapping must not revive a
     # stale generated CLI from its otherwise verified content source.
     shutil.copyfile(ROOT/'client_entry.py', OUTPUT/'client.py')
+    projectile_runtime = OUTPUT/'runtime-fixes/projectile_inheritance.lua'
+    projectile_runtime.parent.mkdir(exist_ok=True)
+    shutil.copyfile(ROOT/'runtime-fixes/projectile_inheritance.lua', projectile_runtime)
     copy_spectator_runtime(manifest, OUTPUT)
     shutil.copyfile(ROOT/'player_profile.py', OUTPUT/'player_profile.py')
     shutil.copyfile(PYTHON/'pythonw.exe',OUTPUT/'python/pythonw.exe')

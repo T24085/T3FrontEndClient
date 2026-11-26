@@ -1,6 +1,7 @@
 """Development-only Community Starter lobby and owned game launcher."""
 import argparse
 import json
+import re
 import os
 import webbrowser
 from pathlib import Path
@@ -1063,9 +1064,87 @@ class Desktop:
                        if changed else 'Your community settings already match the saved retail settings.')
 
         self.button(window, 'Import settings from retail', import_settings).pack(anchor='w')
+        self.button(window, 'Projectile inheritance', lambda: self.show_projectile_settings(window),
+                    False).pack(anchor='w', pady=(8, 0))
         tk.Label(window, textvariable=status, bg=BG, fg=MUTED, font=('Segoe UI', 10),
                  justify='left', wraplength=420, anchor='w').pack(fill='x', pady=(12, 0))
         window.bind('<Escape>', lambda _event: window.destroy())
+
+    def show_projectile_settings(self, parent):
+        from community_transport import PROJECTILE_INHERITANCE_CLASSES
+        from player_profile import ProfileError, load_projectile_settings, update_projectile_settings
+
+        window = tk.Toplevel(parent, bg=BG, padx=22, pady=18)
+        window.title('Projectile inheritance')
+        window.transient(parent)
+        window.resizable(False, False)
+        window.grab_set()
+        window.bind('<Escape>', lambda _event: window.destroy())
+        self.label(window, 'Projectile inheritance', 18, True).pack(anchor='w')
+        self.label(window, 'Choose how much of your movement a shot carries.\nChanges apply in your next supported match.',
+                   10, color=MUTED).pack(anchor='w', pady=(5, 14))
+        status = tk.StringVar(window)
+        try:
+            settings = load_projectile_settings()
+        except (OSError, ProfileError) as exc:
+            tk.Label(window, text=str(exc), bg=BG, fg=TEXT, wraplength=380).pack(anchor='w')
+            return
+
+        labels = {}
+        for key, path in PROJECTILE_INHERITANCE_CLASSES.items():
+            name = path.split('/')[-2]
+            label = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', name)
+            labels[label] = key
+        weapon = tk.StringVar(window)
+        select = ttk.Combobox(window, textvariable=weapon, values=tuple(sorted(labels)), state='readonly', width=32)
+        select.pack(anchor='w', fill='x')
+        stock = tk.BooleanVar(window)
+        row = tk.Frame(window, bg=BG)
+        row.pack(anchor='w', fill='x', pady=(8, 10))
+        forward, lateral = tk.StringVar(window), tk.StringVar(window)
+        fields = []
+        for column, (label, value) in enumerate((('Forward (%)', forward), ('Lateral (%)', lateral))):
+            self.label(row, label, 10, color=MUTED).grid(row=0, column=column, sticky='w', padx=(0, 15))
+            field = ttk.Spinbox(row, from_=0, to=100, textvariable=value, width=12)
+            field.grid(row=1, column=column, sticky='w', padx=(0, 15))
+            fields.append(field)
+
+        def toggle():
+            for field in fields:
+                field.configure(state='disabled' if stock.get() else 'normal')
+
+        def select_weapon(_event=None):
+            axes = settings.get(labels[weapon.get()])
+            stock.set(axes is None)
+            forward.set('' if axes is None else str(axes[0]))
+            lateral.set('' if axes is None else str(axes[1]))
+            status.set('')
+            toggle()
+
+        def save_weapon():
+            key = labels[weapon.get()]
+            try:
+                axes = None if stock.get() else [int(forward.get()), int(lateral.get())]
+                updated = update_projectile_settings(key, axes)
+            except ValueError:
+                status.set('Enter whole percentages from 0 to 100.')
+                return
+            except (OSError, ProfileError) as exc:
+                status.set(str(exc))
+                return
+            settings.clear()
+            settings.update(updated)
+            status.set(f'Saved {weapon.get()}.')
+
+        tk.Checkbutton(window, text='Use game defaults', variable=stock, command=toggle,
+                       bg=BG, fg=TEXT, activebackground=BG, activeforeground=TEXT,
+                       selectcolor=PANEL).pack(anchor='w')
+        self.button(window, 'Save weapon setting', save_weapon).pack(anchor='w', pady=(8, 0))
+        tk.Label(window, textvariable=status, bg=BG, fg=MUTED, anchor='w',
+                 justify='left', wraplength=370).pack(fill='x', pady=(7, 0))
+        select.bind('<<ComboboxSelected>>', select_weapon)
+        select.current(0)
+        select_weapon()
 
     def live_browser_supported(self):
         return self.caps.get('spectateEnabled') is True or self.caps.get('privateLobbyAdmission') is True

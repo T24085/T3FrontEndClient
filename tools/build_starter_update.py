@@ -11,7 +11,19 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from starter_update import CHANNEL, INDEX, MAX_FILE, UPDATE_CHANNELS, decode_index, encoded, sha
+from starter_update import CHANNEL, DIRECT_CHANNEL, INDEX, MAX_FILE, UPDATE_CHANNELS, decode_index, encoded, sha
+
+
+def client_entry_payload(raw, root):
+    """Embed a Lua dependency without adding a new path to older updater allowlists."""
+    module = root/'runtime-fixes/projectile_inheritance.lua'
+    if module.resolve(strict=True) != module:
+        raise ValueError('Linked source is not permitted: projectile inheritance runtime')
+    marker = b'_SIGNED_PROJECTILE_INHERITANCE_MODULE = None'
+    if raw.count(marker) != 1:
+        raise ValueError('Missing projectile inheritance slot in the canonical client entry.')
+    literal = ascii(module.read_text(encoding='utf-8')).encode('ascii')
+    return raw.replace(marker, b'_SIGNED_PROJECTILE_INHERITANCE_MODULE = ' + literal)
 
 
 def main():
@@ -38,6 +50,12 @@ def main():
         previous = decode_index(raw, channel=args.channel, now=issued)
         paths.update(previous['files'])
         revision = previous['revision'] + 1
+    projectile_dependencies = {'client.py', 'community_game.py', 'community_transport.py',
+                               'desktop_launcher.py', 'player_profile.py', 'runtime_health.py', 'lua/client.lua'}
+    if args.channel == DIRECT_CHANNEL:
+        projectile_dependencies.add('direct_client.py')
+    if paths & projectile_dependencies:
+        paths.update(projectile_dependencies)
     if not paths or not paths <= UPDATE_CHANNELS[args.channel][1]:
         raise ValueError('Select existing supported Starter package files.')
     files, payloads = {}, {}
@@ -49,6 +67,8 @@ def main():
         if source.resolve(strict=True) != source:
             raise ValueError('Linked source is not permitted: ' + name)
         raw = source.read_bytes()
+        if name == 'client.py':
+            raw = client_entry_payload(raw, ROOT)
         if not 0 < len(raw) <= MAX_FILE:
             raise ValueError('Unsupported Starter update file size: ' + name)
         if name.endswith('.py'):
