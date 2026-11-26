@@ -12,7 +12,7 @@ import ssl
 import threading
 
 from dynamic_destination import destination,isolated_source
-from community_maps import BY_ID, MAX_MAPS, valid_id, valid_label
+from community_maps import BY_ID, MAX_MAPS, valid_id, valid_label, validated_boundary
 from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION
 from player_names import display_name
 
@@ -85,7 +85,7 @@ MAX_RULE_PRESET_BYTES = 8192
 
 
 def validated_match_rule_preset(value):
-    fields = {'rules', 'matchLimits', 'weather'}
+    fields = {'rules', 'matchLimits', 'weather', 'boundary'}
     if (not isinstance(value, dict) or type(value.get('version')) is not int or value['version'] != 1
             or not (value.keys() & fields) or not value.keys() <= fields | {'version'}):
         raise ValueError('Invalid lobby rule set.')
@@ -99,6 +99,8 @@ def validated_match_rule_preset(value):
         if weather is not None and type(weather) is not bool:
             raise ValueError('Choose Map default, On, or Off for weather.')
         result['weather'] = weather
+    if 'boundary' in value:
+        result['boundary'] = None if value['boundary'] is None else validated_boundary(value['boundary'])
     return result
 
 
@@ -396,6 +398,11 @@ class CommunityClient:
             if type(match['weather']) is not bool:
                 raise CommunityError('Invalid match weather policy.')
             target['weather'] = match['weather']
+        if match.get('boundary') is not None:
+            try:
+                target['boundary'] = validated_boundary(match['boundary'])
+            except ValueError as exc:
+                raise CommunityError('Invalid match boundary settings.') from exc
         if spectator:target['role']='spectator'
         return target
 
