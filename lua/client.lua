@@ -1815,7 +1815,21 @@ local update_match_music=(function()
     end
 
     local function native_candidate(spec)
-        local asset=LoadAsset(spec.asset)
+        local asset, registered=LoadAsset(spec.asset)
+        if not valid(asset) and registered==false then
+            local package=assert(spec.asset:match('^(/Game/Community/[A-Za-z0-9_/-]+)%.[A-Za-z0-9_]+$'),
+                                 'soundtrack_package_path_required')
+            local helpers=loaded('/Script/AssetRegistry.Default__AssetRegistryHelpers',
+                                 'AssetRegistryHelpers /Script/AssetRegistry.Default__AssetRegistryHelpers')
+            signature('/Script/AssetRegistry.AssetRegistryHelpers:GetAssetRegistry',
+                      {{'ReturnValue','InterfaceProperty',0}})
+            signature('/Script/AssetRegistry.AssetRegistry:ScanFilesSynchronous',
+                      {{'InFilePaths','ArrayProperty',0},{'bForceRescan','BoolProperty',16}})
+            local registry=helpers:GetAssetRegistry()
+            assert(valid(registry),'soundtrack_registry_required')
+            registry:ScanFilesSynchronous({package..'.uasset'},false)
+            asset=LoadAsset(spec.asset)
+        end
         assert(valid(asset),'soundtrack_asset_unavailable')
         local kind,path=asset:GetFullName():match('^(%S+) (.+)$')
         assert((kind=='SoundWave' or kind=='SoundCue') and path==spec.asset,'soundtrack_asset_identity')
@@ -1861,7 +1875,7 @@ local update_match_music=(function()
                         break
                     end
                     spec.available=false
-                    report('MATCH_MUSIC_NATIVE_UNAVAILABLE|'..spec.asset)
+                    report('MATCH_MUSIC_NATIVE_UNAVAILABLE|'..spec.asset..'|'..tostring(component):sub(1,300))
                 end
             end
         end

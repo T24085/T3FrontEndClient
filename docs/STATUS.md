@@ -8,8 +8,11 @@ fallback, volume, match-end cleanup, and travel between worlds using the
 same track. The Windows helper opened the live desert and ice track blobs in
 a silent playback probe. A private Damnation 2026 match selected its
 fixture descriptor's desert track and cleared the request when the normal
-round timer expired. Playback of an authored cooked asset in an Unreal
-match is pending. See frontend issue #85.
+round timer expired. A separate private match loaded an original cooked
+Sound Wave through the map override and played it on the native music
+submix. Its component gain changed from 0.40 to 0.20 after the music
+setting was halved. Windows reached the memory reserve before this
+two-process test could observe round-end cleanup. See frontend issue #85.
 
 # Small-screen Play lobby
 

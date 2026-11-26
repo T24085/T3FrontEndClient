@@ -42,49 +42,125 @@ def weather_runtime_path(root, run, package):
         return root / 'lua/weather.lua'
     return root / 'lua/snowblind_weather.lua'
 
-def verified_music_packs(root, package):
-    """Generate a Lua literal from bounded music rows in the verified sound-pack inventory."""
+SOUND_SETS = ('T1', 'T2', 'TV', 'TA', 'T3', 'CW')
+MUSIC_BINDINGS = frozenset(f'music.{event}' for event in ('menu', 'match', 'win', 'lose', 'flag'))
+MUSIC_ASSET = re.compile(r'/Game/Community(?:/[A-Za-z0-9_-]+)+/([A-Za-z0-9_]+)(?:[.]([A-Za-z0-9_]+))?')
+MUSIC_EVENT_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,255}')
+MAX_SOUND_PACK = 32 * 1024**2
+
+
+def music_asset_path(asset):
+    if not isinstance(asset, str) or len(asset) > 416 or not (name := MUSIC_ASSET.fullmatch(asset)):
+        return None
+    package, obj = name.groups()
+    if obj is not None and obj != package:
+        return None
+    return asset if obj else f'{asset}.{package}'
+
+
+def music_controls(binding):
+    volume, pitch = binding.get('volume', 1), binding.get('pitch', 1)
+    if (type(volume) in (int, float) and 0 <= volume <= 4
+            and type(pitch) in (int, float) and 0.25 <= pitch <= 4):
+        return {'volume': volume, 'pitch': pitch}
+
+
+def music_event_asset(graph):
+    # A match track is one persistent component. More involved graphs can be
+    # cooked into a SoundCue and linked with a direct asset binding.
+    for _ in range(17):
+        if not isinstance(graph, dict):
+            return None
+        if graph.get('kind') == 'wave':
+            return graph.get('asset')
+        children = graph.get('children')
+        if graph.get('kind') != 'looping' or not isinstance(children, list) or len(children) != 1:
+            return None
+        graph = children[0]
+    return None
+
+
+def packaged_music(root, files, path, kind, *, sound_set=None, map_id=None):
     from hashlib import sha256
 
-    name = 'sound-packs.json'
-    row = next((row for row in package['files'] if row['path'] == name), None)
+    row = files.get(path)
     if row is None:
-        return '{}'
-    path = root/name
+        return None
+    target = root / path
     size = row['bytes']
-    if type(size) is not int or not 0 < size <= 128*1024 or path.resolve(strict=True) != path:
-        raise ValueError('Invalid packaged sound-pack catalog.')
-    with path.open('rb') as stream:
+    if type(size) is not int or not 0 < size <= MAX_SOUND_PACK or target.resolve(strict=True) != target:
+        raise ValueError(f'Invalid packaged music descriptor: {path}')
+    with target.open('rb') as stream:
         raw = stream.read(size + 1)
     if len(raw) != size or sha256(raw).hexdigest() != row['sha256']:
-        raise ValueError('Sound-pack catalog failed package verification.')
-    info = json.loads(raw)
-    if (not isinstance(info, dict) or info.keys() != {'format', 'packs'}
-            or type(info['format']) is not int or info['format'] != 1 or not isinstance(info['packs'], dict)):
-        raise ValueError('Unsupported sound-pack catalog.')
-    packs = []
-    for pack, categories in sorted(info['packs'].items()):
-        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,47}', pack) or not isinstance(categories, dict):
-            raise ValueError('Invalid sound-pack name or category.')
-        music = categories.get('music', {})
-        if not isinstance(music, dict):
-            raise ValueError('Invalid sound-pack music category.')
-        tracks = []
-        for track, sound in sorted(music.items()):
-            if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,47}', track) or not isinstance(sound, dict):
-                raise ValueError('Invalid sound-pack track.')
-            asset = sound.get('asset')
-            if (sound.keys() - {'asset', 'volume', 'pitch'} or not isinstance(asset, str)
-                    or re.fullmatch(r'/Game/(?:Community|Audio)(?:/[A-Za-z0-9_]+)+/([A-Za-z0-9_]+)\.\1', asset) is None
-                    or len(asset) > 240):
-                raise ValueError('Invalid sound-pack music asset.')
-            gain, pitch = sound.get('volume', 1), sound.get('pitch', 1)
-            if (type(gain) not in (int, float) or not 0 <= gain <= 1
-                    or type(pitch) not in (int, float) or not 0.25 <= pitch <= 4):
-                raise ValueError('Invalid sound-pack music gain or pitch.')
-            tracks.append(f'[{json.dumps(track)}]={{asset={json.dumps(asset)},volume={gain},pitch={pitch}}}')
-        packs.append(f'[{json.dumps(pack)}]={{{",".join(tracks)}}}')
-    return '{'+','.join(packs)+'}'
+        raise ValueError(f'Music descriptor failed package verification: {path}')
+    document = json.loads(raw)
+    if (not isinstance(document, dict) or type(document.get('format')) is not int
+            or document['format'] != 1 or document.get('kind') != kind or document.get('set') not in SOUND_SETS
+            or (sound_set is not None and sound_set != document['set'])
+            or (map_id is not None and document.get('map_id') != map_id)):
+        raise ValueError(f'Invalid music descriptor identity: {path}')
+    event_rows, binding_rows = document.get('events', []), document.get('bindings', {})
+    if not isinstance(event_rows, list) or not isinstance(binding_rows, dict):
+        raise ValueError(f'Invalid packaged music rows: {path}')
+    events, bindings = {}, {}
+    for event in event_rows:
+        if not isinstance(event, dict) or event.get('category') not in ('mus', 'music'):
+            continue
+        event_id = event.get('id')
+        asset = music_asset_path(music_event_asset(event.get('graph')))
+        if isinstance(event_id, str) and MUSIC_EVENT_ID.fullmatch(event_id) and asset:
+            events[event_id] = asset
+    for event_id in sorted(MUSIC_BINDINGS & binding_rows.keys()):
+        binding = binding_rows[event_id]
+        if not isinstance(binding, dict) or len(binding.keys() & {'asset', 'assets', 'event'}) != 1:
+            continue
+        controls = music_controls(binding)
+        if controls is None:
+            continue
+        if asset := music_asset_path(binding.get('asset')):
+            bindings[event_id] = {**controls, 'asset': asset}
+        elif isinstance(binding.get('event'), str) and MUSIC_EVENT_ID.fullmatch(binding['event']):
+            bindings[event_id] = {**controls, 'event': binding['event']}
+        elif isinstance(binding.get('assets'), list) and 1 <= len(binding['assets']) <= 32:
+            options = [music_asset_path(asset) for asset in binding['assets']]
+            weights = binding.get('weights', [1] * len(options))
+            if (isinstance(weights, list) and len(weights) == len(options)
+                    and all(type(w) in (int, float) and 0 <= w <= 1e9 for w in weights)
+                    and all(options)):
+                bindings[event_id] = {**controls, 'choices': [{'asset': asset, 'weight': weight}
+                                      for asset, weight in zip(options, weights) if weight > 0]}
+    return {'events': events, 'bindings': bindings}
+
+
+def music_lua(value):
+    if isinstance(value, dict):
+        return '{'+','.join(f'[{music_lua(key)}]={music_lua(item)}' for key, item in value.items())+'}'
+    if isinstance(value, list):
+        return '{'+','.join(map(music_lua, value))+'}'
+    return json.dumps(value, ensure_ascii=False, allow_nan=False)
+
+
+def verified_music_packs(root, files, definitions):
+    def optional(path, kind, **identity):
+        try:
+            return packaged_music(root, files, path, kind, **identity)
+        except (OSError, ValueError, RecursionError) as exc:
+            print(f'Optional map music descriptor unavailable. {exc}')
+            return None
+
+    packs, overrides = {}, {}
+    for name in SOUND_SETS:
+        if pack := optional(f'sound-packs/{name}/pack.json', 'pack', sound_set=name):
+            packs[name] = pack
+    for definition in definitions:
+        key = definition.id
+        fallback = re.search(r'[(](T[123V]|TA|CW)(?: [0-9]{4})?[)]$', definition.label)
+        row = {'sound_set': fallback[1] if fallback else 'T1'}
+        if override := optional(f'sound-packs/maps/{key}/override.json', 'map-override', map_id=key):
+            row['override'] = override
+        overrides[key] = row
+    return music_lua({'packs': packs, 'maps': overrides})
 
 
 def write_map_definitions(root, run, definitions, selected, package, *, public=False, objectives=None):
@@ -111,6 +187,7 @@ def write_map_definitions(root, run, definitions, selected, package, *, public=F
     files = {row['path']: row for row in package['files']}
     downloaded = map_objective_rows(objectives, definitions) if objectives is not None else {}
     adapters = []
+    authored_maps = []
     for definition in selected_maps:
         name = f'lua/{definition.id}/objectives.lua'
         if definition.native:
@@ -134,19 +211,16 @@ def write_map_definitions(root, run, definitions, selected, package, *, public=F
         with source.open('xb') as output:
             output.write(raw)
         adapters.append((definition.id, source))
+        authored_maps.append(definition)
 
     if not adapters:
         return generated
     calls = [f'load_weather({json.dumps(map_id)}, {json.dumps(source.as_posix(), ensure_ascii=False)})'
              for map_id, source in adapters]
-    try:
-        music_packs = verified_music_packs(root, package)
-    except (OSError, ValueError) as exc:
-        print(f'Optional music catalog unavailable. {exc}')
-        music_packs = '{}'
+    music_packs = verified_music_packs(root, files, authored_maps)
     result = run / 'catalog-weather.lua'
     result.write_text(f'local maps=assert(loadfile({json.dumps(generated.as_posix(), ensure_ascii=False)}))()\n'
-                      + 'local packs='+music_packs+'\n'
+                      + 'local sound_catalog='+music_packs+'\n'
                       + _MAP_WEATHER_LUA + '\n'.join([*calls, 'return maps', '']), encoding='utf-8')
     return result
 
@@ -160,8 +234,8 @@ local function music_route(music)
  end
  if music.track~=nil then
   assert(type(music.track)=='string' and music.playlist==nil and music.first==nil,'map_music_contract')
-  assert(#music.track<=48 and music.track:match('^[a-z0-9][a-z0-9_-]*$'),'map_music_contract')
-  local legacy=not music.track:find('_',1,true) and (music.track:gsub('-','_')) or nil
+  assert(#music.track<=256 and music.track:match('^[A-Za-z0-9][A-Za-z0-9_.-]*$'),'map_music_contract')
+  local legacy=music.track:match('^[a-z0-9][a-z0-9-]*$') and (music.track:gsub('-','_')) or nil
   return legacy, music.track
  end
  local first=music.first
@@ -170,38 +244,41 @@ local function music_route(music)
  return 'playlist_t1_'..string.format('%d',first)
 end
 
-local function music_candidates(authored, track)
+local function music_candidates(id, authored, track)
  if not track then return end
- local candidates={}
- local overrides=authored.sound_overrides
- if overrides~=nil then
-  assert(type(overrides)=='table','map_music_contract')
-  local music=overrides.music
-  if music~=nil then
-   assert(type(music)=='table','map_music_contract')
-   local sound=music[track]
-   if sound~=nil then
-    assert(type(sound)=='table' and type(sound.asset)=='string' and #sound.asset<=240,'map_music_contract')
-    for key in pairs(sound) do
-     assert(key=='asset' or key=='volume' or key=='pitch','map_music_contract')
-    end
-    local base, object=sound.asset:match('^/Game/Community/[A-Za-z0-9_/]+/([A-Za-z0-9_]+)%.([A-Za-z0-9_]+)$')
-    assert(base and base==object,'map_music_contract')
-    local volume,pitch=sound.volume,sound.pitch
-    assert(volume==nil or (type(volume)=='number' and volume>=0 and volume<=1),'map_music_contract')
-    assert(pitch==nil or (type(pitch)=='number' and pitch>=0.25 and pitch<=4),'map_music_contract')
-    candidates[#candidates+1]={asset=sound.asset,volume=volume or 1,pitch=pitch or 1}
+ local candidates, seen={}, {}
+ local function add(asset, volume, pitch)
+  if not asset then return end
+  if not seen[asset] then
+   candidates[#candidates+1]={asset=asset,volume=volume or 1,pitch=pitch or 1}
+   seen[asset]=true
+  end
+ end
+ local function add_layer(layer, fallback)
+  if not layer then return end
+  local binding=layer.bindings[track]
+  if not binding then add(layer.events[track]);return end
+  if binding.choices then
+   local total=0
+   for _,choice in ipairs(binding.choices) do total=total+choice.weight end
+   local pick=math.random()*total
+   for _,choice in ipairs(binding.choices) do
+    pick=pick-choice.weight
+    if pick<=0 then add(choice.asset,binding.volume,binding.pitch);break end
    end
+   for _,choice in ipairs(binding.choices) do add(choice.asset,binding.volume,binding.pitch) end
+  else
+   local asset=binding.asset or layer.events[binding.event] or (fallback and fallback.events[binding.event])
+   add(asset,binding.volume,binding.pitch)
   end
  end
- local pack=authored.sound_set
- if pack~=nil then
-  assert(type(pack)=='string' and #pack<=48 and pack:match('^[A-Za-z0-9][A-Za-z0-9_-]*$'),'map_music_contract')
-  if pack~='default' and packs[pack] and packs[pack][track] then
-   candidates[#candidates+1]=packs[pack][track]
-  end
- end
- if packs.default and packs.default[track] then candidates[#candidates+1]=packs.default[track] end
+ local map=sound_catalog.maps[id]
+ local packs=sound_catalog.packs
+ local name=authored.sound_set or map.sound_set
+ local selected=packs[name] or packs.T2
+ add_layer(map.override,selected)
+ add_layer(selected)
+ if packs.T3~=selected then add_layer(packs.T3) end
  if #candidates>0 then return candidates end
 end
 
@@ -242,7 +319,7 @@ local function apply_weather(id,path)
   row.emergency_lighting=authored.emergency_lighting
  end
  local route, track=music_route(authored.music)
- local candidates=music_candidates(authored,track)
+ local candidates=music_candidates(id,authored,track)
  row.music_route,row.music_candidates=route,candidates
 end
 local function load_weather(id,path)

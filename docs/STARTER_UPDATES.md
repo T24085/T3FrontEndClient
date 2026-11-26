@@ -48,31 +48,24 @@ Use `music = {playlist = "t1", first = 8}` to play the existing T1 playlist
 starting at track 8. The client selects a track when gameplay starts and
 releases it at match end or travel.
 
-For cooked tracks, include `sound-packs.json` in the verified client inventory.
-The music category maps track IDs to Unreal asset paths, with optional
-`volume` and `pitch` values.
+For cooked tracks, use the shared sound pack format in
+[backend PR #99](https://github.com/Tribes3-Modded/T3BackEndServer/pull/99).
+In a full client package, keep the Map Tool's directory layout under
+`Client Files/sound-packs/`. Put the metadata files in the verified client
+inventory.
 
-```json
-{
-  "format": 1,
-  "packs": {
-    "T2": {
-      "music": {
-        "t2-desert": {
-          "asset": "/Game/Community/T2Audio/Music/Desert.Desert",
-          "volume": 0.8
-        }
-      }
-    }
-  }
-}
-```
+- Game pack files live at `sound-packs/<SET>/pack.json`.
+- Per-map overrides live at `sound-packs/maps/<MapId>/override.json`.
 
-Select that pack with `sound_set = "T2"`. To override one track, add
-`sound_overrides = {music = {["t2-desert"] = {asset = "/Game/Community/HildebrandT2/Audio/Night.Night"}}}`
-to the map descriptor. The client looks for that override, then the selected
-pack, then the `default` pack. Cooked Sound Cues and Sound Waves must route
-their base output to `MUS_Game_Submix`. The signed Windows Direct feed can
-also resolve the legacy MP3 tracks by their existing SHA-256 addresses.
-The signed builder embeds only their addresses and the player code, and
-updates the Python entry and Lua template together.
+Use `music = {track = "music.match"}` in `objectives.lua` to select the
+match binding. The client resolves the map override, the selected `sound_set`
+pack, and the T3 fallback pack in that order. A map may also declare a music
+event ID exported by the Map Tool. A single-wave event and its loop wrapper
+can play directly. Cook more elaborate graphs into a Sound Cue and link the
+cue with an `asset` binding. The cooked Sound Cue or Sound Wave must route its
+base output to `MUS_Game_Submix`. Set looping on the cooked asset for continuous
+music.
+
+The signed Windows Direct feed can also resolve the legacy MP3 tracks by
+their existing SHA-256 addresses. The signed builder embeds their addresses
+and the player code, and updates the Python entry and Lua template together.

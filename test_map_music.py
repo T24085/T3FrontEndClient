@@ -16,11 +16,10 @@ from tools.build_starter_update import soundtrack_entry
 ROOT = Path(__file__).resolve().parent
 MAP = MapDefinition('HildebrandT2', 'Hildebrand', 'HildebrandT2', 'Arena_HildebrandT2_P')
 SOURCE = '/Game/Community/HildebrandT2/Audio/'
-DESCRIPTOR = '''
+DESCRIPTOR = """
 return {format=1,map_id="HildebrandT2", package="%s", world="%s",
-        music={track="t2-desert"}, sound_set="T2",
-        sound_overrides={music={["t2-desert"]={asset="%s",volume=0.4}}}}
-'''
+        music={track="%s"}, sound_set="T2"}
+"""
 PLAYBACK = r'''
 
 local function object(id)
@@ -58,7 +57,20 @@ local sounds={
  ['/Game/Community/Test/Selected.Selected']=wave('/Game/Community/Test/Selected.Selected', bus),
  ['/Game/Community/Test/Default.Default']=wave('/Game/Community/Test/Default.Default',bus),
 }
-local function LoadAsset(path) return path==busPath and bus or sounds[path] end
+local scan_path='/Game/Community/Test/Selected.Selected'
+local scan_count=0
+local function LoadAsset(path)
+ if path==scan_path and scan_count==0 then return nil,false end
+ return path==busPath and bus or sounds[path]
+end
+local registry={}
+function registry:ScanFilesSynchronous(paths,force)
+ assert(#paths==1 and paths[1]=='/Game/Community/Test/Selected.uasset' and force==false)
+ scan_count=scan_count+1
+end
+local helpers={}
+function helpers:GetAssetRegistry() return registry end
+function scanned_files() return scan_count end
 local function component(id,sound)
  local c=object(id)
  c.active,c.Sound=true,sound
@@ -83,7 +95,10 @@ function statics:SpawnSound2D(context,sound,volume,pitch,start,concurrency,persi
  playing[#playing+1]=last
  return last
 end
-local function loaded() return statics end
+local function loaded(path)
+ if path=='/Script/AssetRegistry.Default__AssetRegistryHelpers' then return helpers end
+ return statics
+end
 local mapDefinitions={test={world='/Game/TestWorld.TestWorld:',music_route='t2_desert',
  music_candidates={
    {asset='/Game/Community/Test/Override.Override',volume=0.4,pitch=1},
@@ -115,24 +130,52 @@ class MapMusicTests(unittest.TestCase):
         return {'path': name, 'bytes': len(raw), 'sha256': sha256(raw).hexdigest()}
 
     def test_verified_descriptor_layers_native_tracks(self):
-        pack = {
-            'format': 1, 'packs': {
-                'T2': {'music': {'t2-desert': {'asset': SOURCE+'Selected.Selected'}}},
-                'default': {'music': {'t2-desert': {'asset': SOURCE+'Default.Default'}}},
-            },
+        event = 'AUD_MUS.Level.Desert'
+        selected = {
+            'format': 1, 'kind': 'pack', 'set': 'T2',
+            'events': [{'id': event, 'category': 'mus',
+                        'graph': {'kind': 'looping', 'children': [
+                            {'kind': 'wave', 'asset': SOURCE+'Selected'}]}}],
+            'bindings': {'music.match': {'event': event, 'pitch': 0.9}},
+        }
+        default = {
+            'format': 1, 'kind': 'pack', 'set': 'T3',
+            'bindings': {'music.match': {'assets': [SOURCE+'Silent', SOURCE+'Default'],
+                                         'weights': [0, 1]}},
+        }
+        override = {
+            'format': 1, 'kind': 'map-override', 'set': 'T2', 'map_id': MAP.id,
+            'bindings': {'music.match': {'asset': SOURCE+'Override.Override', 'volume': 0.4}},
         }
         world = f'{MAP.package}.{MAP.level}:'
-        descriptor = DESCRIPTOR % (MAP.package, world, SOURCE+'Override.Override')
+        descriptor = DESCRIPTOR % (MAP.package, world, 'music.match')
         files = [
             self.row(f'lua/{MAP.id}/objectives.lua', descriptor.encode()),
-            self.row('sound-packs.json', json.dumps(pack).encode()),
+            self.row('sound-packs/T2/pack.json', json.dumps(selected).encode()),
+            self.row('sound-packs/T3/pack.json', json.dumps(default).encode()),
+            self.row(f'sound-packs/maps/{MAP.id}/override.json', json.dumps(override).encode()),
         ]
         path = write_map_definitions(self.root, self.run, {MAP.id: MAP}, MAP, {'files': files})
         result = LuaRuntime().execute(path.read_text(encoding='utf-8'))[MAP.id]
-        self.assertEqual(result.music_route, 't2_desert')
+        self.assertIsNone(result.music_route)
         self.assertEqual([result.music_candidates[i].asset for i in range(1, 4)],
                          [SOURCE+f'{name}.{name}' for name in ('Override', 'Selected', 'Default')])
         self.assertAlmostEqual(result.music_candidates[1].volume, 0.4)
+        self.assertAlmostEqual(result.music_candidates[2].pitch, 0.9)
+
+    def test_corrupt_map_override_preserves_verified_legacy_track(self):
+        world = f'{MAP.package}.{MAP.level}:'
+        descriptor = DESCRIPTOR % (MAP.package, world, 't2-desert')
+        override = f'sound-packs/maps/{MAP.id}/override.json'
+        files = [
+            self.row(f'lua/{MAP.id}/objectives.lua', descriptor.encode()),
+            self.row(override, b'{}'),
+        ]
+        (self.root/override).write_bytes(b'[]')
+        path = write_map_definitions(self.root, self.run, {MAP.id: MAP}, MAP, {'files': files})
+        result = LuaRuntime().execute(path.read_text(encoding='utf-8'))[MAP.id]
+        self.assertEqual(result.music_route, 't2_desert')
+        self.assertIsNone(result.music_candidates)
 
     def test_native_music_falls_through_incompatible_asset_and_cleans_up_at_match_end(self):
         config = self.root/'audio.ini'
@@ -149,6 +192,7 @@ class MapMusicTests(unittest.TestCase):
         selected = env.playing[1]
         self.assertEqual(selected.Sound.GetFullName(selected.Sound), 'SoundWave /Game/Community/Test/Selected.Selected')
         self.assertAlmostEqual(selected.gain, .4)
+        self.assertEqual(env.scanned_files(), 1)
         self.assertTrue(env.stock.paused)
         self.assertIsNone(env.effect.paused)
         self.assertIsNone(env.mute_level())
