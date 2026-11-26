@@ -51,12 +51,19 @@ the camera reaches the eye. Chase follows the rendered mesh's interpolated
 position and eases replicated heading changes along the shortest arc. The
 viewer refreshes skin material overrides on each perspective change.
 
-The isolated Unreal fixture verified camera-manager selection with multiple
-active lenses, chase attachment movement, static clearance and dynamic
-blocker handling. Older multiplayer captures show that remote pawns do not
-instantiate the local first-person arms and gun. Full player-view presentation
-and today's remote skin appearance still require rendered multiplayer
-verification. See frontend issue #76.
+Remote pawns normally lack the owning client's first-person arms and
+weapon. The spectator builds local viewmodel components from the active
+weapon descriptor and the stock tactical arms. The arms follow the
+weapon's pose and take their primary dye from the player's visible armor.
+The components use the native foreground material setting and culling
+bounds. The chase view restores the remote avatar and its own materials.
+
+The isolated Unreal fixtures checked camera selection, chase attachment
+movement, static clearance, dynamic blockers and the first-person weapon
+and arms against the native player view. A rendered multiplayer check
+through Starter Live Matches is still required before release, including
+remote skin changes, fast skiing and spectating through a respawn. See
+frontend issue #76.
 
 # Friendly flag carry border
 

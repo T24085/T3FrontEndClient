@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent
 FIXTURE = r'''
 local serial=0
 world=nil
-local function object(name)
+function object(name)
  serial=serial+1
  local obj={name=name,address=serial,alive=true,active=true}
  function obj:GetAddress()return self.address end
@@ -53,6 +53,12 @@ function StaticFindObject(name)
  return classes[name]
 end
 function FName(name)return name end
+local kismetMaterials=StaticFindObject('/Script/Engine.Default__KismetMaterialLibrary')
+function kismetMaterials:CreateDynamicMaterialInstance(component,parent)
+ local material=object(parent.name..'_mid')
+ function material:SetScalarParameterValue(key,value)self[key]=value end
+ return material
+end
 local sys=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
 probes={};obstacles={}
 function sys:SphereTraceSingleForObjects(target,start,finish,radius,types,complex,ignore,_,hit)
@@ -96,8 +102,12 @@ function make_target(name)
  t.RootComponent.position={X=0,Y=0,Z=100}
  function t.RootComponent:K2_GetComponentLocation()return self.position end
  function t:GetMesh3P()return self.visual end
- function t:GetMesh1P()return nil end
- function t:GetGunMesh1P()return nil end
+ t.nativeArms=object(name..'_native_arms');t.nativeGun=object(name..'_native_gun')
+ function t:GetMesh1P()return self.nativeArms end
+ function t:GetGunMesh1P()return self.nativeGun end
+ function t:GetActiveEquipSlotAV()return self.av end
+ function t:GetGunMesh3P()return self.worldGun end
+ function t:GetJetpackMesh()return nil end
  t.alpha=0
  t.eye=object(name..'_eye');t.FirstPersonCameraComponent=t.eye
  t.eye.FieldOfView=104;t.eye.position={X=0,Y=0,Z=64}
@@ -110,10 +120,23 @@ function make_target(name)
   function component:GetOwner()return t end
   function component:K2_AttachToComponent(parent,socket,locationRule)
    assert(socket=='None' and ((parent==t.RootComponent and (locationRule==0 or locationRule==1))
-    or (parent==t.eye and locationRule==2) or (parent==t.visual and locationRule==1)))
+    or (parent==t.eye and locationRule==2) or (parent==t.visual and locationRule==1) or (parent==t.FirstPersonCameraComponent and locationRule==2)))
    self.parent=parent
    return true
   end
+  component.visible=true
+  function component:SetVisibility(visible)self.visible=visible end
+  function component:IsVisible()return self.visible end
+  function component:SetCollisionEnabled(value)assert(value==0)end
+  function component:SetCastShadow(value)assert(not value)end
+  function component:SetBoundsScale(value)self.boundsScale=value end
+  function component:SetSkeletalMeshAsset(asset)self.mesh=asset end
+  function component:GetSkeletalMeshAsset()return self.mesh end
+  function component:SetAnimClass(animation)self.animation=animation end
+  function component:GetNumMaterials()return self.mesh and 1 or 0 end
+  function component:GetMaterial()return self.material or self.mesh end
+  function component:SetMaterial(slot,material)assert(slot==0);self.material=material end
+  function component:SetLeaderPoseComponent(leader,refresh,tick)assert(refresh and not tick);self.poseLeader=leader end
   function component:K2_GetComponentLocation()return self.parent:K2_GetComponentLocation()end
   function component:K2_SetWorldRotation(rotation)self.rotation=rotation end
   function component:SetAbsolute(location,rotation,scale)assert(not location and rotation and not scale)end
@@ -293,10 +316,48 @@ class SpectatorCameraTests(unittest.TestCase):
         pc.PlayerCameraManager.location.X=0
         follow_once()
         assert(presentations[#presentations]==false)
-        assert(events[#events]=='SPECTATOR_FIRST_PERSON_MESHES|arms=false|weapon=false')
         keys.F8()
         assert(rig.camera:IsActive() and not rig.first:IsActive())
         assert(presentations[#presentations]==true)
+        ''')
+
+    def test_remote_viewmodel_follows_weapon_changes_and_restores_world_gun(self):
+        self.check('''
+        local function reference(path)
+         return {GetObjectID=function()return {GetAssetPathName=function()
+          return {ToString=function()return path end}end}end}
+        end
+        local avOne=object('av-one');avOne.Mesh1P=reference('/Game/One.One')
+        avOne.ABP1P=reference('/Game/OneAnim.OneAnim_C')
+        local avTwo=object('av-two');avTwo.Mesh1P=reference('/Game/Two.Two')
+        avTwo.ABP1P=reference('/Game/TwoAnim.TwoAnim_C')
+        active.nativeArms=nil;active.nativeGun=nil
+        active.worldGun=object('remote-world-gun')
+        active.worldGun.visible=true
+        function active.worldGun:GetOwner()return active end
+        function active.worldGun:IsVisible()return self.visible end
+        function active.worldGun:SetVisibility(value)self.visible=value end
+        active.av=avOne
+        follow_once();keys.F7();follow_once()
+        local rig=service.owned().rig
+        assert(rig.viewArms:IsVisible() and rig.viewGun:IsVisible() and not active.worldGun.visible)
+        assert(rig.viewGun.mesh.name=='/Game/One.One' and rig.viewGun.animation.name=='/Game/OneAnim.OneAnim_C')
+        local gun=rig.viewGun
+        assert(rig.viewArms.poseLeader==gun and gun.material['RenderToForeground?']==1)
+        assert(rig.viewArms.boundsScale==2 and gun.boundsScale==6)
+        active.av=avTwo;follow_once()
+        assert(gun==rig.viewGun and gun.mesh.name=='/Game/Two.Two' and gun:IsVisible())
+        assert(gun.material.name=='/Game/Two.Two_mid' and gun.material['RenderToForeground?']==1)
+        keys.F8();follow_once()
+        assert(not gun:IsVisible() and not rig.viewArms:IsVisible() and active.worldGun.visible)
+        ''')
+
+    def test_missing_remote_equipment_keeps_full_native_body(self):
+        self.check('''
+        active.nativeArms=nil;active.nativeGun=nil
+        follow_once();keys.F7();follow_once()
+        assert(not pc.third and presentations[#presentations]==true)
+        assert(service.owned().rig.viewGun==nil)
         ''')
 
     def test_first_person_skips_chase_collision_queries(self):
