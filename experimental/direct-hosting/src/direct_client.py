@@ -11,7 +11,10 @@ import pathlib
 import queue
 import re
 import secrets
+import shutil
 import socket
+import ssl
+import tempfile
 import threading
 import time
 from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLOT_LIMIT, MATCH_UDP_BASES,
@@ -20,7 +23,7 @@ from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLO
                             VOICE_RELEASE, VOICE_ROUTE, VOICE_SAMPLE_RATE,
                             locked_state, read_json, valid_public_address, validate_endpoint, validate_group, write_json)
 from direct_network import TOOL_TIPS_ROUTE, TOOL_TIPS_LIMIT, decode_tool_tips
-from community_transport import CommunityClient, CommunityError, PinnedHTTPSConnection
+from community_transport import CommunityClient, CommunityConnectionError, CommunityError, PinnedHTTPSConnection
 from community_game import CommunityGame
 from dynamic_destination import DIRECT_BRIDGE_POLICY
 
@@ -34,7 +37,7 @@ PTT_KEY_NAMES = {
     0x14: 'Caps Lock', 0x20: 'Space', 0x21: 'Page Up', 0x22: 'Page Down',
     0x23: 'End', 0x24: 'Home', 0x25: 'Left', 0x26: 'Up', 0x27: 'Right',
     0x28: 'Down', 0x2d: 'Insert', 0x2e: 'Delete', 0x5d: 'Menu',
-    0x6a: 'Numpad *', 0x6b: 'Numpad +', 0x6d: 'Numpad −', 0x6e: 'Numpad .',
+    0x6a: 'Numpad *', 0x6b: 'Numpad +', 0x6d: 'Numpad âˆ’', 0x6e: 'Numpad .',
     0x6f: 'Numpad /', 0x90: 'Num Lock', 0x91: 'Scroll Lock',
     0xba: ';', 0xbb: '=', 0xbc: ',', 0xbd: '-', 0xbe: '.', 0xbf: '/',
     0xc0: '`', 0xdb: '[', 0xdc: '\\', 0xdd: ']', 0xde: "'", 0xe2: 'OEM 102',
@@ -337,13 +340,14 @@ def validate_connection(d,*,local_test=False):
 class DirectClient(CommunityClient):
     address_error = 'A direct host must have a public IPv4 address.'
     reconnect_requires_new_game = True
+    local_host = False
 
     @staticmethod
     def accepts_server_address(address):
         return address.is_global and not address.is_multicast
 
     def __init__(self,connection,*,ssl_context=None,test_source=None,proximity_settings=None):
-        d=validate_connection(connection,local_test=test_source is not None)
+        d=validate_connection(connection,local_test=self.local_host or test_source is not None)
         super().__init__(d['hostname'],d['https_port'],d['public_address'],dict(DIRECT_BRIDGE_POLICY),
                          ssl_context=ssl_context,test_source=test_source)
         self.connection=d;self.access_token=d['access_token'];self.direct_session=secrets.token_hex(16);self.proxies={}
@@ -478,7 +482,7 @@ class DirectClient(CommunityClient):
                                     lambda: not stop.is_set() and self.proximity_enabled.is_set() and ready_run() is not None,
                                     status, lambda: self.proximity_key)
                         except (OSError, ValueError, http.client.HTTPException):
-                            status('Proximity voice reconnecting…')
+                            status('Proximity voice reconnectingâ€¦')
                         if stop.wait(2):
                             return
             finally:
@@ -524,10 +528,12 @@ class DirectClient(CommunityClient):
         allowed_ports = (range(first, last + 1),)
         # Stock invitations survive capacity increases and migration between the
         # two Friend Host ranges. Custom ranges keep their original bounds.
-        if first in MATCH_UDP_BASES and last < first + MATCH_SLOT_LIMIT:
+        if not self.local_host and first in MATCH_UDP_BASES and last < first + MATCH_SLOT_LIMIT:
             allowed_ports = tuple(range(base, base + MATCH_SLOT_LIMIT) for base in MATCH_UDP_BASES)
         remote = isinstance(match, dict) and match.get('communityHost') is True and not public and not spectator
         if remote:
+            if self.local_host:
+                raise CommunityError('This local host cannot hand off to another server.')
             try:
                 address = valid_public_address(match['address'], local_test=bool(self.test_source))
                 if type(match.get('port')) is not int or not 1024 <= match['port'] <= 65535:
@@ -574,6 +580,192 @@ class DirectClient(CommunityClient):
         with self.lock:
             for proxy in self.proxies.values():proxy.close()
             self.proxies.clear()
+
+class LocalDirectClient(DirectClient):
+    """A private Starter-owned connection with its own trust and device identity."""
+
+    local_host = True
+    address_error = 'Local Play must use the loopback address.'
+
+    @staticmethod
+    def accepts_server_address(address):
+        return str(address) == '127.0.0.1'
+
+    def __init__(self, session, *, proximity_settings=None):
+        session = pathlib.Path(session).resolve(strict=True)
+        path = session/'connection.json'
+        certificate = session/'local-host.pem'
+        if path.resolve(strict=True) != path or certificate.resolve(strict=True) != certificate:
+            raise ValueError('Invalid Local Play session files.')
+        connection = validate_connection(read_json(path, 16384), local_test=True)
+        if (connection['hostname'] != 'localhost' or connection['public_address'] != '127.0.0.1'
+                or connection['https_port'] < 1024 or connection['first_udp_port'] != connection['last_udp_port']):
+            raise ValueError('Invalid Local Play host identity.')
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.load_verify_locations(cafile=str(certificate))
+        context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+        super().__init__(connection, ssl_context=context, proximity_settings=proximity_settings)
+
+
+class LocalHostSession:
+    """Own the local lobby service and all children it starts."""
+    def __init__(self, package, source, workspace):
+        self.package = package.resolve(strict=True)
+        self.runtime = self.package/'local-host'
+        self.source = source.resolve(strict=True)
+        self.workspace = workspace.resolve()
+        self.thread = None
+        self.session = None
+        self.client = None
+        self.result = None
+        self.error = None
+        self.stop_requested = threading.Event()
+
+    @property
+    def available(self):
+        return (os.name == 'nt' and (self.runtime/'operator/direct_service.py').is_file()
+                and (self.runtime/'host/package-manifest.json').is_file()
+                and (self.package/'python/python.exe').is_file())
+
+    def verify_runtime(self):
+        from verified_file_cache import verify_package
+
+        package = verify_package(self.package)
+        rows = {row['path'] for row in package['files']}
+        expected = {name for name in rows if name.startswith('local-host/')}
+        actual = {path.relative_to(self.package).as_posix()
+                  for path in self.runtime.rglob('*') if path.is_file()}
+        if (expected != actual
+                or not {'local-host/operator/direct_service.py', 'local-host/host/package-manifest.json',
+                        'local-host/shared-content.json', 'python/python.exe'} <= rows):
+            raise CommunityError('Local Play files differ from the verified Starter package.')
+        layout = read_json(self.runtime/'shared-content.json', 2*1024**2)
+        from map_sync_contract import COOKED_PATH
+        paths = layout.get('paths') if isinstance(layout, dict) else None
+        if (not isinstance(paths, list) or set(layout) != {'format', 'paths'} or layout['format'] != 1
+                or any(not isinstance(name, str) or not COOKED_PATH.fullmatch(name)
+                       or name not in rows for name in paths)
+                or len(paths) != len(set(paths))):
+            raise CommunityError('Local Play has an invalid shared map inventory.')
+        return actual, paths
+
+    def stage_runtime(self, staging, files, shared):
+        def place(source, destination):
+            if destination.exists():
+                raise CommunityError('Duplicate Local Play staged file.')
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(source, destination)
+            except OSError:
+                shutil.copyfile(source, destination)
+
+        for name in sorted(files):
+            place(self.package/name, staging/name.removeprefix('local-host/'))
+        for name in shared:
+            place(self.package/name, staging/'host'/name)
+
+    def start(self):
+        if not self.available:
+            raise CommunityError('Local Play is unavailable in this Starter package.')
+        if self.thread is not None:
+            raise CommunityError('Stop the current local host before starting another.')
+        from owned_native_session import run_owned_job
+
+        files, shared = self.verify_runtime()
+        if self.stop_requested.is_set():
+            raise CommunityError('The local host was stopped.')
+        owner_root = self.workspace/'local-host'
+        owner_root.mkdir(parents=True, exist_ok=True)
+        run = pathlib.Path(tempfile.mkdtemp(prefix='local-', dir=owner_root))
+        self.session = run/'session'
+        self.session.mkdir()
+        self.cancel_path = run/'cancel.json'
+        staging = run/'runtime'
+
+        def discard_staging():
+            if staging.resolve().parent == run.resolve() and staging.name == 'runtime':
+                shutil.rmtree(staging, ignore_errors=True)
+
+        try:
+            self.stage_runtime(staging, files, shared)
+            if self.stop_requested.is_set():
+                raise CommunityError('The local host was stopped.')
+        except Exception:
+            discard_staging()
+            raise
+        script = staging/'operator/direct_service.py'
+        # The bundled Python uses an isolated ._pth file. Add just the
+        # packaged operator directory before running its normal entry point.
+        bootstrap = ('import pathlib, runpy, sys; '
+                     'sys.argv = sys.argv[1:]; '
+                     'sys.path.insert(0, str(pathlib.Path(sys.argv[0]).parent)); '
+                     'runpy.run_path(sys.argv[0], run_name="__main__")')
+        command = [
+            str(self.package/'python/python.exe'), '-B', '-u', '-c', bootstrap, str(script),
+            '--local-session', str(self.session), '--local-game', str(self.source),
+            '--local-workspace', str(owner_root/'game-staging'),
+        ]
+
+        def own():
+            try:
+                self.result = run_owned_job(command, staging, dict(os.environ),
+                                            run/'owner', budget=None, cancellation_path=self.cancel_path)
+            except (OSError, ValueError) as exc:
+                self.error = str(exc)
+            finally:
+                discard_staging()
+                for name in ('connection.json', 'local-host-key.pem'):
+                    try:
+                        (self.session/name).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+        self.thread = threading.Thread(target=own, name='Local Play host')
+        self.thread.start()
+        try:
+            deadline = time.monotonic()+900
+            while time.monotonic() < deadline:
+                if self.stop_requested.wait(0.15):
+                    raise CommunityError('The local host was stopped.')
+                status_path = self.session/'status.json'
+                status = read_json(status_path, 16384) if status_path.is_file() else {}
+                if status.get('status') == 'failed':
+                    raise CommunityError(status.get('message') or 'The local host could not start.')
+                if self.error is not None or not self.thread.is_alive():
+                    raise CommunityError(self.error or 'The local host exited during startup.')
+                if status.get('status') == 'ready':
+                    client = LocalDirectClient(self.session)
+                    try:
+                        caps = client.capabilities()
+                        if self.stop_requested.is_set():
+                            raise CommunityError('The local host was stopped.')
+                    except (OSError, ValueError, CommunityError):
+                        client.close()
+                        raise
+                    self.client = client
+                    return client, caps
+            raise CommunityError('Local host startup timed out while verifying the game package.')
+        except (OSError, ValueError, CommunityError):
+            self.stop()
+            raise
+
+    def stop(self):
+        self.stop_requested.set()
+        if self.client is not None:
+            self.client.close()
+        thread = self.thread
+        if thread is None or not thread.is_alive():
+            return
+        # Write the stop request even if the service has not opened HTTPS.
+        # The owner only cancels its own Job if graceful cleanup stalls.
+        write_json(self.session/'stop.json', {'stop': True})
+        thread.join(45)
+        if thread.is_alive():
+            write_json(self.cancel_path, {'cancel': True, 'reason': 'Requested Local Play shutdown'})
+            thread.join(10)
+        if thread.is_alive():
+            raise CommunityError('The local host is still closing.')
+
 
 def group_connection(root, local, *, ssl_context=None, test_source=None):
     test=test_source is not None
@@ -669,10 +861,10 @@ class ArmorPanel:
         preview = tk.Frame(self.panel, bg=PANEL, width=460, height=335)
         preview.pack(anchor='w', pady=(12, 4), fill='x')
         preview.pack_propagate(False)
-        self.model_status = tk.Label(preview, text='Loading available suits…', bg=PANEL, fg=MUTED)
+        self.model_status = tk.Label(preview, text='Loading available suitsâ€¦', bg=PANEL, fg=MUTED)
         self.model_status.pack(fill='both', expand=True)
         self.model_frame = tk.Frame(preview, bg=PANEL, takefocus=True, cursor='fleur')
-        self.orbit_help = desktop.label(self.panel, 'Drag to rotate · Scroll to zoom · Home to reset', color=MUTED)
+        self.orbit_help = desktop.label(self.panel, 'Drag to rotate Â· Scroll to zoom Â· Home to reset', color=MUTED)
         tk.Label(self.panel, textvariable=self.caption, bg=BG, fg=MUTED).pack(anchor='w')
         self.save = desktop.button(self.panel, 'Save armor choices', self.save_choices)
         self.save.pack(anchor='w', pady=(10, 0))
@@ -700,7 +892,7 @@ class ArmorPanel:
 
     def open(self):
         if not self.catalog:
-            self.status.set('Loading available suits…')
+            self.status.set('Loading available suitsâ€¦')
             self.submit('load')
         elif self.current_selection() != self.displayed_model:
             self.select_suit()
@@ -723,13 +915,13 @@ class ArmorPanel:
         suit = next(key for key, label in self.catalog[weight].items() if label == self.suit.get())
         self.selected[weight] = suit
         key = (weight, suit)
-        self.caption.set(f'{weight} armor · {self.suit.get()}')
+        self.caption.set(f'{weight} armor Â· {self.suit.get()}')
         if key != self.displayed_model and not self.show_model(key):
             self.displayed_model = None
             self.model_frame.pack_forget()
             self.orbit_help.pack_forget()
             loading = os.name=='nt' and key in ARMOR_MODEL_BLOBS and key not in self.models
-            self.model_status.configure(text='Loading 3D suit…' if loading else '3D model unavailable for this suit.')
+            self.model_status.configure(text='Loading 3D suitâ€¦' if loading else '3D model unavailable for this suit.')
             self.model_status.pack(fill='both', expand=True)
             if loading:
                 self.submit(key)
@@ -771,7 +963,7 @@ class ArmorPanel:
 
     def save_choices(self):
         self.submit('save', choices=dict(self.selected))
-        self.status.set('Saving armor choices…')
+        self.status.set('Saving armor choicesâ€¦')
         self.refresh_save()
 
     def load_choices(self, response):
@@ -915,7 +1107,7 @@ class PublicCTFPanel:
         self.ballot = None
         self.ballot_key = None
         self.state = {}
-        self.status = tk.StringVar(value='Checking the public server…')
+        self.status = tk.StringVar(value='Checking the public serverâ€¦')
         self.format_label = tk.StringVar(value='Bots fill open slots')
         self.panel = tk.Frame(self.root, bg=BG)
         desktop.label(self.panel, 'Public CTF', 27, True).pack(anchor='w')
@@ -956,7 +1148,7 @@ class PublicCTFPanel:
         if not ui.game:
             ui.game = ui.game_factory(self.lobby)
         name = ui.name.get().strip()
-        self.status.set('Reserving a seat…')
+        self.status.set('Reserving a seatâ€¦')
         self.submit('start', lambda: ui.game.start_public(name))
 
     def stop(self):
@@ -1022,7 +1214,7 @@ class PublicCTFPanel:
             self.ballot_message.set(f'{state["seconds"]} seconds left')
             for option in state['options']:
                 selected = state['selected'] == option['id']
-                prefix = '✓ ' if selected else ''
+                prefix = 'âœ“ ' if selected else ''
                 self.ballot_buttons[option['id']].configure(text=f'{prefix}{option["label"]} ({option["votes"]})',
                     bg=ACCENT if selected else PANEL, fg=BG if selected else TEXT)
         if opening:
@@ -1056,8 +1248,8 @@ class PublicCTFPanel:
                     team_size = state.get('teamSize', 12)
                     if type(team_size) is not int or not 1 <= team_size <= 64:
                         team_size = 12
-                    self.format_label.set(f'{team_size} vs. {team_size} · Bots fill open slots')
-                    self.status.set(state.get('error') or f'{summary} · {state["players"]}/{2 * team_size} players')
+                    self.format_label.set(f'{team_size} vs. {team_size} Â· Bots fill open slots')
+                    self.status.set(state.get('error') or f'{summary} Â· {state["players"]}/{2 * team_size} players')
         except queue.Empty:
             pass
         state = self.state
@@ -1224,6 +1416,25 @@ class LauncherTips:
         self.desktop.root.after(600, self.tick)
 
 
+class OfflineLobby(CommunityClient):
+    """Keep the normal Starter window available for Local Play when offline."""
+
+    public_supported = armor_supported = proximity_supported = public_only = False
+
+    @staticmethod
+    def accepts_server_address(address):
+        return str(address) == '127.0.0.1'
+
+    def __init__(self):
+        super().__init__('localhost', 443, '127.0.0.1', DIRECT_BRIDGE_POLICY)
+
+    def _request(self, *_args, **_kwargs):
+        raise CommunityConnectionError('The remote host is unavailable. Local Play is available on this PC.')
+
+    def close(self):
+        pass
+
+
 def main(root=ROOT, *, on_ready=None):
     import tkinter as tk
     from tkinter import filedialog,messagebox
@@ -1236,16 +1447,18 @@ def main(root=ROOT, *, on_ready=None):
     local.mkdir(parents=True,exist_ok=True);saved=local/'connection.json'
     chooser=tk.Tk();chooser.withdraw()
     lobby=None
+    local_available=False
     try:
         try:
             game,workspace=installation_options();source=discover_game(game)
+            local_available = LocalHostSession(root, source, workspace).available
         except RuntimeError as exc:
             # Steam discovery reports a missing or ambiguous game as RuntimeError.
             raise ValueError(str(exc)) from exc
         if (root/GROUP_FILE).exists():
             connection=group_connection(root,local)
         else:
-            if not saved.exists():
+            if not saved.exists() and not local_available:
                 filename=filedialog.askopenfilename(title='Choose the player invitation JSON sent by your host',filetypes=[('Player invitation','*.json')])
                 if filename:
                     write_json(saved,validate_connection(read_json(filename,16384)))
@@ -1256,13 +1469,17 @@ def main(root=ROOT, *, on_ready=None):
             except CommunityError:
                 lobby.close()
                 lobby=None
-                messagebox.showerror('Direct host connection','Could not open the lobby. Ask the host to check your access, certificate and TCP forwarding.')
+                if not local_available:
+                    messagebox.showerror('Direct host connection','Could not open the lobby. Ask the host to check your access, certificate and TCP forwarding.')
     except (OSError, ValueError, CommunityError) as exc:
         if lobby is not None:
             lobby.close()
         lobby=None
-        messagebox.showerror('Direct Starter setup',str(exc))
+        if not local_available:
+            messagebox.showerror('Direct Starter setup',str(exc))
     finally:chooser.destroy()
+    if lobby is None and local_available:
+        lobby = OfflineLobby()
     if lobby is None:
         # A canceled invitation or unreachable host does not invalidate the update.
         if on_ready is not None:
@@ -1271,6 +1488,157 @@ def main(root=ROOT, *, on_ready=None):
     class DirectDesktop(Desktop):
         public_panel = None
         armor_panel = None
+        local_host = None
+        local_desktop = None
+        local_room = None
+        local_row = 'this-pc-local-host'
+
+        def local_play_enabled(self):
+            return (not self.closing and not self.controls_busy and self.room is None
+                    and self.game_status in ('idle', 'stopped', 'finished', 'failed'))
+
+        def refresh_local_controls(self):
+            buttons = getattr(self, 'local_buttons', ())
+            if not buttons:
+                return
+            server = self.local_host
+            running = server is not None and server.thread is not None and server.thread.is_alive()
+            if server is not None and not running and not self.controls_busy:
+                self.local_host = self.local_room = None
+            enabled = (running or self.local_play_enabled()) and not self.controls_busy
+            for button in buttons:
+                button.configure(text='Stop local host' if running else 'Start local host',
+                                 state='normal' if enabled else 'disabled')
+            if self.current_panel == 'live':
+                self.render_local_row()
+
+        def render_local_row(self):
+            server = self.local_host
+            if server is None or server.client is None or not server.thread.is_alive():
+                if self.live_list.exists(self.local_row):
+                    self.live_list.delete(self.local_row)
+                return
+            room = self.local_room or {}
+            map_name = server.client.map_label(room['map']) if room.get('map') else 'Choose in lobby'
+            players = str(len(room.get('players', [])))
+            values = ('Local host · This PC', map_name or room.get('map', ''), players, '—', 'Private')
+            if self.live_list.exists(self.local_row):
+                self.live_list.item(self.local_row, values=values)
+            else:
+                self.live_list.insert('', 0, iid=self.local_row, values=values)
+
+        def render_live_matches(self, matches):
+            local_selected = self.live_list.selection() == (self.local_row,)
+            super().render_live_matches(matches)
+            self.render_local_row()
+            if local_selected and self.live_list.exists(self.local_row):
+                self.live_list.selection_set(self.local_row)
+            self.render_live_controls()
+
+        def render_live_controls(self):
+            super().render_live_controls()
+            self.refresh_local_controls()
+            if self.live_list.exists(self.local_row) and not self.live_targets and self.watch_id is None:
+                self.live_status.set('The private host on this PC is available.')
+            if self.live_list.selection() == (self.local_row,):
+                if not self.live_join_row.winfo_manager():
+                    self.live_join_row.pack(before=self.live_status_label, fill='x', pady=(8, 0))
+                self.live_team.configure(state='disabled')
+                self.live_join_reason.set('Opens the private lobby on this PC.')
+                self.live_join_button.configure(text='Open local host',
+                                                state='normal' if self.local_play_enabled() else 'disabled')
+
+        def join_live_selected(self):
+            if self.live_list.selection() == (self.local_row,):
+                if self.local_play_enabled():
+                    self.open_local_host()
+                return
+            super().join_live_selected()
+
+        def toggle_local_host(self):
+            previous = self.local_host
+            if previous is not None:
+                self.stop_local_host(previous)
+                return
+            if not self.local_play_enabled():
+                return
+            server = LocalHostSession(root, source, workspace)
+            self.local_host = server
+            self.status.set('Verifying the local host package…')
+
+            def started(_):
+                self.status.set('Local host ready. Choose it in Lobby Browser.')
+                self.show_panel('live')
+                self.render_local_row()
+                if self.live_list.exists(self.local_row):
+                    self.live_list.selection_set(self.local_row)
+                self.render_live_controls()
+
+            self.run_async(server.start, started)
+            self.refresh_local_controls()
+
+        def stop_local_host(self, server):
+            self.status.set('Stopping the local host…')
+
+            def stopped(_):
+                if self.local_host is server:
+                    self.local_host = self.local_room = None
+                    self.status.set('Local host stopped.')
+                self.render_live_controls()
+
+            self.run_async(server.stop, stopped)
+
+        def open_local_host(self):
+            server = self.local_host
+            if server is None or server.client is None or not server.thread.is_alive():
+                self.status.set('The local host has stopped.')
+                self.render_live_controls()
+                return
+            client = server.client
+            window = tk.Toplevel(self.root)
+            local_workspace = workspace/'local-play-client'
+            local_sync = MapSync(client, root, local_workspace)
+            owner = self
+
+            class LocalDesktop(Desktop):
+                def render(self, room):
+                    owner.local_room = room
+                    super().render(room)
+
+                def close(self):
+                    match = (self.room or {}).get('match')
+                    super().close()
+                    if not isinstance(match, dict) or match.get('status') not in ('starting', 'ready'):
+                        owner.local_room = None
+                    owner.local_desktop = None
+                    owner.root.deiconify()
+                    owner.render_live_controls()
+
+            factory = lambda current: DirectGame(current, root, source, local_workspace,
+                                                 local_workspace/'control', map_sync=local_sync)
+            self.local_desktop = LocalDesktop(window, client, factory, map_sync=local_sync)
+            if self.name.get().strip():
+                self.local_desktop.name.set(self.name.get())
+            window.title('Tribes Rivals: Clan Wars · Local Play')
+
+            def stop_here():
+                if self.local_desktop is not None:
+                    self.local_desktop.close()
+                self.stop_local_host(server)
+
+            self.local_desktop.button(self.local_desktop.play_actions, 'Stop local host', stop_here, False).pack(
+                side='left', padx=(4, 0))
+            self.root.withdraw()
+            self.watch_local_host(server, self.local_desktop)
+
+        def watch_local_host(self, server, desktop):
+            if self.closing or self.local_desktop is not desktop:
+                return
+            if not server.thread.is_alive():
+                desktop.close()
+                self.status.set('The local host stopped. The local match was closed.')
+                return
+            self.root.after(500, self.watch_local_host, server, desktop)
 
         def show_panel(self, name):
             if self.closing:
@@ -1350,16 +1718,26 @@ def main(root=ROOT, *, on_ready=None):
         def close(self):
             if hasattr(self, 'tool_tips'):
                 self.tool_tips.closed.set()
+            if self.local_desktop is not None:
+                self.local_desktop.close()
             try:super().close()
             finally:lobby.close()
 
     try:
-        window=tk.Tk();window.title('TRIBES 3 — Direct Host Starter')
+        window=tk.Tk();window.title('TRIBES 3 â€” Direct Host Starter')
         map_sync=MapSync(lobby,root,workspace)
         factory=lambda current:DirectGame(current,root,source,workspace,workspace/'direct-desktop-control',map_sync=map_sync)
         gui=DirectDesktop(window,lobby,factory,
                           steam_name_loader=lambda:read_steam_name(source,root/'base-game-manifest.json'),
                           map_sync=map_sync)
+        if local_available:
+            gui.local_buttons = [
+                gui.button(parent, 'Start local host', gui.toggle_local_host, False)
+                for parent in (gui.play_actions, gui.live_refresh_button.master)
+            ]
+            for button in gui.local_buttons:
+                button.pack(side='left', padx=(6, 0))
+            gui.refresh_local_controls()
         if lobby.public_supported:
             gui.public_panel = PublicCTFPanel(tk, gui, lobby)
             gui.show_panel('public' if lobby.public_only else 'lobbies')
@@ -1394,6 +1772,8 @@ def main(root=ROOT, *, on_ready=None):
         window.mainloop()
     finally:
         lobby.close()
+        if 'gui' in locals() and gui.local_host is not None:
+            gui.local_host.stop()
 
 def change_invitation():
     import tkinter as tk
