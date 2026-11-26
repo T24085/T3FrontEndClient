@@ -20,7 +20,7 @@ MAPS = (
 
 
 FIXTURE = '''
-local f={captures={},radars={},meshes={},requests=0,spawns=0,reports={}}
+local f={captures={},radars={},managers={},meshes={},requests=0,spawns=0,reports={}}
 local next_address=0
 local function object(name)
     local actor={}
@@ -33,6 +33,7 @@ local function object(name)
 end
 local world, foreign=object('World'),object('Foreign world')
 local gs=object(descriptor.world..'PersistentLevel.GameState');gs.world=world
+function gs:GetMinimapManager() return self.r_MinimapManager end
 local pc=object(descriptor.world..'PersistentLevel.PlayerController');pc.world=world
 pc.PlayerState={r_TeamId=1}
 function gs:HasAuthority() return false end
@@ -98,6 +99,8 @@ function widget.RadarSensors:ClearChildren() self.children=0 end
 function widget:GetOwningPlayer() return pc end
 function widget:UpdateSublevel() self.CachedMapScale=1024/settings.MapSize;self.MapScale=self.CachedMapScale end
 function widget:BindRadarSensors() self.RadarSensors.children=#f.radars;f.binds=(f.binds or 0)+1 end
+function widget:BindMinimap() assert(gs:GetMinimapManager());f.data_binds=(f.data_binds or 0)+1 end
+function widget:OnMinimapData() f.data_rows=gs:GetMinimapManager().r_MinimapPlayers:GetArrayNum() end
 local foreignWidget=object('Foreign map widget');foreignWidget.world=foreign
 foreignWidget.GetOwningPlayer=widget.GetOwningPlayer
 function foreignWidget:SetVisibility() error('foreign minimap changed') end
@@ -108,7 +111,7 @@ local teams={}
 local radarPost
 function FindAllOf(klass)
     return ({BP_MinimapCapture_C=f.captures,StaticMeshActor=f.meshes,UI_Game_Map_C={widget,foreignWidget,otherPlayerWidget},
-        BP_Objective_RadarSensor_C=f.radars,TeamState=teams})[klass]
+        BP_Objective_RadarSensor_C=f.radars,TeamState=teams,ValMinimapManager=f.managers})[klass]
 end
 function RegisterHook(path,_,post)
     assert(path=='/Script/Topaz.TopRadarSensor:SetRadarStatus' and not radarPost)
@@ -154,6 +157,15 @@ end
 function f.add_map_capture()
     local capture=object('authored capture');capture.world=world;f.captures[1]=capture
 end
+function f.add_manager(rows,elsewhere)
+    local manager=object('Minimap manager')
+    manager.world=elsewhere and foreign or world
+    manager.HasAuthority=gs.HasAuthority
+    function manager:GetClass() return object('Class /Script/Valhalla.ValMinimapManager') end
+    manager.r_MinimapPlayers={GetArrayNum=function()return rows end}
+    f.managers[#f.managers+1]=manager
+    return manager
+end
 function f.add_radars()
     for team=1,2 do
         local radar=object('Radar sensor');radar.world=world;radar.r_TeamId=team
@@ -180,6 +192,7 @@ end
 f.teams=teams
 f.widget=widget
 f.player_state=pc.PlayerState
+f.game_state=gs
 return f
 '''
 
@@ -247,6 +260,28 @@ class RadarProjectionTest(unittest.TestCase):
         f.player_state.r_TeamId = 3
         self.assertTrue(f.tick())
         self.assertEqual(f.widget.DetectionRange, 42500)
+
+    def test_recovers_a_single_replicated_marker_feed_and_binds_once(self):
+        f = self.fixture(*MAPS[-1])
+        f.add_manager(2, True)
+        self.assertTrue(f.tick())
+        self.assertIsNone(f.game_state.r_MinimapManager)
+        local_manager = f.add_manager(2)
+        self.assertTrue(f.tick())
+        self.assertTrue(f.tick())
+        self.assertEqual(f.game_state.r_MinimapManager.GetAddress(), local_manager.GetAddress())
+        self.assertEqual((f.data_binds, f.data_rows), (1, 2))
+
+    def test_preserves_existing_manager_and_leaves_ambiguous_feed_alone(self):
+        f = self.fixture(*MAPS[-1])
+        f.add_manager(2)
+        existing = f.add_manager(3)
+        self.assertTrue(f.tick())
+        self.assertIsNone(f.game_state.r_MinimapManager)
+        f.game_state.r_MinimapManager = existing
+        self.assertTrue(f.tick())
+        self.assertEqual(f.game_state.r_MinimapManager.GetAddress(), existing.GetAddress())
+        self.assertIsNone(f.data_binds)
 
     def test_two_radars_per_team_bind_once_after_both_pairs_arrive(self):
         f = self.fixture(*MAPS[-1], radar_count=2)

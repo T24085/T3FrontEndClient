@@ -1264,6 +1264,8 @@ return function(env)
  local state=nil;local retired=false;local checkedBlueprints=false
  local capturePath='/Game/Common/Blueprints/Cameras/BP_MinimapCapture.BP_MinimapCapture_C'
  local detectionRadiusPath='/Script/Topaz.TopRadarSensor:GetDetectionRadius'
+ local minimapManagerPath='/Script/Valhalla.ValGameState:GetMinimapManager'
+ local minimapManagerClass='Class /Script/Valhalla.ValMinimapManager'
  local targetName='TextureRenderTarget2D /Game/Maps/Game/CrossFire/Crossfire_RenderTarget2D.Crossfire_RenderTarget2D'
  local function same(a,b) return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() end
  local function finite(n) return type(n)=='number' and n==n and n>-math.huge and n<math.huge end
@@ -1354,6 +1356,50 @@ return function(env)
    widget.DetectionRange=record.original_detection_range
   end
   record.last_detection_range=nil
+ end
+ local function adopted_manager(gs)
+  if not state.manager_signature_checked then
+   signature(minimapManagerPath,{{'ReturnValue','ObjectProperty',0}})
+   state.manager_signature_checked=true
+  end
+  local manager=gs:GetMinimapManager()
+  if valid(manager) then
+   if same(manager,state.adopted_manager) then return manager end
+   return
+  end
+  local candidate
+  for _,actor in ipairs(FindAllOf('ValMinimapManager') or {}) do
+   if valid(actor) and same(actor:GetWorld(),state.world) then
+    if candidate or actor:HasAuthority() or actor:GetClass():GetFullName()~=minimapManagerClass then return end
+    candidate=actor
+   end
+  end
+  if not candidate or candidate.r_MinimapPlayers:GetArrayNum()==0 then return end
+  -- The replicated actor can exist without a game-state reference. Recover
+  -- that reference locally so the stock widget can bind the feed.
+  gs.r_MinimapManager=candidate
+  if not same(gs:GetMinimapManager(),candidate) then
+   gs.r_MinimapManager=nil
+   error('radar_client_minimap_manager_readback_failed')
+  end
+  state.adopted_manager=candidate
+  return candidate
+ end
+ local function recover_minimap_data(gs,widget,record)
+  if state.minimap_data_failed then return end
+  local ok,why=pcall(function()
+   local manager=adopted_manager(gs)
+   if valid(manager) and not same(record.data_manager,manager) then
+    widget:BindMinimap()
+    widget:OnMinimapData()
+    record.data_manager=manager
+    report('BASE_RADAR_CLIENT_MINIMAP_DATA_BOUND|map='..env.descriptor.name)
+   end
+  end)
+  if not ok then
+   state.minimap_data_failed=true
+   report('BASE_RADAR_CLIENT_MINIMAP_DATA_ERROR|'..tostring(why):sub(1,400))
+  end
  end
  local function bind_native_radars(widget,record)
   local canvas=widget.RadarSensors
@@ -1454,6 +1500,7 @@ return function(env)
     if state.widgets[key] then
      assert(same(widget.MinimapCapture,state.capture) and same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_widget_binding_changed')
      projected=projected+1
+     recover_minimap_data(gs,widget,state.widgets[key])
      if not state.manual_capture then
       signature('/Script/Engine.SceneCaptureComponent2D:CaptureScene',{})
       state.component:CaptureScene()
