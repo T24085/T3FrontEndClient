@@ -40,7 +40,8 @@ def weather_runtime_path(root, run, package):
         return root / 'lua/weather.lua'
     return root / 'lua/snowblind_weather.lua'
 
-def write_map_definitions(root, run, definitions, selected, package, *, public=False, objectives=None):
+def write_map_definitions(root, run, definitions, selected, package, *, public=False, objectives=None,
+                          weather_off=False):
     """Extend the map catalog with descriptors verified during map preparation."""
     from hashlib import sha256
     from community_maps import BY_ID, lua_map_definitions
@@ -88,10 +89,14 @@ def write_map_definitions(root, run, definitions, selected, package, *, public=F
             output.write(raw)
         adapters.append((definition.id, source))
 
-    if not adapters:
+    if not adapters and not weather_off:
         return generated
     calls = [f'load_weather({json.dumps(map_id)}, {json.dumps(source.as_posix(), ensure_ascii=False)})'
              for map_id, source in adapters]
+    if weather_off:
+        if selected is None or public:
+            raise ValueError('The weather override requires a verified private match map.')
+        calls.append(f'assert(maps[{json.dumps(selected.id)}]).weather_off=true')
     result = run / 'catalog-weather.lua'
     result.write_text(f'local maps=assert(loadfile({json.dumps(generated.as_posix(), ensure_ascii=False)}))()\n'
                       + _MAP_WEATHER_LUA + '\n'.join([*calls, 'return maps', '']), encoding='utf-8')
@@ -154,6 +159,7 @@ def main():
     parser.add_argument('--spectate', action='store_true')
     parser.add_argument('--public-session', action='store_true')
     parser.add_argument('--show-flag-indicators', action='store_true')
+    parser.add_argument('--no-weather', action='store_true')
     parser.add_argument('--match-id')
     parser.add_argument('--watch-id')
     parser.add_argument('--test-source', choices=ISOLATED_TEST_SOURCES, help=argparse.SUPPRESS)
@@ -164,6 +170,8 @@ def main():
     parser.add_argument('--headless', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--seconds', type=float, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.no_weather and (args.public_session or not args.expected_map):
+        raise ValueError('The weather override requires a verified private match map.')
     if args.public_session and (args.spectate or args.prepare_only or args.check or not args.expected_map):
         raise ValueError('Public CTF requires an admitted match and its verified map.')
     if args.spectate:
@@ -264,7 +272,7 @@ def main():
                                  bootstrap_id, definitions=definitions)
     map_definitions = write_map_definitions(ROOT, run, definitions, definitions.get(args.expected_map),
                                             package, public=args.public_session,
-                                            objectives=prepared.get('map_objectives'))
+                                            objectives=prepared.get('map_objectives'), weather_off=args.no_weather)
     diagnostic_profile = bool(args.headless or args.test_source or args.seconds is not None)
     with ProfileSession(mode=MODE, workspaces=(workspace, source.parent / 'TRIBES3 Client Sessions'),
                         diagnostic=diagnostic_profile, source_game=source, package_root=ROOT,

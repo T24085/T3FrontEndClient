@@ -207,8 +207,11 @@ class CommunityGameTest(unittest.TestCase):
             done.set()
             return {'status':'terminal','exit_code':1,'job_active_processes_after_cleanup':0}
         self.game.owner.run_owned_job = run
+        target = self.lobby.match_target()
+        self.lobby.match_target = lambda: dict(target, weather=False)
         self.game.start()
         self.assertTrue(done.wait(2))
+        self.assertIn('--no-weather', captured)
         self.game.wait(2)
         self.assertEqual(captured[captured.index('--expected-map')+1], 'Stonehenge')
         self.assertEqual(captured[captured.index('--expected-content-hash')+1], 'a'*64)

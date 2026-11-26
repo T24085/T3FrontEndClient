@@ -16,6 +16,12 @@ Build Direct updates with `--channel windows-direct-r12-v1`. When supplying `--p
 
 Publish the signed artifacts to `operator/direct-local/starter-updates` on the friend host. Upload and verify the content files first, then replace `starter-update.json` atomically using a temporary file in that directory. Keep the previous index and its content files available during the change. The running host serves the new index on the next request. Keep the private signing key on the release operator's machine.
 
+For weather changes, include the managed `client.py` path. The signer embeds
+the current `lua/weather.lua` bytes in that payload so older full ZIPs receive
+the same runtime without adding a new path to their update allowlist. An
+update that manages `community_transport.py` includes the companion launch
+files because that transport advertises support for match weather.
+
 ## Full Windows Clan Wars ZIP
 
 Use the full Windows Direct Starter ZIP as the base when reissuing the download
