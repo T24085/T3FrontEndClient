@@ -16,6 +16,15 @@ Build Direct updates with `--channel windows-direct-r12-v1`. When supplying `--p
 
 Publish the signed artifacts to `operator/direct-local/starter-updates` on the friend host. Upload and verify the content files first, then replace `starter-update.json` atomically using a temporary file in that directory. Keep the previous index and its content files available during the change. The running host serves the new index on the next request. Keep the private signing key on the release operator's machine.
 
+For the public Direct feed, qualify the candidate update on a copy of the
+current installer with a fresh device profile before publishing. Use a host
+that advertises per-session map sync and has a catalog with more than 10,000
+cooked files. Confirm Starter opens, the Maps list loads, and entering a match
+verifies and prepares the selected map through per-session sync. A valid
+signature and a higher revision alone do not test this. Follow
+[issue #89](https://github.com/Tribes3-Modded/T3FrontEndClient/issues/89) for
+the per-session runtime reconciliation with `main`.
+
 ## Full Windows Clan Wars ZIP
 
 Use the full Windows Direct Starter ZIP as the base when reissuing the download
@@ -40,3 +49,11 @@ check that the client reads the catalog and prepares the selected map through
 that path. Include the archive name, hash, revision, and qualification result
 in the release notes. Use the verified archive as the download players see
 when they install for the first time.
+
+After replacing a shared Drive ZIP, download it from the same player-facing
+URL while signed out. Verify the download against the SHA-256 recorded during
+qualification and the current signed feed before announcing the release.
+
+```powershell
+python tools/windows_starter_release.py verify "<downloaded public ZIP>" --sha256 <qualified-zip-sha256>
+```
