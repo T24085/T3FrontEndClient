@@ -12,7 +12,14 @@ import ssl
 import threading
 
 from dynamic_destination import destination,isolated_source
-from community_maps import BY_ID, MAX_MAPS, valid_id, valid_label, validated_boundary
+from community_maps import BY_ID, MAX_MAPS, valid_id, valid_label
+try:
+    from community_maps import validated_boundary
+except ImportError:  # Starter updates replace this file but not community_maps.py; the host validates instead.
+    def validated_boundary(value):
+        if not isinstance(value, dict) or not value:
+            raise ValueError('Invalid boundary settings.')
+        return dict(value)
 from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION
 from player_names import display_name
 
