@@ -286,6 +286,8 @@ class CommunityGame:
                 argv.append('--show-flag-indicators')
             if weather_off:
                 argv.append('--no-weather')
+            if (target.get('boundary') or {}).get('warn_players') is False:
+                argv.append('--no-boundary-warning')
             if public_name is not None:
                 argv.append('--public-session')
             if watch_id is not None:

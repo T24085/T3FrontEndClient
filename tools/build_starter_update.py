@@ -50,6 +50,9 @@ def main():
     # and in-game runtime even when only the transport was selected.
     if 'community_transport.py' in paths:
         paths.update(('community_game.py', 'client.py', 'lua/client.lua'))
+    # A new launch argument (--no-boundary-warning) needs the matching client entry (#96).
+    if 'community_game.py' in paths:
+        paths.update(('client.py', 'lua/client.lua'))
     # The launcher's lobby boundary controls live in their own module (#97).
     if 'desktop_launcher.py' in paths:
         paths.add('boundary_controls.py')
