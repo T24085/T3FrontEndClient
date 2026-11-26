@@ -388,7 +388,8 @@ class DirectClient(CommunityClient):
             if (state['phase'] == 'playing' and isinstance(map_id, str)
                     and self.map_label(map_id) is not None and isinstance(fingerprint, str)
                     and re.fullmatch('[0-9a-f]{64}', fingerprint)):
-                return {'map': map_id, 'contentHash': fingerprint}
+                return {'map': map_id, 'contentHash': fingerprint,
+                        **({'manifestHash': state['manifestHash']} if 'manifestHash' in state else {})}
             if time.monotonic() >= deadline:
                 raise CommunityError(state.get('error') or 'Public CTF is preparing the next map. Try joining again.')
             time.sleep(2)
@@ -1282,6 +1283,8 @@ def main(root=ROOT, *, on_ready=None):
                 self.armor_panel.panel.pack_forget()
             if self.public_panel is not None:
                 self.public_panel.panel.pack_forget()
+            if self.maps_panel is not None:
+                self.maps_panel.pack_forget()
             if name == 'armor' and self.armor_panel is not None:
                 self.current_panel = 'armor'
                 self.lobby_panel.pack_forget()
@@ -1290,7 +1293,7 @@ def main(root=ROOT, *, on_ready=None):
                 self.armor_panel.open()
                 return
             if self.public_panel is not None:
-                if name == 'public' or lobby.public_only:
+                if name == 'public' or (lobby.public_only and name != 'maps'):
                     self.current_panel = 'public'
                     self.lobby_panel.pack_forget()
                     self.live_panel.pack_forget()

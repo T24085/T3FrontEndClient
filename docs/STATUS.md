@@ -1,3 +1,18 @@
+# Per-session map downloads
+
+Starter skips the full map inventory on hosts that advertise per-session
+sync. The Maps tab shows the map index and can verify, download, or remove
+individual maps. Lobby selection can prefetch one map, and joining or
+spectating verifies that map before preparing the game. Older hosts still
+use their existing aggregate sync paths.
+
+This carries the released Windows map-sync behavior into the source for
+issue #89. An isolated Windows profile connected over validated TLS to
+both paired candidates with 10,255 cooked entries. Startup made only
+the capabilities request. The selected map's four files were downloaded,
+verified, and staged, then reused without a further network request.
+Native game launch was outside this check.
+
 # Small-screen Play lobby
 
 The Play lobby keeps team rosters side by side, groups match setup fields, and keeps the match actions visible at the bottom. Join and create fields collapse while a lobby is active. Supported lobby options such as spectators, bots, and flag indicators are available under **Advanced rules**. At narrower widths, fields and secondary match actions can wrap while preserving their enabled states. See frontend issue #72.
