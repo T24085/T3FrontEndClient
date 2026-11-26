@@ -40,3 +40,39 @@ check that the client reads the catalog and prepares the selected map through
 that path. Include the archive name, hash, revision, and qualification result
 in the release notes. Use the verified archive as the download players see
 when they install for the first time.
+
+## Map-declared music
+
+A map can set `music = {track = "t2-desert"}` in its verified `objectives.lua`.
+Use `music = {playlist = "t1", first = 8}` to play the existing T1 playlist
+starting at track 8. The client selects a track when gameplay starts and
+releases it at match end or travel.
+
+For cooked tracks, include `sound-packs.json` in the verified client inventory.
+The music category maps track IDs to Unreal asset paths, with optional
+`volume` and `pitch` values.
+
+```json
+{
+  "format": 1,
+  "packs": {
+    "T2": {
+      "music": {
+        "t2-desert": {
+          "asset": "/Game/Community/T2Audio/Music/Desert.Desert",
+          "volume": 0.8
+        }
+      }
+    }
+  }
+}
+```
+
+Select that pack with `sound_set = "T2"`. To override one track, add
+`sound_overrides = {music = {["t2-desert"] = {asset = "/Game/Community/HildebrandT2/Audio/Night.Night"}}}`
+to the map descriptor. The client looks for that override, then the selected
+pack, then the `default` pack. Cooked Sound Cues and Sound Waves must route
+their base output to `MUS_Game_Submix`. The signed Windows Direct feed can
+also resolve the legacy MP3 tracks by their existing SHA-256 addresses.
+The signed builder embeds only their addresses and the player code, and
+updates the Python entry and Lua template together.
