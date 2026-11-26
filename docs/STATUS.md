@@ -44,13 +44,19 @@ spectator pawn or view is briefly unavailable, the client waits for it and
 re-enters the selected perspective once it is ready. This preserves the
 spectator-only camera scope.
 
-The signed Windows r93 and Linux r25 builds contain the earlier collision
-boom. This candidate carries the newer chase camera and the first-person
-and transition fixes. The isolated Unreal fixture confirmed the eye position,
-aim, and field of view, and checked that the chase camera clears static
-obstacles and ignores dynamic blockers. The Lua fixture covers transient
-spectator state and perspective changes. A rendered multiplayer check and
-Starter publication are pending. See frontend issue #76.
+On the signed Windows r94 and Linux r26 builds, observers still reported
+a split body in first person and jitter in chase. This follow-up activates
+only the selected viewer lens and holds the full body presentation until
+the camera reaches the eye. Chase follows the rendered mesh's interpolated
+position and eases replicated heading changes along the shortest arc. The
+viewer refreshes skin material overrides on each perspective change.
+
+The isolated Unreal fixture verified camera-manager selection with multiple
+active lenses, chase attachment movement, static clearance and dynamic
+blocker handling. Older multiplayer captures show that remote pawns do not
+instantiate the local first-person arms and gun. Full player-view presentation
+and today's remote skin appearance still require rendered multiplayer
+verification. See frontend issue #76.
 
 # Friendly flag carry border
 

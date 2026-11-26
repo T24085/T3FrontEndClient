@@ -16,12 +16,14 @@ local serial=0
 world=nil
 local function object(name)
  serial=serial+1
- local obj={name=name,address=serial,alive=true}
+ local obj={name=name,address=serial,alive=true,active=true}
  function obj:GetAddress()return self.address end
  function obj:GetFullName()return self.name end
  function obj:GetWorld()return world end
  function obj:HasAuthority()return false end
  function obj:IsA(class)return self.class==class.name end
+ function obj:IsActive()return self.active end
+ function obj:SetActive(active)self.active=active end
  return obj
 end
 world=object('world')
@@ -91,7 +93,11 @@ function make_target(name)
  function t:GetBaseAimRotation()return self.aim end
  t.RootComponent=object(name..'_root')
  function t.RootComponent:GetOwner()return t end
- function t.RootComponent:K2_GetComponentLocation()return {X=0,Y=0,Z=100}end
+ t.RootComponent.position={X=0,Y=0,Z=100}
+ function t.RootComponent:K2_GetComponentLocation()return self.position end
+ function t:GetMesh3P()return self.visual end
+ function t:GetMesh1P()return nil end
+ function t:GetGunMesh1P()return nil end
  t.alpha=0
  t.eye=object(name..'_eye');t.FirstPersonCameraComponent=t.eye
  t.eye.FieldOfView=104;t.eye.position={X=0,Y=0,Z=64}
@@ -103,7 +109,8 @@ function make_target(name)
   component.height=transform.Translation.Z
   function component:GetOwner()return t end
   function component:K2_AttachToComponent(parent,socket,locationRule)
-   assert(socket=='None' and ((parent==t.RootComponent and locationRule==0) or (parent==t.eye and locationRule==2)))
+   assert(socket=='None' and ((parent==t.RootComponent and (locationRule==0 or locationRule==1))
+    or (parent==t.eye and locationRule==2) or (parent==t.visual and locationRule==1)))
    self.parent=parent
    return true
   end
@@ -208,9 +215,9 @@ class SpectatorCameraTests(unittest.TestCase):
         pc.PlayerCameraManager.location.X=-300
         follow_once()
         assert(#presentations==2 and presentations[2]==true)
+        pc.PlayerCameraManager.location.X=0
         keys.middle();active.alpha=0;follow_once()
         assert(not pc.third and #presentations==3)
-        pc.PlayerCameraManager.location.X=0
         follow_once()
         assert(#presentations==3 and presentations[3]==false)
         ''')
@@ -251,6 +258,45 @@ class SpectatorCameraTests(unittest.TestCase):
         assert(#probes==9 and camera.rotation.Yaw==-55 and arm.TargetArmLength==166)
         follow_once()
         assert(camera.rotation.Pitch==-14 and arm.TargetArmLength==211)
+        ''')
+
+    def test_chase_follows_the_rendered_mesh_and_eases_wrapped_aim(self):
+        self.check('''
+        active.visual=make_target('mesh_holder').RootComponent
+        local mesh=active.visual
+        function mesh:GetOwner()return active end
+        mesh.position={X=0,Y=0,Z=15}
+        active.aim.Yaw=175
+        follow_once()
+        local rig=service.owned().rig
+        assert(rig.camera.parent==mesh and rig.camera.rotation.Yaw==175)
+        assert(probes[#probes].start.Z==148)
+
+        active.RootComponent.position.X=250
+        mesh.position.X=75
+        active.aim.Yaw=-175
+        follow_once()
+        assert(rig.camera.rotation.Yaw==177.5 and probes[#probes].start.X==75)
+        follow_once()
+        assert(rig.camera.rotation.Yaw==179.375)
+        ''')
+
+    def test_first_person_keeps_full_body_until_eye_is_the_rendered_view(self):
+        self.check('''
+        follow_once()
+        local rig=service.owned().rig
+        assert(rig.camera:IsActive() and not active.eye:IsActive())
+        pc.PlayerCameraManager.location.X=-450
+        keys.F7();follow_once()
+        assert(not pc.third and rig.first:IsActive() and not rig.camera:IsActive())
+        assert(presentations[#presentations]==true)
+        pc.PlayerCameraManager.location.X=0
+        follow_once()
+        assert(presentations[#presentations]==false)
+        assert(events[#events]=='SPECTATOR_FIRST_PERSON_MESHES|arms=false|weapon=false')
+        keys.F8()
+        assert(rig.camera:IsActive() and not rig.first:IsActive())
+        assert(presentations[#presentations]==true)
         ''')
 
     def test_first_person_skips_chase_collision_queries(self):

@@ -98,6 +98,11 @@ return function(env)
   signature('/Script/Engine.SceneComponent:K2_SetWorldRotation',{{'NewRotation','StructProperty',0},
    {'bSweep','BoolProperty',24},{'SweepHitResult','StructProperty',32},{'bTeleport','BoolProperty',264}})
   signature('/Script/Engine.Pawn:GetBaseAimRotation',{{'ReturnValue','StructProperty',0}})
+  signature('/Script/Valhalla.ValCharacter:GetMesh3P',{{'ReturnValue','ObjectProperty',0}})
+  signature('/Script/Valhalla.ValCharacter:GetMesh1P',{{'ReturnValue','ObjectProperty',0}})
+  signature('/Script/Valhalla.ValCharacter:GetGunMesh1P',{{'ReturnValue','ObjectProperty',0}})
+  signature('/Script/Engine.ActorComponent:IsActive',{{'ReturnValue','BoolProperty',0}})
+  signature('/Script/Engine.ActorComponent:SetActive',{{'bNewActive','BoolProperty',0},{'bReset','BoolProperty',1}})
   signature(chaseTrace,{{'WorldContextObject','ObjectProperty',0},{'Start','StructProperty',8},{'End','StructProperty',32},
    {'Radius','FloatProperty',56},{'ObjectTypes','ArrayProperty',64},{'bTraceComplex','BoolProperty',80},
    {'ActorsToIgnore','ArrayProperty',88},{'DrawDebugType','ByteProperty',104},{'OutHit','StructProperty',112},
@@ -176,6 +181,9 @@ return function(env)
    if r.first and same(target.FirstPersonCameraComponent,r.first) then
     target.FirstPersonCameraComponent=valid(r.nativeEye) and r.nativeEye or nil
    end
+   for _,lens in pairs(r.disabledCameras) do
+    if valid(lens) and same(lens:GetOwner(),target) and not lens:IsActive() then lens:SetActive(true,false) end
+   end
    for _,entry in ipairs({{r.first,r.firstIdentity},{r.camera,r.cameraIdentity},{r.arm,r.armIdentity}})do
     local component,wanted=entry[1],entry[2]
     local present=false
@@ -227,7 +235,7 @@ return function(env)
   if rig and same(rig.target,target)then return true end
   if not release_rig() then return false end
   assert(not target:HasAuthority()and same(target:GetWorld(),world),'spectator_camera_remote_replica_required')
-  local r={target=target,identity=identity(target),originalCamera=target.ThirdPersonCameraComponent,originalArm=target.ThirdPersonCameraBoom,originalForce=target.bForceOnlySpectatorToThirdPerson}
+  local r={target=target,identity=identity(target),originalCamera=target.ThirdPersonCameraComponent,originalArm=target.ThirdPersonCameraBoom,originalForce=target.bForceOnlySpectatorToThirdPerson,disabledCameras={}}
   assert(type(r.originalForce)=='boolean','spectator_original_camera_policy_required')
   rig=r -- Retain every component immediately, even if later setup fails.
   allow_first_person(r)
@@ -278,6 +286,30 @@ return function(env)
   r.first:K2_SetWorldRotation({Pitch=aim.Pitch,Yaw=aim.Yaw,Roll=aim.Roll},false,{},true)
   return true
  end
+ local function select_lens(r,third)
+  local selected=third and r.camera or r.first
+  local alternate=r.camera
+  if third then alternate=r.first end
+  -- Native CalcCamera may pick the first active component on the pawn.
+  -- Activate the selected lens before re-entering the remote view target.
+  local eye=r.nativeEye or r.target.FirstPersonCameraComponent
+  for _,original in pairs({r.originalCamera,eye}) do
+   if valid(original) and not same(original,selected) and not same(original,alternate)
+      and same(original:GetOwner(),r.target) and original:IsActive() then
+    r.disabledCameras[identity(original)]=original
+    original:SetActive(false,false)
+   end
+  end
+  if valid(alternate) and alternate:IsActive() then alternate:SetActive(false,false) end
+  if not selected:IsActive() then selected:SetActive(true,false) end
+ end
+ local function first_person_aligned(r)
+  local manager=pc.PlayerCameraManager
+  if not valid(manager) then return false end
+  local actual,eye=manager:GetCameraLocation(),r.first:K2_GetComponentLocation()
+  local dx,dy,dz=actual.X-eye.X,actual.Y-eye.Y,actual.Z-eye.Z
+  return dx*dx+dy*dy+dz*dz<=64*64
+ end
  local function chase_endpoint(pivot,pitch,yaw,length)
   local p,y=math.rad(pitch),math.rad(yaw)
   local horizontal=length*math.cos(p)
@@ -294,12 +326,31 @@ return function(env)
   assert(type(time)=='number'and time>=0 and time<=1,'spectator_chase_trace_time_invalid')
   return math.max(0,chaseDistance*time-surfaceMargin)
  end
+ local function chase_pivot(r)
+  local root=r.target.RootComponent
+  local mesh=r.chaseMesh
+  local anchor=valid(mesh) and same(mesh:GetOwner(),r.target) and mesh or root
+  local position=anchor:K2_GetComponentLocation()
+  if not same(r.chaseAnchor,anchor) then
+   -- Unreal smooths correction on the rendered character mesh. Follow that
+   -- transform between camera updates instead of following capsule snaps.
+   local rootPosition=root:K2_GetComponentLocation()
+   r.chaseHeight=chaseHeight+rootPosition.Z-position.Z
+   assert(r.camera:K2_AttachToComponent(anchor,FName('None'),1,1,1,false),'spectator_chase_anchor_attach_failed')
+   r.chaseAnchor=anchor
+  end
+  return {X=position.X,Y=position.Y,Z=position.Z+r.chaseHeight}
+ end
  local function update_chase(r)
   local sys=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
   assert(valid(sys),'spectator_chase_system_library_required')
-  local yaw=r.target:GetBaseAimRotation().Yaw
-  local origin=r.target.RootComponent:K2_GetComponentLocation()
-  local pivot={X=origin.X,Y=origin.Y,Z=origin.Z+chaseHeight}
+  local aim=r.target:GetBaseAimRotation().Yaw
+  local yaw=r.chaseYaw or aim
+  -- Interpolate on the shortest arc so replicated heading steps and the
+  -- wrap at north don't snap the chase camera from one side to the other.
+  yaw=yaw+((aim-yaw+180)%360-180)*.25
+  r.chaseYaw=yaw
+  local pivot=chase_pivot(r)
   local bestDistance,bestPitch,bestYaw=-1,cameraAngles[1][1],yaw
   for _,angle in ipairs(cameraAngles)do
    local pitch,heading=angle[1],yaw+angle[2]
@@ -376,10 +427,7 @@ return function(env)
   end
   return third
  end
- local function update_presentation(target)
-  -- In spectator mode the selected view owns the body mask. Spring-arm
-  -- collision can otherwise make chase view apply the first-person cutout.
-  local third=preferredThird
+ local function update_presentation(target,third)
   if passive then third=native_third_person(target)end
   if third~=renderedThird then
    materials.apply(target,third)
@@ -392,14 +440,24 @@ return function(env)
   if allow_first_person(rig) then cameraRefresh=true end
   if not select_perspective() then return false end
   if preferredThird then
+   rig.chaseMesh=target:GetMesh3P()
    update_chase(rig)
   elseif not update_first_person(rig) then
+   update_presentation(target,true)
    return false
   end
+  select_lens(rig,preferredThird)
   if cameraRefresh and not refresh_camera(target) then return false end
   cameraRefresh=false
-  update_presentation(target)
-  return true
+  -- Never apply the first-person body cutout to a chase or blended camera.
+  local aligned=preferredThird or first_person_aligned(rig)
+  update_presentation(target,preferredThird or not aligned)
+  if aligned and not preferredThird and not rig.reportedViewmodel then
+   rig.reportedViewmodel=true
+   report('SPECTATOR_FIRST_PERSON_MESHES|arms='..tostring(valid(target:GetMesh1P()))
+    ..'|weapon='..tostring(valid(target:GetGunMesh1P())))
+  end
+  return aligned
  end
  function service.action(action)
   scope()
