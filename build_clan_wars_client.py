@@ -13,6 +13,7 @@ from map_sync_contract import map_catalog
 from community_maps import declared_definitions
 from starter_update import DIRECT_CHANNEL, INDEX, decode_index, encoded
 from tools.verify_player_release import safe_name
+from tools.windows_starter_release import verify_live_revision
 
 
 ROOT = Path(__file__).resolve().parent
@@ -157,6 +158,12 @@ def build(source, proof_path, output, *, feed=None, catalog=None, assets=None,
                 digest = hashlib.file_digest(payload,'sha256').hexdigest()
             if name in expected and expected[name] != (info.file_size,digest):
                 raise ValueError(f'Failed archive verification: {name}')
+    try:
+        with ZipFile(partial) as package:
+            verify_live_revision(package)
+    except Exception:
+        partial.unlink()
+        raise
     partial.rename(output)
     return {'archive':output.name,'bytes':output.stat().st_size,'sha256':file_sha(output),
             'starter_revision':manifest['starter_update_revision'],'maps':len(original_catalog),

@@ -15,3 +15,28 @@ The Direct package builder installs the signed updater. Players switch once to a
 Build Direct updates with `--channel windows-direct-r12-v1`. When supplying `--previous`, use the last signed Direct index. The Direct channel also accepts `direct_client.py` and `direct_network.py` from `experimental/direct-hosting/src`. Coordinate any direct protocol changes with the host release.
 
 Publish the signed artifacts to `operator/direct-local/starter-updates` on the friend host. Upload and verify the content files first, then replace `starter-update.json` atomically using a temporary file in that directory. Keep the previous index and its content files available during the change. The running host serves the new index on the next request. Keep the private signing key on the release operator's machine.
+
+## Full Windows Clan Wars ZIP
+
+Use the full Windows Direct Starter ZIP as the base when reissuing the download
+with its existing maps. Pin its SHA-256 from a verified release receipt.
+
+```powershell
+python tools/windows_starter_release.py build --base "<verified full ZIP>" --base-sha256 <sha256> --output "<new full ZIP>"
+python tools/windows_starter_release.py verify "<new full ZIP>"
+```
+
+The builder uses the host in the packaged invitation. It verifies the current
+signed index and embeds its files and revision before first launch. It checks
+the feed again after writing the ZIP and rejects the build if the live revision
+changed during packaging. The Windows/Proton wrapper performs the same
+revision and managed-file check before finalizing its ZIP.
+
+Run the verify command again immediately before sharing a ZIP. Extract that
+exact archive and run the top-level BAT with a fresh device profile. Confirm
+the bundled revision, private lobby and Live Matches access, and the live map
+catalog using the packaged client. On hosts that advertise per-map sync,
+check that the client reads the catalog and prepares the selected map through
+that path. Include the archive name, hash, revision, and qualification result
+in the release notes. Use the verified archive as the download players see
+when they install for the first time.
