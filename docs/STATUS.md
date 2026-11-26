@@ -12,7 +12,9 @@ round timer expired. A separate private match loaded an original cooked
 Sound Wave through the map override and played it on the native music
 submix. Its component gain changed from 0.40 to 0.20 after the music
 setting was halved. Windows reached the memory reserve before this
-two-process test could observe round-end cleanup. See frontend issue #85.
+two-process test could observe round-end cleanup. A standalone test set the
+native game state to post-match and confirmed the cooked component stopped
+in the same world. See frontend issue #85.
 
 # Small-screen Play lobby
 
