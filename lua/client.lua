@@ -1263,6 +1263,7 @@ return function(env)
  if env.allow_standalone then assert(type(env.client_context_guard)=='function','radar_standalone_requires_native_context_guard') end
  local state=nil;local retired=false;local checkedBlueprints=false
  local capturePath='/Game/Common/Blueprints/Cameras/BP_MinimapCapture.BP_MinimapCapture_C'
+ local detectionRadiusPath='/Script/Topaz.TopRadarSensor:GetDetectionRadius'
  local targetName='TextureRenderTarget2D /Game/Maps/Game/CrossFire/Crossfire_RenderTarget2D.Crossfire_RenderTarget2D'
  local function same(a,b) return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() end
  local function finite(n) return type(n)=='number' and n==n and n>-math.huge and n<math.huge end
@@ -1330,6 +1331,30 @@ return function(env)
   state.component=component;state.target=target
   report('BASE_RADAR_CLIENT_CAPTURE_CREATED|mapSize='..size..'|width='..component.OrthoWidth..'|projectionSource=ValWorldSettings.MapSize|height='..height..'|mapMeshes='..meshes..'|target='..target:GetFullName()..'|pixels='..target.SizeX..'x'..target.SizeY)
  end
+ local function sync_detection_range(widget,record,sensor)
+  if valid(sensor) and not sensor:HasAuthority() then
+   if state.detection_radius_available==nil then
+    local ok,why=pcall(signature,detectionRadiusPath,{{'ReturnValue','FloatProperty',0}})
+    state.detection_radius_available=ok
+    if not ok then report('BASE_RADAR_CLIENT_RANGE_UNAVAILABLE|'..tostring(why):sub(1,400)) end
+   end
+   if state.detection_radius_available then
+    local radius=sensor:GetDetectionRadius()
+    if finite(radius) and radius>0 and finite(widget.DetectionRange) then
+     if not record.last_detection_range or widget.DetectionRange~=record.last_detection_range then
+      record.original_detection_range=widget.DetectionRange
+     end
+     if widget.DetectionRange~=radius then widget.DetectionRange=radius end
+     record.last_detection_range=radius
+     return
+    end
+   end
+  end
+  if record.last_detection_range and widget.DetectionRange==record.last_detection_range then
+   widget.DetectionRange=record.original_detection_range
+  end
+  record.last_detection_range=nil
+ end
  local function bind_native_radars(widget,record)
   local canvas=widget.RadarSensors
   if not valid(canvas) then return false end
@@ -1337,15 +1362,23 @@ return function(env)
   local perTeam=env.descriptor.radars_per_team or 1
   local expected=2*perTeam
   local teams={0,0}
+  local friendly
+  local ps=state.pc.PlayerState
+  local localTeam=valid(ps) and ps.r_TeamId
   for _,actor in ipairs(FindAllOf('BP_Objective_RadarSensor_C') or {}) do
    if valid(actor) and same(actor:GetWorld(),state.world) then
     assert(actor:GetClass():GetFullName()=='BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_RadarSensor.BP_Objective_RadarSensor_C','radar_client_original_radar_class_required')
     local team=actor.r_TeamId
     if team~=1 and team~=2 then return false end
     teams[team]=teams[team]+1
+    if team==localTeam then friendly=actor end
    end
   end
-  if teams[1]~=perTeam or teams[2]~=perTeam then return false end
+  local complete=teams[1]==perTeam and teams[2]==perTeam
+  -- The original widget has one detection center. Match its range to the
+  -- friendly sensor only where there is exactly one center for that team.
+  if perTeam==1 then sync_detection_range(widget,record,complete and friendly or nil) end
+  if not complete then return false end
   -- Native initialization can run while only some replicated sensors exist.
   -- Rebuild that partial sensor layer once, after every team ID has arrived.
   if perTeam>1 and before>0 and before<expected and not record.rebuilt_partial_radars then

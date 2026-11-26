@@ -34,6 +34,7 @@ end
 local world, foreign=object('World'),object('Foreign world')
 local gs=object(descriptor.world..'PersistentLevel.GameState');gs.world=world
 local pc=object(descriptor.world..'PersistentLevel.PlayerController');pc.world=world
+pc.PlayerState={r_TeamId=1}
 function gs:HasAuthority() return false end
 pc.HasAuthority=gs.HasAuthority
 function pc:IsLocalPlayerController() return true end
@@ -90,6 +91,7 @@ function widget:SetVisibility(value) self.visibility=value end
 widget.Material=object('Map material')
 widget.MapTexture={Brush={ResourceObject=widget.Material}}
 widget.CachedZoom,widget.TargetZoom=1,1
+widget.DetectionRange=42500
 widget.RadarSensors={children=0,GetChildrenCount=function(self) return self.children end}
 function widget.RadarSensors:GetChildAt() return {GetClass=function()return radarWidgetClass end} end
 function widget.RadarSensors:ClearChildren() self.children=0 end
@@ -156,6 +158,8 @@ function f.add_radars()
     for team=1,2 do
         local radar=object('Radar sensor');radar.world=world;radar.r_TeamId=team
         radar.HasAuthority=gs.HasAuthority
+        radar.radius=team==1 and 20000 or 30000
+        function radar:GetDetectionRadius() return self.radius end
         radar.PoweredComp={r_bGeneratorPowered=true,r_bOwnerDowned=false,GetOwner=function()return radar end}
         function radar:GetClass()
             return object('BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_RadarSensor.BP_Objective_RadarSensor_C')
@@ -175,6 +179,7 @@ function f.retire()
 end
 f.teams=teams
 f.widget=widget
+f.player_state=pc.PlayerState
 return f
 '''
 
@@ -229,6 +234,20 @@ class RadarProjectionTest(unittest.TestCase):
         self.assertEqual(f.widget.RadarSensors.children, 2)
         self.assertEqual((f.requests, f.spawns), (1, 1))
 
+    def test_single_sensor_range_uses_local_team_and_restores_native_default(self):
+        f = self.fixture(*MAPS[-1])
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.DetectionRange, 42500)
+        f.add_radars()
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.DetectionRange, 20000)
+        f.player_state.r_TeamId = 2
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.DetectionRange, 30000)
+        f.player_state.r_TeamId = 3
+        self.assertTrue(f.tick())
+        self.assertEqual(f.widget.DetectionRange, 42500)
+
     def test_two_radars_per_team_bind_once_after_both_pairs_arrive(self):
         f = self.fixture(*MAPS[-1], radar_count=2)
         f.add_radars()
@@ -240,6 +259,7 @@ class RadarProjectionTest(unittest.TestCase):
         self.assertTrue(f.tick())
         self.assertTrue(f.tick())
         self.assertEqual((f.widget.RadarSensors.children, f.binds), (4, 1))
+        self.assertEqual(f.widget.DetectionRange, 42500)
 
     def test_client_team_radar_recovers_from_individual_replication_updates(self):
         f = self.fixture(*MAPS[-1], radar_count=2)
