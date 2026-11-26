@@ -124,6 +124,83 @@ local bounds = {
     pitch_jitter={0,.25}, volume_jitter={0,.25},
 }
 local tiers = {easy=true,medium=true,hard=true,exit=true}
+local armors = {light=true,medium=true,heavy=true}
+
+-- Sound packs (T3BackEndServer#60/#90): /Game/Community/Liquids2026/<set>/ holds each game's
+-- cooked waves. Lookup order: the liquid's map override, then the map's selected pack, then
+-- the stock T3 water sounds. In T2 splash sounds belong to the armor, not the liquid.
+local SOUND_SETS = {T1=true,T2=true,TV=true,TA=true,T3=true,CW=true}
+local function pack_wave(set,folder,name)
+    local asset='SW_'..name
+    return '/Game/Community/Liquids2026/'..set..'/'..folder..'/'..asset..'.'..asset
+end
+local function per_armor(light,medium,heavy)
+    return {light=pack_wave('T2','Armor',light),medium=pack_wave('T2','Armor',medium),
+            heavy=pack_wave('T2','Armor',heavy)}
+end
+-- Speed gates are the T2 values at the 1.05 cm-per-unit scale: splash 4 m/s, medium 10,
+-- hard 20, exit only above 5 m/s.
+local t2_water = {
+    minimum=420, medium=1050, hard=2100, exit=525,
+    sounds={easy=per_armor('general_water_smallsplash2','general_water_smallsplash','general_water_smallsplash'),
+            medium=per_armor('general_water_medsplash','general_water_medsplash','general_water_medsplash'),
+            hard=per_armor('general_water_bigsplash','general_water_bigsplash','general_water_bigsplash'),
+            exit=per_armor('general_water_exit2','general_water_exit','general_water_exit2')},
+}
+-- T2 has no lava splash profile; its lava is heard through placed emitters (lavahiss,
+-- lavahostile). Until a pack ships dedicated cues, lava entry uses the pack's lava bloops
+-- by speed and exit uses the hiss. Maps can override any tier.
+local t2_lava = {
+    minimum=420, medium=1050, hard=2100, exit=525,
+    sounds={easy=pack_wave('T2','Environment','lavabloop1'), medium=pack_wave('T2','Environment','lavabloop4'),
+            hard=pack_wave('T2','Environment','lavabloop7'), exit=pack_wave('T2','Environment','lavahiss')},
+}
+local PACK_PROFILES = {T2={stagnant_water=t2_water, river_water=t2_water, lava=t2_lava}}
+
+-- Resolve a map's sound set as T3BackEndServer#60 specifies: the descriptor's sound_set,
+-- else the R24 game tag in its asset group or name (no tag means T1), and fall back to T2
+-- when the chosen set has no liquid profiles yet.
+local function resolve_sound_set(descriptor, report)
+    local requested=descriptor.sound_set
+    if requested~=nil and not SOUND_SETS[requested] then
+        report('SOUND_SET_INVALID|map='..tostring(descriptor.name)..'|value='..tostring(requested))
+        requested=nil
+    end
+    if requested==nil then
+        local identity=tostring(descriptor.asset_group or descriptor.name or '')
+        requested=identity:match('T2') and 'T2' or identity:match('TA') and 'TA'
+            or identity:match('TV') and 'TV' or 'T1'
+    end
+    if PACK_PROFILES[requested] then return requested,PACK_PROFILES[requested] end
+    report('SOUND_SET_FALLBACK|map='..tostring(descriptor.name)..'|requested='..requested..'|used=T2')
+    return 'T2',PACK_PROFILES.T2
+end
+
+-- Pick a tier's sound for an armor weight. A tier entry is an asset path or a table keyed by
+-- light/medium/heavy; a missing weight uses medium.
+local function pick_sound(sounds, tier, armor)
+    local entry=sounds and sounds[tier]
+    if type(entry)=='table' then return entry[armor] or entry.medium end
+    return entry
+end
+
+-- Armor weight of a pawn from its class name. Rules map a weight to name fragments; the
+-- descriptor may supply armor_classes = {light={'...'}, ...}. Unknown classes count as medium
+-- and are reported once so the rules can be filled in from logs.
+local DEFAULT_ARMOR_RULES = {light={'light'}, medium={'medium'}, heavy={'heavy'}}
+local function armor_weight(class_name, rules, report, seen)
+    local name=tostring(class_name or ''):lower()
+    for _,weight in ipairs({'heavy','medium','light'}) do
+        for _,fragment in ipairs(rules[weight] or {}) do
+            if fragment~='' and name:find(fragment:lower(),1,true) then return weight end
+        end
+    end
+    if seen and name~='' and not seen[name] then
+        seen[name]=true
+        report('LIQUID_ARMOR_UNRESOLVED|class='..name:sub(1,160))
+    end
+    return 'medium'
+end
 
 local function finite(n)
     return type(n)=='number' and n>-math.huge and n<math.huge
@@ -150,7 +227,21 @@ local function merge_profile(base, patch)
             for tier,entry in pairs(result[key]) do parts[tier]=entry end
             for tier,entry in pairs(value) do
                 assert(tiers[tier],'liquid_profile_tier_unknown')
-                if key=='sounds' then
+                if key=='sounds' and type(entry)=='table' then
+                    -- Weight-level merge: an override names only the weights it changes; the
+                    -- rest keep the tier's previous sound (a single path counts for every weight).
+                    local weights={}
+                    local previous=parts[tier]
+                    for weight in pairs(armors) do
+                        weights[weight]=type(previous)=='table' and previous[weight] or previous
+                    end
+                    for weight,path in pairs(entry) do
+                        assert(armors[weight],'liquid_profile_armor_unknown')
+                        weights[weight]=asset_path(path)
+                    end
+                    assert(next(weights)~=nil,'liquid_profile_armor_sounds_required')
+                    parts[tier]=weights
+                elseif key=='sounds' then
                     parts[tier]=asset_path(entry)
                 else
                     assert(finite(entry) and entry>=0 and entry<=1,'liquid_profile_gain_invalid')
@@ -184,8 +275,9 @@ local function count_list(values,limit)
     return count
 end
 
-local function liquid_profiles(packs, report)
-    local profiles={stagnant_water=defaults,river_water=defaults}
+local function liquid_profiles(packs, report, set_profiles)
+    local profiles={stagnant_water=defaults,river_water=defaults,lava=defaults}
+    for name,profile in pairs(set_profiles or {}) do profiles[name]=merge_profile(profiles[name] or defaults,profile) end
     if packs==nil then return profiles end
     local ok,count=pcall(count_list,packs,8)
     if not ok then report('LIQUID_PROFILE_SKIPPED|'..tostring(count));return profiles end
@@ -222,17 +314,38 @@ local function authored_surface(item,profiles)
     end
     -- The first Quagmire cook carries map-local wave assets until the shared
     -- profile pack supplies its own paths. Map overrides always apply last.
+    -- They stay available as a fallback when the selected pack's waves are not cooked.
+    local local_sounds
     if type(item.proposed_global_assets)=='table' and item.proposed_global_assets.sounds~=nil then
-        profile=merge_profile(merge_profile(defaults,{sounds=item.proposed_global_assets.sounds}),profile)
+        local_sounds=merge_profile(defaults,{sounds=item.proposed_global_assets.sounds}).sounds
+        profile=merge_profile(merge_profile(defaults,{sounds=local_sounds}),profile)
     end
     if item.overrides~=nil then profile=merge_profile(profile,item.overrides) end
     local water=item.liquid_type=='stagnant_water' or item.liquid_type=='river_water'
     return {id=item.id,tag=item.splash_pool_tag,xmin=lo[1],xmax=hi[1],ymin=lo[2],ymax=hi[2],z=z,water=water,
-            profile=profile,tint=tint}
+            profile=profile,tint=tint,local_sounds=local_sounds,liquid_type=item.liquid_type}
+end
+
+local function armor_rules(descriptor)
+    local rules=DEFAULT_ARMOR_RULES
+    if type(descriptor.armor_classes)=='table' then
+        rules={}
+        for weight,fragments in pairs(descriptor.armor_classes) do
+            assert(armors[weight] and count_list(fragments,16)>=0,'liquid_armor_classes_invalid')
+            rules[weight]={}
+            for i,fragment in ipairs(fragments) do
+                assert(type(fragment)=='string' and #fragment>0 and #fragment<=64,'liquid_armor_class_invalid')
+                rules[weight][i]=fragment
+            end
+        end
+    end
+    return rules
 end
 
 local function discover_authored(descriptor,world,valid,report)
-    local profiles=liquid_profiles(descriptor.liquid_profile_packs,report)
+    local set,set_profiles=resolve_sound_set(descriptor,report)
+    local profiles=liquid_profiles(descriptor.liquid_profile_packs,report,set_profiles)
+    report('LIQUID_SOUND_SET|map='..tostring(descriptor.name)..'|set='..set)
     local count=count_list(descriptor.liquids,32)
     local surfaces,allSlots,pools,ids={},{},{},{}
     for i=1,count do
@@ -297,14 +410,14 @@ local function asset_loader(valid,report)
 end
 
 local function spatial_audio(valid,report,load)
-    return function(gameplay,context,pc,profile,tier,location,rotation,fallback_sound)
+    return function(gameplay,context,pc,profile,tier,location,rotation,fallback_sound,armor)
         local camera=valid(pc) and pc.PlayerCameraManager
         if not valid(camera) then return end
         local listener=camera:GetCameraLocation()
         local dx,dy,dz=listener.X-location.X,listener.Y-location.Y,listener.Z-location.Z
         local distance=math.sqrt(dx*dx+dy*dy+dz*dz)
         if distance>=profile.range then return end
-        local sound=load(profile.sounds[tier],'/Script/Engine.SoundBase')
+        local sound=load(pick_sound(profile.sounds,tier,armor),'/Script/Engine.SoundBase')
             or load(fallback_sound,'/Script/Engine.SoundBase')
         if not sound then return end
         local attenuation=load(profile.attenuation,'/Script/Engine.SoundAttenuation')
@@ -370,11 +483,15 @@ local function factory(env)
             assert(valid(gameplay) and valid(character_class) and (#slots==0 or valid(materials)))
 
             local event_count=0
-            local function splash(surface,x,y,z,speed,now,direction)
+            local rules=descriptor and armor_rules(descriptor) or DEFAULT_ARMOR_RULES
+            local unresolved_armor={}
+            local function splash(surface,x,y,z,speed,now,direction,armor)
                 local profile=surface.profile or stock_water
                 local tier=splash_tier(profile,speed,direction)
-                local fallback_sound=surface.water and stock_water.sounds[tier] or nil
-                local sound_spawned=play_audio(gameplay,game_state,pc,profile,tier,{X=x,Y=y,Z=z},rotation,fallback_sound)
+                local fallback_sound=pick_sound(surface.local_sounds,tier,armor)
+                    or surface.water and stock_water.sounds[tier] or nil
+                local sound_spawned=play_audio(gameplay,game_state,pc,profile,tier,{X=x,Y=y,Z=z},rotation,
+                                               fallback_sound,armor)
                 local size=math.min(1.55,0.66+speed/4600)
                 if stock or surface.water and #surface.pool.slots==0 then
                     local fx_spawned=play_stock_splash(valid,report,load,game_state,{X=x,Y=y,Z=z+6},rotation,size)
@@ -389,7 +506,8 @@ local function factory(env)
                 if surface.profile then
                     event_count=event_count+1
                     if event_count<=64 then
-                        report('LIQUID_SPLASH|id='..surface.id..'|tier='..tier..'|speed_cm_s='..math.floor(speed))
+                        report('LIQUID_SPLASH|id='..surface.id..'|tier='..tier..'|armor='..tostring(armor)
+                               ..'|speed_cm_s='..math.floor(speed))
                     end
                     local pool=surface.pool
                     if #pool.slots==0 then return end
@@ -451,15 +569,21 @@ local function factory(env)
                                             local hit = not surface.ski or valid(surface.ski) and surface.ski:K2_LineTraceComponent(
                                                 {X=x,Y=y,Z=z+50}, {X=x,Y=y,Z=z-50}, true, false, false, {}, {}, {}, {})
                                             if hit then
+                                                local named,class_name=pcall(function()
+                                                    local class=pawn:GetClass()
+                                                    return valid(class) and class:GetFName():ToString() or nil
+                                                end)
+                                                local armor=armor_weight(named and class_name or nil,
+                                                                         rules,report,unresolved_armor)
                                                 if surface.profile then
                                                     if not surface.failed then
-                                                        local ok,why=pcall(splash,surface,x,y,z,speed,now,direction)
+                                                        local ok,why=pcall(splash,surface,x,y,z,speed,now,direction,armor)
                                                         if not ok then
                                                             surface.failed=true
                                                             report('LIQUID_ENTRY_SKIPPED|id='..surface.id..'|'..tostring(why))
                                                         end
                                                     end
-                                                else splash(surface,x,y,z,speed,now,direction) end
+                                                else splash(surface,x,y,z,speed,now,direction,armor) end
                                                 sample.next_splash = now + (surface.profile and surface.profile.cooldown or .20)
                                                 break
                                             end
@@ -490,4 +614,5 @@ local function factory(env)
     end
 end
 
-return factory, contact, authored_surface, liquid_profiles, splash_tier
+return factory, contact, authored_surface, liquid_profiles, splash_tier, pick_sound, armor_weight,
+    resolve_sound_set
