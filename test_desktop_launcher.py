@@ -1,4 +1,7 @@
 """Exercise desktop controls with a fake lobby and game, without network or game launch."""
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import time
 import gc
 import sys
@@ -6,7 +9,7 @@ import tkinter as tk
 import unittest
 from unittest.mock import patch
 
-from desktop_launcher import Desktop
+from desktop_launcher import Desktop, LOBBY_LOCK_RULES_ENABLED
 from community_transport import CommunityError, RESULT_STATS
 from community_maps import options
 
@@ -26,6 +29,8 @@ class FakeLobby:
             ident=data.get('playerId','one')
             next(p for p in self.room['players'] if p['id']==ident)['team']=data['team']
         elif operation=='map': self.room['map']=data['map']
+        elif operation == 'rules' and 'locked' in data:
+            self.room['locked'] = data['locked']
         elif operation=='start': self.room['phase']='ready'
         elif operation=='stop': self.room['phase']='stopped'
         elif operation=='leave': return None
@@ -163,6 +168,49 @@ class DesktopTest(unittest.TestCase):
             app.close()
             app.close_worker.join(2)
 
+    def test_advanced_rules_lock_checkbox_uses_lobby_state_and_leader_permissions(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        app = Desktop(root, lobby, lambda _: FakeGame())
+
+        def wait_idle():
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            self.assertFalse(app.busy)
+
+        try:
+            wait_idle()
+            app.caps['privateLobbyAdmission'] = True
+            lobby.room['locked'] = True
+            app.render(lobby.room)
+            self.assertFalse(app.room_lock_toggle.winfo_manager())
+            app.caps[LOBBY_LOCK_RULES_ENABLED] = True
+            app.render(lobby.room)
+            app.advanced_button.invoke()
+            self.assertEqual(app.rules_row.winfo_manager(), 'pack')
+            self.assertEqual(app.room_lock_toggle.cget('state'), 'normal')
+            self.assertTrue(app.room_locked.get())
+            self.assertNotIn('Locked', app.room_heading.get())
+
+            app.room_lock_toggle.invoke()
+            self.assertEqual(app.start_button.cget('state'), 'disabled')
+            wait_idle()
+            self.assertIn(('rules', {'locked': False}), lobby.calls)
+            self.assertFalse(app.room_locked.get())
+
+            app.render(dict(lobby.room, playerId='two', locked=True))
+            self.assertTrue(app.room_locked.get())
+            self.assertEqual(app.room_lock_toggle.cget('state'), 'disabled')
+            app.render(dict(lobby.room, phase='starting', locked=True))
+            self.assertIn('Locked', app.room_heading.get())
+            self.assertEqual(app.room_lock_toggle.cget('state'), 'disabled')
+        finally:
+            app.close()
+            app.close_worker.join(2)
+
     @unittest.skipUnless(sys.platform == 'win32', 'Retail profile import is a Windows Starter control.')
     def test_settings_import_button_uses_saved_profile_only_after_game_exits(self):
         root = tk.Tk()
@@ -217,6 +265,16 @@ class DesktopTest(unittest.TestCase):
             self.assertEqual(app.rules_row.winfo_manager(), 'pack')
             self.assertFalse(app.fall_toggle.winfo_manager())
             self.assertFalse(app.limits_row.winfo_manager())
+            self.assertFalse(app.weather_row.winfo_manager())
+            lobby.room.update(weatherDefault=False, weather=None)
+            app.render(lobby.room)
+            self.assertEqual(app.weather_choice.get(), 'Map default (Off)')
+            self.assertEqual(str(app.weather_choice.cget('state')), 'readonly')
+            for index, override in enumerate((None, True, False)):
+                app.weather_choice.current(index)
+                with patch.object(app, 'call_action') as call:
+                    app.change_weather()
+                    call.assert_called_once_with('rules', weather=override)
             app.caps['matchLimitsEnabled'] = True
             app.render(lobby.room)
             self.assertEqual(app.limits_row.winfo_manager(), 'grid')
@@ -267,8 +325,44 @@ class DesktopTest(unittest.TestCase):
             self.assertEqual(app.bot_toggle.cget('state'), 'disabled')
             self.assertEqual(str(app.side_combo.cget('state')), 'disabled')
             self.assertEqual(str(app.score_limit.cget('state')), 'disabled')
+            self.assertEqual(str(app.weather_choice.cget('state')), 'disabled')
             self.assertEqual(app.score_limit.get(), 'Unlimited')
             self.assertEqual(app.match_minutes.get(), '21')
+        finally:
+            app.close()
+            app.close_worker.join(2)
+
+    def test_weather_rule_set_round_trips_and_blocks_malformed_files(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        app = Desktop(root, lobby, lambda _: FakeGame())
+        lobby.room.update(weatherDefault=True, weather=False)
+        try:
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            self.assertFalse(app.busy)
+            app.render(lobby.room)
+            with TemporaryDirectory() as folder:
+                path = Path(folder) / 'Clear practice.json'
+                with patch('desktop_launcher.filedialog.asksaveasfilename', return_value=str(path)):
+                    app.save_rule_preset()
+                self.assertEqual(json.loads(path.read_bytes()), {'version': 1, 'weather': False})
+                with patch('desktop_launcher.filedialog.askopenfilename', return_value=str(path)), \
+                        patch.object(app, 'call_action') as call:
+                    app.load_rule_preset()
+                    call.assert_called_once_with('rules', preset={'version': 1, 'weather': False})
+                    call.reset_mock()
+                    path.write_bytes(b'{"version":1,"weather":false,"weather":true}')
+                    app.load_rule_preset()
+                    call.assert_not_called()
+                    self.assertIn('duplicate settings', app.status.get())
+                    path.write_bytes(b'x' * 8193)
+                    app.load_rule_preset()
+                    call.assert_not_called()
+                    self.assertIn('too large', app.status.get())
         finally:
             app.close()
             app.close_worker.join(2)

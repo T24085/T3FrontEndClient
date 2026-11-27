@@ -14,14 +14,16 @@ ROOT = Path(__file__).resolve().parent
 FIXTURE = r'''
 local serial=0
 world=nil
-local function object(name)
+function object(name)
  serial=serial+1
- local obj={name=name,address=serial,alive=true}
+ local obj={name=name,address=serial,alive=true,active=true}
  function obj:GetAddress()return self.address end
  function obj:GetFullName()return self.name end
  function obj:GetWorld()return world end
  function obj:HasAuthority()return false end
  function obj:IsA(class)return self.class==class.name end
+ function obj:IsActive()return self.active end
+ function obj:SetActive(active)self.active=active end
  return obj
 end
 world=object('world')
@@ -51,6 +53,12 @@ function StaticFindObject(name)
  return classes[name]
 end
 function FName(name)return name end
+local kismetMaterials=StaticFindObject('/Script/Engine.Default__KismetMaterialLibrary')
+function kismetMaterials:CreateDynamicMaterialInstance(component,parent)
+ local material=object(parent.name..'_mid')
+ function material:SetScalarParameterValue(key,value)self[key]=value end
+ return material
+end
 local sys=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
 probes={};obstacles={}
 function sys:SphereTraceSingleForObjects(target,start,finish,radius,types,complex,ignore,_,hit)
@@ -91,7 +99,15 @@ function make_target(name)
  function t:GetBaseAimRotation()return self.aim end
  t.RootComponent=object(name..'_root')
  function t.RootComponent:GetOwner()return t end
- function t.RootComponent:K2_GetComponentLocation()return {X=0,Y=0,Z=100}end
+ t.RootComponent.position={X=0,Y=0,Z=100}
+ function t.RootComponent:K2_GetComponentLocation()return self.position end
+ function t:GetMesh3P()return self.visual end
+ t.nativeArms=object(name..'_native_arms');t.nativeGun=object(name..'_native_gun')
+ function t:GetMesh1P()return self.nativeArms end
+ function t:GetGunMesh1P()return self.nativeGun end
+ function t:GetActiveEquipSlotAV()return self.av end
+ function t:GetGunMesh3P()return self.worldGun end
+ function t:GetJetpackMesh()return nil end
  t.alpha=0
  t.eye=object(name..'_eye');t.FirstPersonCameraComponent=t.eye
  t.eye.FieldOfView=104;t.eye.position={X=0,Y=0,Z=64}
@@ -103,10 +119,24 @@ function make_target(name)
   component.height=transform.Translation.Z
   function component:GetOwner()return t end
   function component:K2_AttachToComponent(parent,socket,locationRule)
-   assert(socket=='None' and ((parent==t.RootComponent and locationRule==0) or (parent==t.eye and locationRule==2)))
+   assert(socket=='None' and ((parent==t.RootComponent and (locationRule==0 or locationRule==1))
+    or (parent==t.eye and locationRule==2) or (parent==t.visual and locationRule==1) or (parent==t.FirstPersonCameraComponent and locationRule==2)))
    self.parent=parent
    return true
   end
+  component.visible=true
+  function component:SetVisibility(visible)self.visible=visible end
+  function component:IsVisible()return self.visible end
+  function component:SetCollisionEnabled(value)assert(value==0)end
+  function component:SetCastShadow(value)assert(not value)end
+  function component:SetBoundsScale(value)self.boundsScale=value end
+  function component:SetSkeletalMeshAsset(asset)self.mesh=asset end
+  function component:GetSkeletalMeshAsset()return self.mesh end
+  function component:SetAnimClass(animation)self.animation=animation end
+  function component:GetNumMaterials()return self.mesh and 1 or 0 end
+  function component:GetMaterial()return self.material or self.mesh end
+  function component:SetMaterial(slot,material)assert(slot==0);self.material=material end
+  function component:SetLeaderPoseComponent(leader,refresh,tick)assert(refresh and not tick);self.poseLeader=leader end
   function component:K2_GetComponentLocation()return self.parent:K2_GetComponentLocation()end
   function component:K2_SetWorldRotation(rotation)self.rotation=rotation end
   function component:SetAbsolute(location,rotation,scale)assert(not location and rotation and not scale)end
@@ -208,9 +238,9 @@ class SpectatorCameraTests(unittest.TestCase):
         pc.PlayerCameraManager.location.X=-300
         follow_once()
         assert(#presentations==2 and presentations[2]==true)
+        pc.PlayerCameraManager.location.X=0
         keys.middle();active.alpha=0;follow_once()
         assert(not pc.third and #presentations==3)
-        pc.PlayerCameraManager.location.X=0
         follow_once()
         assert(#presentations==3 and presentations[3]==false)
         ''')
@@ -251,6 +281,83 @@ class SpectatorCameraTests(unittest.TestCase):
         assert(#probes==9 and camera.rotation.Yaw==-55 and arm.TargetArmLength==166)
         follow_once()
         assert(camera.rotation.Pitch==-14 and arm.TargetArmLength==211)
+        ''')
+
+    def test_chase_follows_the_rendered_mesh_and_eases_wrapped_aim(self):
+        self.check('''
+        active.visual=make_target('mesh_holder').RootComponent
+        local mesh=active.visual
+        function mesh:GetOwner()return active end
+        mesh.position={X=0,Y=0,Z=15}
+        active.aim.Yaw=175
+        follow_once()
+        local rig=service.owned().rig
+        assert(rig.camera.parent==mesh and rig.camera.rotation.Yaw==175)
+        assert(probes[#probes].start.Z==148)
+
+        active.RootComponent.position.X=250
+        mesh.position.X=75
+        active.aim.Yaw=-175
+        follow_once()
+        assert(rig.camera.rotation.Yaw==177.5 and probes[#probes].start.X==75)
+        follow_once()
+        assert(rig.camera.rotation.Yaw==179.375)
+        ''')
+
+    def test_first_person_keeps_full_body_until_eye_is_the_rendered_view(self):
+        self.check('''
+        follow_once()
+        local rig=service.owned().rig
+        assert(rig.camera:IsActive() and not active.eye:IsActive())
+        pc.PlayerCameraManager.location.X=-450
+        keys.F7();follow_once()
+        assert(not pc.third and rig.first:IsActive() and not rig.camera:IsActive())
+        assert(presentations[#presentations]==true)
+        pc.PlayerCameraManager.location.X=0
+        follow_once()
+        assert(presentations[#presentations]==false)
+        keys.F8()
+        assert(rig.camera:IsActive() and not rig.first:IsActive())
+        assert(presentations[#presentations]==true)
+        ''')
+
+    def test_remote_viewmodel_follows_weapon_changes_and_restores_world_gun(self):
+        self.check('''
+        local function reference(path)
+         return {GetObjectID=function()return {GetAssetPathName=function()
+          return {ToString=function()return path end}end}end}
+        end
+        local avOne=object('av-one');avOne.Mesh1P=reference('/Game/One.One')
+        avOne.ABP1P=reference('/Game/OneAnim.OneAnim_C')
+        local avTwo=object('av-two');avTwo.Mesh1P=reference('/Game/Two.Two')
+        avTwo.ABP1P=reference('/Game/TwoAnim.TwoAnim_C')
+        active.nativeArms=nil;active.nativeGun=nil
+        active.worldGun=object('remote-world-gun')
+        active.worldGun.visible=true
+        function active.worldGun:GetOwner()return active end
+        function active.worldGun:IsVisible()return self.visible end
+        function active.worldGun:SetVisibility(value)self.visible=value end
+        active.av=avOne
+        follow_once();keys.F7();follow_once()
+        local rig=service.owned().rig
+        assert(rig.viewArms:IsVisible() and rig.viewGun:IsVisible() and not active.worldGun.visible)
+        assert(rig.viewGun.mesh.name=='/Game/One.One' and rig.viewGun.animation.name=='/Game/OneAnim.OneAnim_C')
+        local gun=rig.viewGun
+        assert(rig.viewArms.poseLeader==gun and gun.material['RenderToForeground?']==1)
+        assert(rig.viewArms.boundsScale==2 and gun.boundsScale==6)
+        active.av=avTwo;follow_once()
+        assert(gun==rig.viewGun and gun.mesh.name=='/Game/Two.Two' and gun:IsVisible())
+        assert(gun.material.name=='/Game/Two.Two_mid' and gun.material['RenderToForeground?']==1)
+        keys.F8();follow_once()
+        assert(not gun:IsVisible() and not rig.viewArms:IsVisible() and active.worldGun.visible)
+        ''')
+
+    def test_missing_remote_equipment_keeps_full_native_body(self):
+        self.check('''
+        active.nativeArms=nil;active.nativeGun=nil
+        follow_once();keys.F7();follow_once()
+        assert(not pc.third and presentations[#presentations]==true)
+        assert(service.owned().rig.viewGun==nil)
         ''')
 
     def test_first_person_skips_chase_collision_queries(self):

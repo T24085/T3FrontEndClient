@@ -230,9 +230,9 @@ return function(env)
   r.refreshAt=now()+1
   report('SPECTATOR_MATERIAL_BOUND|target='..r.identity..'|slots='..count)
  end
- local function write(r,third)
+ local function write(r,third,perspectiveChanged)
   local desired=third and 0 or 1
-  local refresh=now()>=r.refreshAt
+  local refresh=perspectiveChanged or now()>=r.refreshAt
   for _,slot in ipairs(r.slots)do
    -- The native cosmetic owner can update the original instance in place.
    if refresh and slot.isDynamic then slot.clone:CopyParameterOverrides(slot.original)end
@@ -276,7 +276,7 @@ return function(env)
   end
   if not r.originals then clone_slots(r,count)end
   weapon(r)
-  if r.originals then write(r,third)end
+  if r.originals then write(r,third,perspectiveChanged)end
  end
  function self.apply(target,third)update(target,third,true)end
  function self.poll(target,third)

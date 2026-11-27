@@ -94,6 +94,7 @@ def build_candidate(source, output):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(original, target)
     shutil.copyfile(ROOT / 'client_entry.py', output / 'client.py')
+    shutil.copyfile(ROOT/'map_soundtracks.py', output/'map_soundtracks.py')
     copy_spectator_runtime(manifest, output)
     shutil.copyfile(ROOT / 'dynamic_destination.py', output / 'lib/dynamic_destination.py')
     for name in CANONICAL_HELPERS:
