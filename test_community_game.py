@@ -97,6 +97,27 @@ class CommunityGameTest(unittest.TestCase):
         self.assertTrue((game.current_artifacts / 'stop.json').is_file())
         self.assertEqual(self.lobby.calls, 0)
 
+    def test_ranked_game_uses_the_fixed_room_target_and_owned_stop(self):
+        metadata = {'map': 'Stonehenge', 'matchId': 'a'*32, 'contentHash': 'a'*64}
+        calls = []
+
+        def target(room, game):
+            calls.append((room, game))
+            return dict(metadata, endpoint=self.lobby.endpoint)
+
+        self.lobby.pug_target = target
+        self.assertEqual(self.game.start_pug('room', metadata), 'starting')
+        self.game.wait(5)
+        self.assertEqual(calls, [('room', metadata)])
+        self.assertEqual(self.lobby.calls, 0)
+
+    def test_ranked_game_refuses_a_changed_match(self):
+        metadata = {'map': 'Stonehenge', 'matchId': 'a'*32, 'contentHash': 'a'*64}
+        self.lobby.pug_target = lambda *args: dict(metadata, matchId='b'*32, endpoint=self.lobby.endpoint)
+        with self.assertRaisesRegex(CommunityError, 'ranked match changed'):
+            self.game.start_pug('room', metadata)
+        self.assertIsNone(self.game.thread)
+
     def test_unready_lobby_does_not_start(self):
         self.lobby.endpoint = None
         with self.assertRaises(CommunityError):
@@ -254,7 +275,7 @@ class CommunityGameTest(unittest.TestCase):
         self.game.owner.run_owned_job=owner
         self.game.start()
         try:
-            run=self.game.workspace/'client-test';run.mkdir()
+            run=self.game.workspace/'client-000000000001';run.mkdir()
             owner_dir=self.game.current_artifacts/'owner';owner_dir.mkdir(exist_ok=True)
             (owner_dir/'stdout.log').write_text('Session: '+str(run)+'\n')
             events=run/'events.txt'
@@ -295,7 +316,8 @@ class CommunityGameTest(unittest.TestCase):
         try:
             self.assertTrue(launched.wait(2))
             self.assertIn('--show-flag-indicators', argv)
-            run = self.game.workspace/'client-test'
+            from client_preparation import stable_lobby_path
+            run = stable_lobby_path(self.game.workspace, self.game.package)
             run.mkdir()
             owner_dir = self.game.current_artifacts/'owner'
             owner_dir.mkdir(exist_ok=True)
@@ -324,7 +346,7 @@ class CommunityGameTest(unittest.TestCase):
             return {'status':'terminal','exit_code':1,'job_active_processes_after_cleanup':0}
         self.game.owner.run_owned_job=owner;self.game.start()
         try:
-            run=self.game.workspace/'client-test';run.mkdir()
+            run=self.game.workspace/'client-000000000001';run.mkdir()
             owner_dir=self.game.current_artifacts/'owner';owner_dir.mkdir(exist_ok=True)
             (owner_dir/'stdout.log').write_text('Session: '+str(run)+'\n')
             events=run/'events.txt';events.write_text('REMOTE_PAWN_READY|role=client\n')

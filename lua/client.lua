@@ -1,6 +1,7 @@
 -- Private launcher runtime. All calls run on the game thread in this exact child.
 local EXPECTED=@@EXPECTED@@
 local OUTPUT=@@OUTPUT@@
+local GAME_CONTENT=@@GAME_CONTENT@@
 local DESTINATION=@@DESTINATION@@
 -- SPECTATOR_CLIENT_CONTRACT_V1
 local SPECTATOR_ROLE=@@SPECTATOR_ROLE@@
@@ -42,8 +43,7 @@ local mapDefinitions=assert(loadfile(@@MAP_DEFINITIONS@@))()
 -- The sand release changes only this tile's authored mesh identity.
 do
     local center='/Game/Community/RollercoasterSand2026/SM_RollercoasterCenter'
-    local session=assert(OUTPUT:match('^(.*/)'))
-    local asset=io.open(session..'game/Topaz/Content'..center:sub(6)..'.uasset','rb')
+    local asset=io.open(GAME_CONTENT..center:sub(6)..'.uasset','rb')
     if asset then
         asset:close()
         for _,row in ipairs(mapDefinitions.Rollercoaster2026.geometry) do
@@ -145,7 +145,7 @@ local configure_base_lighting=(function()
   end
  end
 end)()
-local configure_water=assert(loadfile(@@DAMNATION_WATER@@))()({valid=valid,report=report})
+local configure_water=assert(loadfile(@@DAMNATION_WATER@@))()({valid=valid,report=report,descriptors=mapDefinitions})
 local allowedMaps={}
 for name,row in pairs(mapDefinitions)do
  assert(name==row.name,"map_descriptor_identity_disagreement");allowedMaps[#allowedMaps+1]=row
@@ -2573,7 +2573,7 @@ local function client_tick(sys)
     local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() or not valid(pc.PlayerState) then update_match_music(nil,nil);return end
     configure_weather(gs,pc)
     configure_base_lighting(gs)
-    configure_water(gs)
+    configure_water(gs,pc)
     local ps=pc.PlayerState
     if SPECTATOR_ROLE=="spectator" then
         if not spectatorRuntime then spectatorRuntime=assert(loadfile(@@SPECTATOR_RUNTIME@@))()({valid=valid,scope=scope,signature=signature,report=report,lease_id=SPECTATOR_LEASE,watch_id=SPECTATOR_WATCH,material_factory=assert(loadfile(@@SPECTATOR_MATERIAL_RUNTIME@@))()})end
