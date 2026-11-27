@@ -4,7 +4,7 @@
   "files": {
     "community_maps.py": "08eabd7d6af3d49383d6529ef7d741d71043b50dcbb3a77b0614f55214a4af6d",
     "runtime-fixes/projectile_inheritance.lua": "7fbca2429fdebc0cda2a37c7bac1a109a5a948f734b99180ed77268ec8a859dc",
-    "community_transport.py": "59b6c26337db76f160a4ec041137b5bea3332ae0a09df6008bfed26f4e06b2d9",
+    "community_transport.py": "3e72945bf2d944924e48cac6dcd4c087a4fb2b6b91adb2d5043d3588eafbfccc",
     "compare_map_packages.py": "12a73f192d7a2729091c86d8c7e61ed323ebf6f5db079cd4c495224fb6bf8785",
     "map_catalog.py": "e3d5544be8ee18d23a87e8b128a699f64fa928fd7f3dee1b2d56a86e01bd97f1",
     "player_names.py": "cd8667b6f015bcf12de9f9053e00bcc168d6e2b8bcbc8072bb60fe7ee2b18ea4",
@@ -15,7 +15,7 @@
     "experimental/direct-hosting/src/direct_network.py": "96497f002cc491a17851463cd81d9e600ef16328ab0aaf7b2f39c8e14cb612b6",
     "tools/apply_lobby_recovery_update.py": "7b1acd94cc25c80948b66789befc289df3ff880c69dcb7abfcdcb08b1fe76068",
     "server_access_contract.py": "62155a3c7e5d8a314c4e7928e0ddee92cb0d6417d72253d305dd996deec84e1a",
-    "map_sync_contract.py": "dc1d93c34c6277327891c90c1fec947b5fafd9bc7433d8b663a28c3cedf9e883",
-    "direct_update_contract.py": "3609373a057a05a9988cf695d04d7eba8e776087f4bc2e7c79493af7521ca683"
+    "map_sync_contract.py": "2de77f0c399bfe230736487f364bc4efafe1d07928d0077556c7645a9a9685a8",
+    "direct_update_contract.py": "aae5eab1484756bc80a2e3e90bcbdd43f80f5fdf121e9a9fb80b45f282e4acbc"
   }
 }

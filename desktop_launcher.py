@@ -15,6 +15,7 @@ from tkinter import filedialog, simpledialog, ttk
 from client_support import save as save_json
 from community_game import CommunityGame
 from startup_paths import installation_options
+from player_names import display_name
 from community_transport import (
     CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES,
     DEFAULT_MATCH_LIMITS, MAX_LOBBY_BOTS, MAX_MATCH_MINUTES, MAX_RULE_PRESET_BYTES, MAX_SCORE_LIMIT,
@@ -756,6 +757,9 @@ class Desktop:
             self.render(room)
         self.run_async(apply, applied)
 
+    def player_name_for_action(self):
+        return display_name(self.name.get().strip())
+
     def set_steam_name(self, name):
         self.name.set(name)
         self.run_async(self.lobby.capabilities, self.set_capabilities)
@@ -1282,7 +1286,7 @@ class Desktop:
             try:
                 if operation is not None:
                     operation()
-                return self.map_sync.local_maps(self.map_sync.map_index()), None
+                return self.map_sync.local_maps(self.map_sync.refresh_map_index()), None
             except (CommunityError, ValueError, OSError) as exc:
                 return None, str(exc)
 

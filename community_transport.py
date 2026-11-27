@@ -20,11 +20,12 @@ except ImportError:  # Starter updates replace this file but not community_maps.
         if not isinstance(value, dict) or not value:
             raise ValueError('Invalid boundary settings.')
         return dict(value)
-from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION, SESSION_HEADER, SESSION_VERSION, valid_sha
+from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION, SESSION_HEADER, SESSION_VERSION, valid_sha, MINIMAP_HEADER, MINIMAP_VERSION
 from player_names import display_name
 
 MAX_LOBBY_BOTS = 12
 PRIVATE_ADMISSION_HEADER = 'X-T3-Private-Join'
+PUBLIC_CTF_TEAM_COUNTS = 'teamCounts'
 WEATHER_HEADER = 'X-T3-Match-Weather'
 
 DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True, 'fallDamage': False}
@@ -273,7 +274,7 @@ class CommunityClient:
     def request_headers(self):
         return {'Host': self.authority, 'Accept': 'application/json',
                 CATALOG_HEADER: str(CATALOG_VERSION), 'X-T3-Map-Labels': '1', PRIVATE_ADMISSION_HEADER: '1',
-                SESSION_HEADER: str(SESSION_VERSION),
+                SESSION_HEADER: str(SESSION_VERSION), MINIMAP_HEADER: MINIMAP_VERSION,
                 WEATHER_HEADER: '1'}
 
     def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True):

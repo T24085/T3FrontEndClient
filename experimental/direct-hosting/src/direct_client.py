@@ -397,22 +397,24 @@ class DirectClient(CommunityClient):
         if action == 'leave':
             return response
         state = response.get('public')
-        if not isinstance(state, dict) or state.get('phase') not in ('loading', 'playing', 'voting', 'traveling'):
+        if not isinstance(state, dict) or state.get('phase') not in ('idle', 'loading', 'playing', 'voting', 'traveling'):
             raise CommunityError('The host returned invalid Public CTF status.')
         return state
 
-    def public_join(self, name):
-        return self._public('join', name=name)
+    def public_join(self, name, *, team='auto'):
+        if team == 'auto':
+            return self._public('join', name=name)
+        return self._public('join', name=name, team=team)
 
     def public_map(self):
         deadline = time.monotonic() + 100
         while True:
             state = self.public_state()
             map_id, fingerprint = state.get('map'), state.get('contentHash')
-            if (state['phase'] == 'playing' and isinstance(map_id, str)
+            if (state['phase'] in ('idle', 'playing') and isinstance(map_id, str)
                     and self.map_label(map_id) is not None and isinstance(fingerprint, str)
                     and re.fullmatch('[0-9a-f]{64}', fingerprint)):
-                return {'map': map_id, 'contentHash': fingerprint,
+                return {'map': map_id, 'contentHash': fingerprint, 'phase': state['phase'],
                         **({'manifestHash': state['manifestHash']} if 'manifestHash' in state else {})}
             if time.monotonic() >= deadline:
                 raise CommunityError(state.get('error') or 'Public CTF is preparing the next map. Try joining again.')
@@ -1059,10 +1061,10 @@ class DirectGame(CommunityGame):
         self.round_change = None
         self.retiring_public_session = None
 
-    def start_public(self, name, *, cancel=None):
+    def start_public(self, name, *, cancel=None, team='auto'):
         self.public_name = name
         try:
-            status = self._start(public_name=name, public_cancel=cancel)
+            status = self._start(public_name=name, public_cancel=cancel, public_team=team)
         except Exception:
             if self.role == 'public' and self.status in ('failed', 'stopped'):
                 self.release_public()
@@ -1128,7 +1130,7 @@ class DirectGame(CommunityGame):
 
 class PublicCTFPanel:
     def __init__(self, tk, desktop, lobby):
-        from desktop_launcher import BG, MUTED, match_result_for
+        from desktop_launcher import BG, MUTED, PANEL, TEXT, match_result_for
         self.tk, self.desktop, self.lobby = tk, desktop, lobby
         self.root = desktop.root
         self.results = queue.Queue()
@@ -1144,10 +1146,38 @@ class PublicCTFPanel:
         tk.Label(self.panel, textvariable=self.format_label, bg=BG, fg=MUTED).pack(anchor='w', pady=(4, 18))
         tk.Label(self.panel, textvariable=self.status, bg=BG, fg=MUTED, wraplength=580,
                  justify='left').pack(anchor='w', pady=(0, 12))
+        roster = tk.Frame(self.panel, bg=BG)
+        roster.pack(fill='x', pady=(0, 10))
+        self.team_lists = {}
+        for column, (team, label, color) in enumerate((
+                ('blue', 'Team A', '#80c8ff'), ('red', 'Team B', '#ff9a9a'))):
+            roster.columnconfigure(column, weight=1, uniform='team')
+            panel = tk.Frame(roster, bg=PANEL, padx=12, pady=8)
+            panel.grid(row=0, column=column, sticky='nsew', padx=(0, 8) if column == 0 else (0, 0))
+            heading = desktop.label(panel, label, 11, True, color=color)
+            heading.configure(bg=PANEL)
+            heading.pack(anchor='w', pady=(0, 4))
+            names = tk.Listbox(panel, height=5, width=1, bg=PANEL, fg=TEXT, relief='flat',
+                               borderwidth=0, highlightthickness=0, exportselection=False,
+                               font=('Segoe UI', 10))
+            scrollbar = tk.Scrollbar(panel, orient='vertical', command=names.yview)
+            names.configure(yscrollcommand=scrollbar.set)
+            scrollbar.pack(side='right', fill='y')
+            names.pack(side='left', fill='both', expand=True)
+            self.team_lists[team] = (label, heading, names)
+        self.empty_roster = desktop.label(self.panel, 'No players yet, be the first!', color=MUTED)
         actions = tk.Frame(self.panel, bg=BG)
-        actions.pack(anchor='w')
-        self.join = desktop.button(actions, 'Join Public CTF', self.start)
-        self.join.pack(side='left')
+        actions.pack(anchor='w', pady=(2, 0))
+        self.team_buttons = {}
+        self.team_reasons = {}
+        self.tooltip = None
+        for team, label in (('auto', 'Auto Balance'), ('blue', 'Join A'), ('red', 'Join B')):
+            button = desktop.button(actions, label, lambda choice=team: self.start(choice), team == 'auto')
+            button.configure(state='disabled')
+            button.pack(side='left', padx=(0, 8))
+            button.bind('<Enter>', lambda event, choice=team: self.show_team_reason(event.widget, choice))
+            button.bind('<Leave>', lambda _event: self.hide_team_reason())
+            self.team_buttons[team] = button
         self.leave = desktop.button(actions, 'Leave game', self.stop, False)
         self.leave.pack(side='left', padx=(8, 0))
         self.result_button = desktop.button(actions, 'Match results',
@@ -1173,17 +1203,76 @@ class PublicCTFPanel:
 
         threading.Thread(target=run, daemon=True).start()
 
-    def start(self):
+    def start(self, team='auto'):
+        if self.team_buttons[team].cget('state') == 'disabled':
+            return
+        self.hide_team_reason()
+        from steam_identity import SteamIdentityError
+
         ui = self.desktop
+        try:
+            name = ui.player_name_for_action()
+        except (SteamIdentityError, ValueError) as exc:
+            self.status.set(str(exc))
+            return
         if not ui.game:
             ui.game = ui.game_factory(self.lobby)
-        name = ui.name.get().strip()
         self.status.set('Reserving a seat…')
-        self.submit('start', lambda: ui.game.start_public(name))
+        self.submit('start', lambda: ui.game.start_public(name, team=team))
 
     def stop(self):
         if self.desktop.game:
             self.desktop.game.stop()
+
+    def show_team_reason(self, button, team):
+        self.hide_team_reason()
+        reason = self.team_reasons.get(team)
+        if not reason or button.cget('state') != 'disabled':
+            return
+        from desktop_launcher import PANEL, TEXT
+        tip = self.tooltip = self.tk.Toplevel(button)
+        tip.wm_overrideredirect(True)
+        tip.geometry(f'+{button.winfo_rootx()}+{button.winfo_rooty() + button.winfo_height() + 5}')
+        self.tk.Label(tip, text=reason, bg=PANEL, fg=TEXT, padx=8, pady=5).pack()
+
+    def hide_team_reason(self):
+        if self.tooltip is not None:
+            self.tooltip.destroy()
+            self.tooltip = None
+
+    def render_teams(self, state, can_join):
+        teams = state.get('teams')
+        choices = state.get('joinChoices')
+        rejoin = state.get('rejoin') is True
+        has_roster = isinstance(teams, dict)
+        counts = {}
+        for team, (label, heading, names) in self.team_lists.items():
+            roster = teams.get(team, []) if has_roster else []
+            players = tuple(name for name in roster if isinstance(name, str)) if isinstance(roster, list) else ()
+            counts[team] = len(players)
+            heading.configure(text=f'{label} ({len(players)})' if has_roster else label)
+            if names.get(0, 'end') != players:
+                names.delete(0, 'end')
+                for name in players:
+                    names.insert('end', name)
+        if has_roster and not any(counts.values()):
+            if not self.empty_roster.winfo_manager():
+                self.empty_roster.pack(anchor='w', before=self.team_buttons['auto'].master, pady=(0, 8))
+        else:
+            self.empty_roster.pack_forget()
+
+        for team, button in self.team_buttons.items():
+            reason = (choices.get(team, 'This team choice is unavailable.') if isinstance(choices, dict)
+                      else None if team == 'auto' else 'This host only supports automatic team assignment.')
+            self.team_reasons[team] = reason
+            enabled = can_join and reason is None
+            if team == 'auto':
+                label = 'Rejoin' if rejoin else 'Auto Balance'
+            else:
+                label = f'Join {"A" if team == "blue" else "B"}'
+                if has_roster:
+                    label += f' ({counts[team]})'
+            button.configure(text=label, state='normal' if enabled else 'disabled')
 
     def center_ballot(self, ballot):
         bounds = (0, 0, ballot.winfo_screenwidth(), ballot.winfo_screenheight())
@@ -1273,7 +1362,8 @@ class PublicCTFPanel:
                         self.result_button.pack_forget()
                     label = self.lobby.map_label(state['map']) or state['map']
                     phase = state['phase']
-                    summary = {'loading': 'Preparing the server', 'playing': label,
+                    summary = {'idle': 'Server asleep. Join to start it',
+                               'loading': 'Preparing the server', 'playing': label,
                                'voting': 'Voting for the next map', 'traveling': 'Loading the next map'}[phase]
                     team_size = state.get('teamSize', 12)
                     if type(team_size) is not int or not 1 <= team_size <= 64:
@@ -1291,8 +1381,10 @@ class PublicCTFPanel:
         if public and ui.game_status != 'playing':
             self.status.set(ui.status.get())
         continuing = 'continue' in self.pending
-        can_join = state.get('phase') == 'playing' and not active and not continuing and 'start' not in self.pending
-        self.join.configure(state='normal' if can_join else 'disabled')
+        joinable = state.get('phase') in ('idle', 'playing') or (
+            isinstance(state.get('joinChoices'), dict) and state.get('phase') in ('loading', 'voting', 'traveling'))
+        can_join = joinable and not active and not continuing and 'start' not in self.pending
+        self.render_teams(state, can_join)
         self.leave.configure(state='normal' if public or continuing else 'disabled')
         self.refresh_ballot(state, public and ui.game_status == 'playing')
         now = time.monotonic()

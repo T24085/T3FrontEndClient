@@ -1,3 +1,4 @@
+from base64 import b64decode
 import gzip
 import hashlib
 from http.client import HTTPResponse
@@ -5,8 +6,9 @@ from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
+from threading import Thread
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from map_sync import MapSync, load_overlay, overlay
 from map_sync_contract import (MAP_ARCHIVE_ASSETS, MAP_ARCHIVE_NAME,
@@ -119,6 +121,72 @@ class MapSyncTest(unittest.TestCase):
             for item in files[first['id']]:
                 self.assertFalse(self.sync.session_path(item['sha256'] + '.asset').exists())
             self.assertTrue(self.sync.session_path(shared[0]['sha256'] + '.asset').is_file())
+
+    def test_minimap_graphic_is_optional_and_cached_with_its_verified_map(self):
+        from community_transport import CommunityError
+
+        self.sync.start(2, session_version=3)
+        image_bytes = b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX2sAAAAASUVORK5CYII=')
+        picture = row('lua/Stonehenge/minimap.png', image_bytes)
+        catalog = map_catalog(self.bundled)
+        core = {'format':3, 'baseGameHash':self.bundled['files'][0]['sha256']}
+        core_hash = sha256_bytes(encode(core))
+        meta = {'settings':{'center':[100,-200], 'image':'minimap.png'}, 'image':picture}
+        manifest = {'format':3, 'id':'Stonehenge', 'contentHash':catalog['Stonehenge'], 'coreHash':core_hash,
+                    'sharedHash':None, 'definition':None, 'files':self.bundled['files'][1:],
+                    'objectives':[], 'runtime':[], 'minimap':meta}
+        wanted = sha256_bytes(encode(manifest))
+        docs = {SESSION_MAP+'Stonehenge':manifest, SESSION_CORE:core}
+        index = [{'id':'Stonehenge','contentHash':catalog['Stonehenge'],'manifestHash':wanted,
+                  'hasMinimap':True,'hasObjectives':False}]
+        for member in self.bundled['files'][1:]:
+            path = self.root / member['path']
+            path.parent.mkdir(parents=True, exist_ok=True)
+            known = {LEVEL + '.umap':b'map', LEVEL + '.uexp':b'export', ASSET:b'old', OLD:b'move'}
+            path.write_bytes(known[member['path']])
+        with (patch.object(self.sync, '_document', side_effect=lambda path, _: docs[path]),
+              patch.object(self.sync, '_download', side_effect=CommunityError('Optional image unavailable.'))):
+            revision = self.sync.sync_map('Stonehenge', catalog['Stonehenge'], wanted)
+        overlay, current, _, _, entry = load_overlay(self.root, revision, self.bundled, with_minimap=True)
+        self.assertEqual(entry, meta)
+        self.assertEqual(current, catalog)
+        _, original, cache = next(selected for selected in overlay if selected[0]==picture)
+        self.assertIsNone(original)
+        self.assertFalse(cache.exists())
+        self.assertEqual(self.sync.local_maps(index)[0]['state'], 'Downloaded')
+        def download(_: dict, path: Path):
+            self.sync._write_asset(BytesIO(image_bytes), path, picture['sha256'], picture['bytes'])
+        with patch.object(self.sync, '_download', side_effect=download):
+            self.assertEqual(self.sync.sync_map('Stonehenge', catalog['Stonehenge'], wanted), revision)
+        self.assertEqual(cache.read_bytes(), image_bytes)
+        self.sync.remove_map('Stonehenge')
+        self.assertFalse(cache.exists())
+
+    def test_catalog_uses_etag_and_reuses_rows_while_a_download_holds_its_lock(self):
+        entry = {'id': 'Stonehenge', 'label': 'Stonehenge', 'gameTag': 'Community',
+                 'hasObjectives': False, 'bytes': 400, 'fileCount': 3,
+                 'contentHash': 'a'*64, 'manifestHash': 'b'*64}
+        document = {'format': 3, 'maps': [entry], 'coreHash': 'c'*64}
+        raw = encode(document)
+        initial = self.inventory_connection(raw, len(raw))
+        unchanged = MagicMock()
+        unchanged.getresponse.return_value.__enter__.return_value.status = 304
+        modified = encode(dict(document, maps=[dict(entry, label='Renamed')]))
+        changed = self.inventory_connection(modified, len(modified))
+        self.sync.lobby = Mock()
+        self.sync.lobby.request_headers.side_effect = dict
+        with patch.object(self.sync, '_connection', side_effect=[initial, unchanged, changed]):
+            first = self.sync.refresh_map_index()
+            result = []
+            with self.sync.lock:
+                worker = Thread(target=lambda: result.append(self.sync.refresh_map_index()))
+                worker.start()
+                worker.join(2)
+                self.assertFalse(worker.is_alive(), 'Catalog refresh waited for the map download.')
+            self.assertIs(result[0], first)
+            unchanged.request.assert_called_once_with(
+                'GET', SESSION_INDEX, headers={'If-None-Match': '"' + sha256_bytes(raw) + '"'})
+            self.assertEqual(self.sync.refresh_map_index()[0]['label'], 'Renamed')
 
     def test_map_manifest_with_the_wrong_hash_is_rejected(self):
         response = self.inventory_connection(b'{}', 2)

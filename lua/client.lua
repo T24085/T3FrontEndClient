@@ -1580,6 +1580,8 @@ return function(env)
  local contracts=assert(env.blueprint_contracts);local prefix=assert(env.world_prefix)
  if env.allow_standalone then assert(type(env.client_context_guard)=='function','radar_standalone_requires_native_context_guard') end
  local state=nil;local retired=false;local checkedBlueprints=false
+ local minimap=env.descriptor.minimap
+ if minimap and not next(minimap) then minimap=nil end
  local capturePath='/Game/Common/Blueprints/Cameras/BP_MinimapCapture.BP_MinimapCapture_C'
  local detectionRadiusPath='/Script/Topaz.TopRadarSensor:GetDetectionRadius'
  local minimapManagerPath='/Script/Valhalla.ValGameState:GetMinimapManager'
@@ -1613,14 +1615,142 @@ return function(env)
   assert(same(pc:GetWorld(),gs:GetWorld()) and gs:GetFullName():find(prefix,1,true),'radar_client_selected_world_required')
   if state then assert(same(pc,state.pc) and same(gs,state.gs) and same(pc:GetWorld(),state.world),'radar_client_world_changed') end
  end
+ local function texture_from_png(pc)
+  if not minimap or not minimap.image_file then return nil end
+  local ok,texture=pcall(function()
+   signature('/Script/Engine.KismetRenderingLibrary:ImportFileAsTexture2D',
+    {{'WorldContextObject','ObjectProperty',0},{'Filename','StrProperty',8},{'ReturnValue','ObjectProperty',24}})
+   local path='/Script/Engine.Default__KismetRenderingLibrary'
+   return loaded(path,'KismetRenderingLibrary '..path):ImportFileAsTexture2D(pc,minimap.image_file)
+  end)
+  if ok and valid(texture) then return texture end
+  report('MINIMAP_PNG_FALLBACK|map='..env.descriptor.name)
+ end
+ local function configure_framing(widget,initialize)
+  local width=state.capture_width
+  local scale=1024/width
+  if initialize or math.abs(widget.CachedMapScale-scale)>math.max(1e-8,scale*1e-6) then
+   widget.CachedMapScale=scale
+   widget:UpdateScale(0)
+  end
+  if minimap.zoom then
+   local zoom=minimap.zoom
+   local function to_native(factor) return (1+factor/2)/widget.DefaultZoom end
+   local low=zoom.min and to_native(zoom.min) or widget.DefaultMinZoom
+   local high=zoom.max and to_native(zoom.max) or widget.DefaultMaxZoom
+   if not zoom.min then low=math.min(low,high) end
+   if not zoom.max then high=math.max(high,low) end
+   widget.DefaultMinZoom,widget.DefaultMaxZoom=low,high
+   local wanted=initialize and zoom.default and to_native(zoom.default) or widget.TargetZoom
+   local target=math.max(low,math.min(high,wanted))
+   if initialize or target~=widget.TargetZoom then
+    widget.CachedZoom,widget.TargetZoom=target,target
+    widget:UpdateScale(0)
+   end
+  end
+  if minimap.rotation_deg~=nil and (initialize or not finite(widget.CachedMapRotationAngle) or
+     math.abs((widget.CachedMapRotationAngle-minimap.rotation_deg+180)%360-180)>.01) then
+   local theta=math.rad(minimap.rotation_deg+90)
+   widget:RotateMapToVector({X=math.cos(theta),Y=math.sin(theta)})
+  end
+  if initialize and minimap.center and not widget.DefaultRadar then
+   local translation={X=-minimap.center[1]*widget.MapScale,Y=-minimap.center[2]*widget.MapScale}
+   widget.DefaultMapTranslation,widget.TargetTranslation=translation,translation
+   widget:UpdateTranslation(0,false)
+  end
+  if initialize and minimap.frame then
+   local tree=widget:GetOuter()
+   local frame=valid(tree) and tree:GetOuter() or nil
+   if valid(frame) and frame:GetClass():GetFullName()==
+      'WidgetBlueprintGeneratedClass /Game/UI/Components/Game/UI_Game_MiniMap.UI_Game_MiniMap_C' then
+    local retainer=frame.RetainerBox_0
+    local slot=valid(retainer) and retainer.Slot or nil
+    if valid(slot) then
+     slot:SetAutoSize(false)
+     slot:SetSize({X=minimap.frame.width,Y=minimap.frame.height})
+    end
+   end
+  end
+ end
+ local function configure_texture(widget,record)
+  local image=state.texture
+  local background=widget.MapTexture
+  local material=widget.Material
+  if valid(image) and not record.png_failed then
+   local ok=pcall(function()
+    if not same(background.Brush.ResourceObject,image) then
+     background:SetBrushFromTexture(image,false)
+     if valid(widget.EmptyTexture) then widget.EmptyTexture:SetVisibility(1) end
+     background:SetVisibility(4)
+    end
+   end)
+   if not ok then
+    record.png_failed=true
+    widget:UpdateTexture()
+    report('MINIMAP_BRUSH_FALLBACK|map='..env.descriptor.name)
+   end
+  end
+  if record.png_failed then image=nil end
+  if not same(background.Brush.ResourceObject,image) and not same(background.Brush.ResourceObject,material) then
+   widget:UpdateTexture()
+  end
+  if not (valid(image) or minimap.center or minimap.scale or minimap.extent) then return end
+  local bounds=valid(image) and minimap.image_bounds or nil
+  local position=state.capture_center
+  local spanX,spanY=state.capture_width,state.capture_width
+  local x,y=position.X,position.Y
+  if bounds then
+   local lo,hi=bounds[1],bounds[2]
+   spanX,spanY=hi[1]-lo[1],hi[2]-lo[2]
+   x,y=(lo[1]+hi[1])/2,(lo[2]+hi[2])/2
+  end
+  if record.background_scale~=widget.MapScale or record.background_image~=valid(image) then
+   local slot=background.Slot
+   assert(valid(slot),'minimap_background_canvas_slot_required')
+   local pivot={X=.5,Y=.5}
+   slot:SetAnchors({Minimum=pivot,Maximum=pivot})
+   slot:SetAlignment(pivot)
+   slot:SetAutoSize(false)
+   slot:SetSize({X=spanX*widget.MapScale,Y=spanY*widget.MapScale})
+   slot:SetPosition({X=x*widget.MapScale,Y=y*widget.MapScale})
+   record.background_scale=widget.MapScale
+   record.background_image=valid(image)
+  end
+ end
  local function setup(pc,gs)
   own_world(pc,gs)
   local settings=original_settings(pc)
   if not settings then return end
   local size,world=settings.MapSize,pc:GetWorld()
+
+  local width=size
+  local center={X=0,Y=0}
+  if minimap then
+   if minimap.extent then width=math.max(minimap.extent[1],minimap.extent[2]) end
+   width=width/(minimap.scale or 1)
+   if minimap.center then center={X=minimap.center[1],Y=minimap.center[2]} end
+  end
   for _,actor in ipairs(FindAllOf('BP_MinimapCapture_C') or {}) do
    if valid(actor) and same(actor:GetWorld(),world) then
-    state={pc=pc,gs=gs,world=world,map_owned_capture=true}
+    if not minimap then
+     state={pc=pc,gs=gs,world=world,map_owned_capture=true}
+    else
+     local component=actor.SceneCaptureComponent2D
+     if not valid(component) or component.ProjectionType~=1 then return end
+     local origin=component:K2_GetComponentLocation()
+     if minimap.center then
+      signature('/Script/Engine.Actor:K2_SetActorLocation',{{'NewLocation','StructProperty',0},{'bSweep','BoolProperty',24},
+       {'SweepHitResult','StructProperty',32},{'bTeleport','BoolProperty',264},{'ReturnValue','BoolProperty',265}})
+      local base=actor:K2_GetActorLocation()
+      assert(actor:K2_SetActorLocation({X=base.X+center.X-origin.X,Y=base.Y+center.Y-origin.Y,Z=base.Z},
+                                      false,{},true),'minimap_authored_capture_center_failed')
+     else center={X=origin.X,Y=origin.Y} end
+     if not minimap.extent and not minimap.scale then width=component.OrthoWidth end
+     if width<=0 then return end
+     component.OrthoWidth=width
+     state={pc=pc,gs=gs,world=world,settings=settings,map_size=size,capture_width=width,capture_center=center,
+            capture=actor,capture_name=actor:GetFullName(),widgets={},component=component,texture=texture_from_png(pc)}
+    end
     report('BASE_RADAR_CLIENT_MAP_CAPTURE_PRESENT|map='..env.descriptor.name)
     return
    end
@@ -1634,11 +1764,11 @@ return function(env)
   local height=math.max(100000,top+11000)
   -- Exact original Pitch=-90,Yaw=0,Roll=-90 converted by UE5.3's FRotator
   -- quaternion formula (UnrealMath.cpp530), avoiding opaque transform locals.
-  local transform={Rotation={X=.5,Y=.5,Z=-.5,W=.5},Translation={X=0,Y=0,Z=height},Scale3D={X=1,Y=1,Z=1}}
+  local transform={Rotation={X=.5,Y=.5,Z=-.5,W=.5},Translation={X=center.X,Y=center.Y,Z=height},Scale3D={X=1,Y=1,Z=1}}
   local api=loaded('/Script/Engine.Default__GameplayStatics','GameplayStatics /Script/Engine.Default__GameplayStatics')
   local actor=api:BeginDeferredActorSpawnFromClass(pc,class,transform,1,nil,0)
   assert(valid(actor),'radar_client_capture_begin_failed')
-  state={pc=pc,gs=gs,world=world,settings=settings,map_size=size,capture_width=size,capture=actor,capture_name=actor:GetFullName(),widgets={},created=true,manual_capture=false}
+  state={pc=pc,gs=gs,world=world,settings=settings,map_size=size,capture_width=width,capture_center=center,capture=actor,capture_name=actor:GetFullName(),widgets={},created=true,manual_capture=false}
   local finished=api:FinishSpawningActor(actor,transform,0);assert(same(actor,finished),'radar_client_capture_finish_identity')
   local component=actor.SceneCaptureComponent2D
   assert(valid(component) and same(component:GetOwner(),actor),'radar_client_original_capture_component_required')
@@ -1646,10 +1776,10 @@ return function(env)
   assert(valid(target) and target:GetFullName()==targetName,'radar_client_original_material_target_required')
   assert(type(target.SizeX)=='number' and target.SizeX>0 and target.SizeX==target.SizeY,'radar_client_square_render_target_required')
   assert(component.ProjectionType==1,'radar_client_orthographic_projection_required')
-  component.OrthoWidth=size
-  component.MaxViewDistanceOverride=math.max(200000,math.sqrt(size*size/2+(height-bottom)^2)+1000)
-  state.component=component;state.target=target
-  report('BASE_RADAR_CLIENT_CAPTURE_CREATED|mapSize='..size..'|width='..component.OrthoWidth..'|projectionSource=ValWorldSettings.MapSize|height='..height..'|mapMeshes='..meshes..'|target='..target:GetFullName()..'|pixels='..target.SizeX..'x'..target.SizeY)
+  component.OrthoWidth=width
+  component.MaxViewDistanceOverride=math.max(200000,math.sqrt(width*width/2+(height-bottom)^2)+1000)
+  state.component=component;state.target=target;state.texture=texture_from_png(pc)
+  report('BASE_RADAR_CLIENT_CAPTURE_CREATED|mapSize='..size..'|width='..component.OrthoWidth..'|projectionSource='..(minimap and 'map.json' or 'ValWorldSettings.MapSize')..'|height='..height..'|mapMeshes='..meshes..'|target='..target:GetFullName()..'|pixels='..target.SizeX..'x'..target.SizeY)
  end
  local function sync_detection_range(widget,record,sensor)
   if valid(sensor) and not sensor:HasAuthority() then
@@ -1808,15 +1938,24 @@ return function(env)
      state.widgets[key]={widget=widget,name=widget:GetFullName(),prior=prior}
      widget.MinimapCapture=state.capture
      widget:UpdateSublevel()
-     assert(finite(widget.CachedMapScale) and math.abs(widget.CachedMapScale-1024/state.capture_width)<1e-8,
+     if minimap then configure_framing(widget,true) end
+     local baseScale=1024/state.capture_width
+     assert(finite(widget.CachedMapScale) and math.abs(widget.CachedMapScale-baseScale)<=math.max(1e-8,baseScale*1e-6),
             'radar_client_native_widget_scale_mismatch')
-     assert(finite(widget.MapScale) and math.abs(widget.MapScale-widget.CachedMapScale)<1e-8,
+     local expectedScale=widget.CachedMapScale*(minimap and widget.DefaultZoom or 1)
+     assert(finite(widget.MapScale) and math.abs(widget.MapScale-expectedScale)<=math.max(1e-8,expectedScale*1e-6),
             'radar_client_marker_scale_mismatch')
      assert(same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_native_material_binding_mismatch')
      report('BASE_RADAR_CLIENT_WIDGET_BOUND|widget='..widget:GetFullName()..'|cachedScale='..widget.CachedMapScale..'|mapScale='..widget.MapScale..'|projectionWidthCm='..state.capture_width..'|zoom='..tostring(widget.CachedZoom))
     end
     if state.widgets[key] then
-     assert(same(widget.MinimapCapture,state.capture) and same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_widget_binding_changed')
+     assert(same(widget.MinimapCapture,state.capture),'radar_client_widget_binding_changed')
+     if minimap then
+      configure_framing(widget,false)
+      configure_texture(widget,state.widgets[key])
+     else
+      assert(same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_widget_binding_changed')
+     end
      projected=projected+1
      recover_minimap_data(gs,widget,state.widgets[key])
      if not state.manual_capture then

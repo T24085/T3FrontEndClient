@@ -7,12 +7,13 @@ from community_maps import MAX_MAPS, declared_definitions, declared_shared_conte
 from verified_file_cache import MAX_PACKAGE_FILES, MAX_PACKAGE_MANIFEST_BYTES
 
 VERSION = 1
-MAP_ARCHIVE_NAME = 'Clan Wars Maps.zip'
-MAP_ARCHIVE_ASSETS = 'map-downloads/'
 MANIFEST_ROUTE = '/api/map-files-v1'
 FILE_ROUTE = MANIFEST_ROUTE + '/'
+MAP_ARCHIVE_NAME = 'Clan Wars Maps.zip'
+MAP_ARCHIVE_ASSETS = 'map-downloads/'
 CATALOG_VERSION = 2
 CATALOG_HEADER = 'X-T3-Map-Catalog'
+LIVE_ROSTER_HEADER = 'X-T3-Live-Roster'
 OBJECTIVES_HEADER = 'X-T3-Map-Objectives'
 CATALOG_ROUTE = '/api/map-files-v2'
 SESSION_VERSION = 3
@@ -43,6 +44,91 @@ def valid_sha(value):
     return isinstance(value, str) and SHA.fullmatch(value) is not None
 
 
+MINIMAP_HEADER = 'X-T3-Map-Minimap'
+MINIMAP_VERSION = '1'
+MINIMAP_MAX_IMAGE = 16 * 1024**2
+MINIMAP_MAX_DIMENSION = 4096
+MINIMAP_PATH = re.compile(r'(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.png')
+
+
+def minimap_settings(value):
+    """Normalize the optional data-only framing from a portable map."""
+    if not isinstance(value, dict) or value.keys() - {
+            'center', 'scale', 'extent', 'rotation_deg', 'zoom', 'image', 'image_bounds', 'frame'}:
+        raise ValueError('Invalid map minimap settings.')
+
+    def number(value, low, high):
+        if type(value) not in (int, float) or not low <= value <= high:
+            raise ValueError('Invalid numeric minimap setting.')
+        return value
+
+    def pair(values, low, high):
+        if not isinstance(values, list) or len(values) != 2:
+            raise ValueError('A minimap coordinate must contain X and Y.')
+        return [number(value, low, high) for value in values]
+
+    result = dict(value)
+    if 'center' in result:
+        result['center'] = pair(result['center'], -10_000_000, 10_000_000)
+    if 'extent' in result:
+        result['extent'] = pair(result['extent'], 100, 10_000_000)
+    if 'scale' in result:
+        result['scale'] = number(result['scale'], 0.1, 10)
+    if 'rotation_deg' in result:
+        result['rotation_deg'] = number(result['rotation_deg'], -360, 360)
+    if 'frame' in result:
+        frame = result['frame']
+        if not isinstance(frame, dict) or frame.keys() != {'width', 'height'}:
+            raise ValueError('A minimap frame requires width and height.')
+        result['frame'] = {key: number(frame[key], 64, 1024) for key in ('width', 'height')}
+    if 'zoom' in result:
+        zoom = result['zoom']
+        if not isinstance(zoom, dict) or not zoom or zoom.keys() - {'min', 'max', 'default'}:
+            raise ValueError('Invalid minimap zoom settings.')
+        result['zoom'] = {key: number(zoom[key], 0.05, 32) for key in zoom}
+        low, high = zoom.get('min', 0.05), zoom.get('max', 32)
+        if low > high or 'default' in zoom and not low <= zoom['default'] <= high:
+            raise ValueError('Minimap default zoom must be between its limits.')
+    if 'image' in result:
+        path = result['image']
+        if (not isinstance(path, str) or len(path) > 160 or not MINIMAP_PATH.fullmatch(path)
+                or any(RESERVED.fullmatch(part.split('.')[0]) for part in path.split('/'))):
+            raise ValueError('Minimap image must be a relative PNG path within the map folder.')
+    if 'image_bounds' in result:
+        bounds = result['image_bounds']
+        if 'image' not in result or not isinstance(bounds, list) or len(bounds) != 2:
+            raise ValueError('Minimap image bounds require a PNG and two corners.')
+        lo, hi = (pair(corner, -10_000_000, 10_000_000) for corner in bounds)
+        if any(a >= b for a, b in zip(lo, hi)):
+            raise ValueError('Minimap image upper bounds must exceed lower bounds.')
+        result['image_bounds'] = [lo, hi]
+    return result
+
+
+def minimap_payload(map_id, value):
+    if (not valid_id(map_id) or not isinstance(value, dict) or value.keys() != {'settings', 'image'}):
+        raise ValueError('Invalid minimap manifest entry.')
+    settings = minimap_settings(value['settings'])
+    image = value['image']
+    if image is not None and (
+            'image' not in settings or not isinstance(image, dict) or image.keys() != {'path', 'sha256', 'bytes'}
+            or image['path'] != f"lua/{map_id}/{settings['image']}" or not valid_sha(image['sha256'])
+            or type(image['bytes']) is not int or not 33 <= image['bytes'] <= MINIMAP_MAX_IMAGE):
+        raise ValueError('Invalid minimap image inventory entry.')
+    return {'settings': settings, 'image': image}
+
+
+def png_dimensions(header):
+    """Accept only bounded PNG images before handing bytes to the native importer."""
+    if len(header) < 33 or header[:16] != bytes.fromhex('89504e470d0a1a0a0000000d49484452'):
+        raise ValueError('Minimap graphic does not contain a PNG header.')
+    width = int.from_bytes(header[16:20], 'big')
+    height = int.from_bytes(header[20:24], 'big')
+    if not 1 <= width <= MINIMAP_MAX_DIMENSION or not 1 <= height <= MINIMAP_MAX_DIMENSION:
+        raise ValueError('Minimap PNG dimensions exceed the supported range.')
+    return width, height
+
+
 def session_index(value):
     if (not isinstance(value, dict) or value.keys() != {'format', 'maps', 'coreHash'}
             or value['format'] != SESSION_VERSION or not valid_sha(value['coreHash'])
@@ -50,12 +136,13 @@ def session_index(value):
         raise ValueError('Invalid map index.')
     result = {}
     for row in value['maps']:
-        if (not isinstance(row, dict) or row.keys() != {'id', 'label', 'gameTag', 'bytes', 'fileCount',
-                                                       'contentHash', 'manifestHash', 'hasObjectives'}
+        fields = {'id', 'label', 'gameTag', 'bytes', 'fileCount', 'contentHash', 'manifestHash', 'hasObjectives'}
+        if (not isinstance(row, dict) or not fields <= row.keys() <= fields | {'hasMinimap'}
+                or 'hasMinimap' in row and not isinstance(row['hasMinimap'], bool)
                 or not valid_id(row['id']) or row['id'].casefold() in result
                 or not valid_label(row['label']) or row['gameTag'] not in ('T1', 'T2', 'T3', 'Community')
-                or type(row['bytes']) is not int or not 0 <= row['bytes'] <= MAX_TOTAL + 256 * 1024
-                or type(row['fileCount']) is not int or not 0 <= row['fileCount'] <= MAX_PACKAGE_FILES + 1
+                or type(row['bytes']) is not int or not 0 <= row['bytes'] <= MAX_TOTAL + 256 * 1024 + MINIMAP_MAX_IMAGE
+                or type(row['fileCount']) is not int or not 0 <= row['fileCount'] <= MAX_PACKAGE_FILES + 2
                 or not valid_sha(row['contentHash']) or not valid_sha(row['manifestHash'])
                 or type(row['hasObjectives']) is not bool):
             raise ValueError('Invalid map index entry.')

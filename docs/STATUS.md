@@ -1,3 +1,17 @@
+# GameServer01 compatibility candidate
+
+The paired release keeps Public CTF team choices, remaining roster counts,
+and rejoin during a locked round. The Maps panel uses the current catalog
+with conditional refresh and reads optional authored minimap settings from
+the same verified session manifest as map assets. Legacy clients continue
+to receive the original manifest format.
+
+The integration checkout combines the boundary and projectile controls,
+authored liquid effects, ranked PUG, stable staging recovery, and the
+optional Local Play candidate. The local source suites pass. Independent
+reviews, final signed packages, native gameplay qualification and production
+rollout remain pending. See issue #89 and Tribes3-Modded/T3BackEndServer#86.
+
 # Authored mission boundary warnings
 
 The connected client reads opt-in warning markers and the local sound

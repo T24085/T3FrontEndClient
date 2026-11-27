@@ -19,9 +19,12 @@ from map_sync_contract import (CATALOG_ROUTE, CATALOG_VERSION, CHUNK, FILE_ROUTE
                                MAP_ARCHIVE_ASSETS, MAP_ARCHIVE_NAME, OBJECTIVES_HEADER,
                                SESSION_CORE, SESSION_INDEX, SESSION_MAP, SESSION_SHARED, SESSION_VERSION,
                                cooked_rows, encode, map_catalog, map_groups, map_objective_rows,
-                               session_index, sha256_bytes, valid_sha)
+                               minimap_payload, session_index, sha256_bytes, valid_sha)
 from community_maps import BY_ID, declared_definitions, valid_id
 from verified_file_cache import MAX_MERGED_HOST_FILES, digest
+
+
+NOT_MODIFIED = object()
 
 
 def bounded_read(stream):
@@ -48,6 +51,8 @@ def overlay(package, remote):
         fields.update(('community_maps', 'map_definitions'))
         if version == SESSION_VERSION:
             fields.add('runtime')
+            if 'minimap' in remote:
+                fields.add('minimap')
         if 'objectives' in remote:
             fields.add('objectives')
     if version not in (VERSION, CATALOG_VERSION, SESSION_VERSION) or set(remote) != fields:
@@ -87,10 +92,16 @@ def overlay(package, remote):
         bundled_objectives = {row['path']:row for row in package['files'] if row['path'] in authored}
         sources.update({name: name if version == SESSION_VERSION and bundled_objectives.get(name) == row else None
                         for name, row in authored.items()})
+    if 'minimap' in fields:
+        entry = minimap_payload(next(iter(catalog)), remote['minimap'])
+        if entry['image'] is not None:
+            row = entry['image']
+            rows[row['path']] = row
+            sources[row['path']] = None
     return rows, sources, catalog, custom
 
 
-def load_overlay(workspace, revision, package):
+def load_overlay(workspace, revision, package, *, with_minimap=False):
     if not SHA.fullmatch(revision):
         raise ValueError('Invalid map revision.')
     session_path = cache_path(workspace, revision + '.json', session=True)
@@ -105,9 +116,10 @@ def load_overlay(workspace, revision, package):
     if not isinstance(manifest, dict) or session != (manifest.get('format') == SESSION_VERSION):
         raise ValueError('Cached map manifest does not match its storage format.')
     rows, sources, catalog, custom = overlay(package, manifest)
-    return [(row, sources[name], cache_path(workspace, row['sha256'] + '.asset', session=session)
-             if sources[name] is None else None)
-            for name, row in rows.items()], catalog, custom, 'objectives' in manifest
+    result = ([(row, sources[name], cache_path(workspace, row['sha256'] + '.asset', session=session)
+               if sources[name] is None else None)
+               for name, row in rows.items()], catalog, custom, 'objectives' in manifest)
+    return (*result, manifest.get('minimap')) if with_minimap else result
 
 
 def has_session_revision(workspace, revision):
@@ -149,6 +161,7 @@ class MapSync:
         self.available = False
         self.version = None
         self.session_enabled = False
+        self.map_index_cache = (None, None)
         self.core_hash = None
         self.prefetch_lock = threading.Lock()
         self.prefetch_target = None
@@ -168,7 +181,7 @@ class MapSync:
         path = CATALOG_ROUTE if self.version == CATALOG_VERSION else MANIFEST_ROUTE
         return self._document(path)
 
-    def _document(self, path, expected_hash=None):
+    def _document(self, path, expected_hash=None, *, etag=None):
         for attempt in range(3):
             self._check_cancelled()
             try:
@@ -176,8 +189,12 @@ class MapSync:
                     headers = self.lobby.request_headers()
                     if path == CATALOG_ROUTE:
                         headers[OBJECTIVES_HEADER] = '1'
+                    if etag is not None:
+                        headers['If-None-Match'] = etag
                     connection.request('GET', path, headers=headers)
                     with connection.getresponse() as response:
+                        if etag is not None and response.status == 304:
+                            return NOT_MODIFIED
                         if response.status != 200 or response.getheader('Content-Type', '').split(';')[0] != 'application/json':
                             raise CommunityError('Server map inventory is unavailable.')
                         remaining = response.length
@@ -286,6 +303,16 @@ class MapSync:
     def map_index(self):
         return session_index(self._document(SESSION_INDEX))
 
+    def refresh_map_index(self):
+        etag, previous = self.map_index_cache
+        document = self._document(SESSION_INDEX, etag=etag)
+        if document is NOT_MODIFIED:
+            return previous
+        rows = session_index(document)
+        current = previous if rows == previous else rows
+        self.map_index_cache = ('"' + sha256_bytes(encode(document)) + '"', current)
+        return current
+
     def session_path(self, name):
         return cache_path(self.workspace, name, session=True)
 
@@ -313,8 +340,9 @@ class MapSync:
 
     def _session_document(self, map_id, fingerprint, manifest_hash, package):
         doc = self._document(SESSION_MAP + map_id, manifest_hash)
-        if (not isinstance(doc, dict) or doc.keys() != {'format', 'id', 'contentHash', 'coreHash',
-                                                       'sharedHash', 'definition', 'files', 'objectives', 'runtime'}
+        fields = {'format', 'id', 'contentHash', 'coreHash', 'sharedHash', 'definition',
+                  'files', 'objectives', 'runtime'}
+        if (not isinstance(doc, dict) or not fields <= doc.keys() <= fields | {'minimap'}
                 or doc['format'] != SESSION_VERSION or doc['id'] != map_id
                 or doc['contentHash'] != fingerprint or not valid_sha(doc['coreHash'])
                 or not isinstance(doc['files'], list)
@@ -342,7 +370,8 @@ class MapSync:
         return {'format': SESSION_VERSION, 'maps': {map_id: fingerprint}, 'community_maps': [map_id],
                 'map_definitions': {map_id:doc['definition']} if doc['definition'] is not None else {},
                 'shared_content': {prefix:[map_id] for prefix in prefixes}, 'files': files,
-                'objectives': doc['objectives'], 'runtime':doc['runtime']}
+                'objectives': doc['objectives'], 'runtime':doc['runtime'],
+                **({'minimap': minimap_payload(map_id, doc['minimap'])} if 'minimap' in doc else {})}
 
     def sync_map(self, map_id, fingerprint, manifest_hash=None, *, obsolete=None):
         if not valid_id(map_id) or not valid_sha(fingerprint):
@@ -375,7 +404,9 @@ class MapSync:
                     if len(raw) > MAX_MANIFEST:
                         raise ValueError('The combined map manifest exceeds its size limit.')
                 revision = sha256_bytes(raw)
-                self._cache_revision(rows, sources, revision, raw, session=True, obsolete=obsolete)
+                image = json.loads(raw).get('minimap', {}).get('image')
+                self._cache_revision(rows, sources, revision, raw, session=True, obsolete=obsolete,
+                                     optional_path=image['path'] if image is not None else None)
                 self._store(self.session_path(f'map-{map_id}.json'),
                             encode({'revision': revision, 'manifestHash': manifest_hash}))
                 self.status = 'Map ready.'
@@ -423,8 +454,11 @@ class MapSync:
                 if receipt:
                     removable = True
                     try:
-                        _, (rows, sources, _, _) = self._cached_session(receipt['revision'], package)
+                        raw, (rows, sources, _, _) = self._cached_session(receipt['revision'], package)
+                        image = json.loads(raw).get('minimap', {}).get('image')
                         for name, item in rows.items():
+                            if item == image:
+                                continue
                             path = (self.session_path(item['sha256'] + '.asset') if sources[name] is None
                                     else self.package / sources[name])
                             if not self._matches(path, item['bytes'], item['sha256']):
@@ -433,7 +467,7 @@ class MapSync:
                                  else 'Update available')
                     except (OSError, ValueError, TypeError, KeyError):
                         pass
-                elif not row['hasObjectives'] and self.bundled_catalog().get(row['id']) == row['contentHash']:
+                elif not row['hasObjectives'] and not row.get('hasMinimap') and self.bundled_catalog().get(row['id']) == row['contentHash']:
                     if bundled_groups is None:
                         _, bundled_groups = map_groups(package)
                     if all(self._matches(self.package / path, size, sha)
@@ -468,6 +502,10 @@ class MapSync:
                     raise ValueError('A cached map manifest changed. Download it again before removing map files.')
                 doc = json.loads(raw)
                 assets = {row['sha256'] for row in doc['files'] + doc['objectives'] if valid_sha(row['sha256'])}
+                if 'minimap' in doc:
+                    image = minimap_payload(next(iter(doc['maps'])), doc['minimap'])['image']
+                    if image is not None:
+                        assets.add(image['sha256'])
                 if map_id in doc['maps']:
                     selected.append(path)
                     removed.update(assets)
@@ -513,13 +551,17 @@ class MapSync:
         self.status = 'Maps up to date.'
         return self.current
 
-    def _cache_revision(self, rows, sources, revision, raw, *, session=False, obsolete=None):
+    def _cache_revision(self, rows, sources, revision, raw, *, session=False, obsolete=None, optional_path=None):
         def check():
             self._check_cancelled()
             if obsolete and obsolete():
                 raise CommunityError('The lobby selected another map.')
 
-        needed = {row['sha256']: row for name, row in rows.items() if sources[name] is None}
+        needed = {row['sha256']: row for name, row in rows.items()
+                  if sources[name] is None and name != optional_path}
+        if optional_path is not None:
+            optional = rows[optional_path]
+            needed.setdefault(optional['sha256'], optional)
         manifest_path = cache_path(self.workspace, revision + '.json', session=session)
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         pending = []
@@ -534,7 +576,7 @@ class MapSync:
         if pending:
             options = {'check': check} if obsolete is not None else {}
             with shared_map_zip(self.package) as archive:
-                remaining = sum(row['bytes'] for row, _ in pending)
+                remaining = sum(row['bytes'] for row, _ in pending if row['path'] != optional_path)
                 for number, (row, path) in enumerate(pending, 1):
                     check()
                     self.progress = (number - 1, total)
@@ -550,6 +592,14 @@ class MapSync:
                             linked = True
                         except OSError:
                             pass
+                    if row['path'] == optional_path:
+                        try:
+                            if not linked and shutil.disk_usage(manifest_path.parent).free >= DISK_RESERVE_BYTES + row['bytes']:
+                                if archive is None or not self._import_archive_asset(archive, row, path, **options):
+                                    self._download(row, path, **options)
+                        except (OSError, ValueError, EOFError, http.client.HTTPException, zlib.error, CommunityError):
+                            check()
+                        continue
                     if not linked:
                         if shutil.disk_usage(manifest_path.parent).free < DISK_RESERVE_BYTES + remaining:
                             raise CommunityError('Free up space on the game workspace drive to download map updates.')
