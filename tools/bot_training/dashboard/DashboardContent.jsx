@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, Icon } from "../../data-app-public.jsx";
-import { EvaluationCharts, FlagCharts, ProgressCharts, RouteCharts, ScreeningCharts, TrialTable, TrialTrace } from "./TrainingCharts.jsx";
+import { CampaignFlight, EvaluationCharts, FlagCharts, ProgressCharts, RouteCharts, ScreeningCharts, TrialTable, TrialTrace } from "./TrainingCharts.jsx";
 import { best, format, median, outcome, percent, routeLabel, summarizeTrials } from "./training-metrics.js";
 import { MatchRoutes } from "./MatchRoutes.jsx";
 import "./dashboard.css";
@@ -683,6 +683,7 @@ function TeamAnalysis({ phase, keepRun, initialMatch, mapLabel }) {
     setShowBotTrace(true);
   }
   return <>
+    <CampaignFlight rows={phase.rows} row={row} selectMatch={(number) => { keepRun(); setMatch(String(number)); }} />
     <MatchRoutes key={row.campaign_attempt} phase={phase.id}
       clipTitle={`${mapLabel} · Match ${row.campaign_attempt} · ${row.blue}–${row.red}`} tracks={row.bots.map((item) => ({
       attempt: row.campaign_attempt, bot: item.bot, label: (item.team === 1 ? "Blue " : "Red ") + item.bot,

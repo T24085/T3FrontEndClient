@@ -664,3 +664,23 @@
 @media (prefers-reduced-motion: reduce) {
   .training-route-plot * { transition: none; }
 }
+.campaign-flight {
+  border-top: 3px solid #129886;
+}
+.campaign-flight-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+  gap: 0.65rem;
+  margin-block: 0.6rem 1rem;
+}
+.campaign-flight-summary > div {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.7rem 0.8rem;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  border-radius: 0.55rem;
+}
+.campaign-flight-summary strong {
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+}

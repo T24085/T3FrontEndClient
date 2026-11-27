@@ -73,12 +73,43 @@ def native_summary(content):
                 per_capper_median=metrics)
 
 
+def backfill(checkpoint):
+    from dashboard_run import team_bot_metrics
+    from flight_momentum import TEAM_FIELDS, match_key
+    from train import publish
+
+    content = checkpoint.read_bytes()
+    matches = {}
+    for match in json.loads(content)['matches']:
+        identity = match_key(match)
+        if identity is None:
+            continue
+        slots = {}
+        for bot in match['bots']:
+            try:
+                with Path(bot['trace']).open(newline='', encoding='utf-8-sig') as stream:
+                    metrics = team_bot_metrics(list(csv.DictReader(stream)))
+            except FileNotFoundError:
+                continue
+            if all(field in metrics for field in TEAM_FIELDS):
+                slots[str(bot['bot'])] = {field: metrics[field] for field in TEAM_FIELDS}
+        if slots:
+            matches[identity] = slots
+    target = checkpoint.with_name('flight-evidence.json')
+    publish(target, json.dumps({'version': 1, 'matches': matches}, indent=2) + '\n')
+    return dict(matches=len(matches), bot_traces=sum(map(len, matches.values())),
+                checkpoint_sha256=hashlib.sha256(content).hexdigest())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     readers = {'spacex': rocket_summary, 'neurobem': drone_summary, 'native-team': native_summary}
-    parser.add_argument('format', choices=readers)
+    parser.add_argument('format', choices=(*readers, 'backfill-team'))
     parser.add_argument('file', type=Path)
     options = parser.parse_args()
+    if options.format == 'backfill-team':
+        print(json.dumps(backfill(options.file), indent=2))
+        return
     content = options.file.read_bytes()
     summary = readers[options.format](content)
     print(json.dumps(summary | {'input_sha256': hashlib.sha256(content).hexdigest()}, indent=2))

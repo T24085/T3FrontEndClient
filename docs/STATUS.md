@@ -284,3 +284,7 @@ measurements, and an offline analyzer reads saved capper traces and public
 flight references. Frontend issue #111 tracks native and laptop verification.
 Rescoring 600 saved High Octane traces switched the preferred profile from
 steady jets to long jets. The latter still needs a paired native evaluation.
+
+The campaign dashboard plots fast flight, jet use and unpowered glide by
+match. Historical traces can be summarized in a separate evidence file and
+displayed alongside new matches with the same definitions.

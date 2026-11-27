@@ -312,6 +312,9 @@ def live_results(root, runs=(), legacy_metrics=None):
             phase['pursuit_profile'] = (data or {}).get('pursuit')
             phase['pursuit_profiles'] = (data or {}).get('pursuit_profiles')
             saved_matches = (data or {}).get("matches", [])
+            from flight_momentum import TEAM_FIELDS, match_key
+            cache, _ = read_json(root / "DashboardRuns" / key / "flight-evidence.json")
+            backfill = cache.get("matches", {}) if cache and cache.get("version") == 1 else {}
             phase["flag_outcomes"] = flag_outcomes(saved_matches)
             if phase['evaluation']:
                 phase['comparison'] = (data or {}).get('comparison')
@@ -356,6 +359,12 @@ def live_results(root, runs=(), legacy_metrics=None):
                               "carry_seconds", "health_lost",
                               "home_flag_seconds", "enemy_flag_seconds")
                 bots = [{field: bot[field] for field in bot_fields if field in bot} for bot in row["bots"]]
+                cached_bots = backfill.get(match_key(row), {})
+                for bot in bots:
+                    cached = cached_bots.get(str(bot["bot"]), {})
+                    for field in TEAM_FIELDS:
+                        if field in cached:
+                            bot.setdefault(field, cached[field])
                 guided = [{field: item[field] for field in ("bot", "team", "route", "outcome", "pickup_kmh", "homeward_kmh",
                            "pass_gap_m", "pass_speed_kmh", "escape_seconds", "failure") if field in item}
                           for item in row.get("guided_routes", [])]
