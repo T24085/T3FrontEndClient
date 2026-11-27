@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLOT_LIMIT, MATCH_UDP_BASES,
-                            MAX_DEVICES, TOKEN, UdpClient,
+                            MAX_DEVICES, TOKEN, UdpClient, UDP_GRANT_HEADER, UDP_GRANT_RELATIVE,
                             VoiceFrames, VOICE_AUDIO, VOICE_FRAME_BYTES, VOICE_KEEPALIVE, VOICE_PROTOCOL,
                             VOICE_RELEASE, VOICE_ROUTE, VOICE_SAMPLE_RATE,
                             locked_state, read_json, valid_public_address, validate_endpoint, validate_group, write_json)
@@ -534,6 +534,7 @@ class DirectClient(CommunityClient):
         return dict(super().request_headers(), **{
             'Authorization': 'Bearer ' + self.access_token,
             'X-Direct-Session': self.direct_session,
+            UDP_GRANT_HEADER: UDP_GRANT_RELATIVE,
             'X-Community-Host': '1',
         })
 
@@ -591,9 +592,7 @@ class DirectClient(CommunityClient):
                 raise CommunityError('The community host endpoint changed during admission.')
             if proxy is not None and proxy.grant!=grant:
                 try:
-                    if not public:
-                        raise ValueError('Unexpected renewal')
-                    proxy.renew(grant)
+                    proxy.renew(grant, allow_extension=public)
                 except ValueError as exc:
                     raise CommunityError('UDP admission changed without a new identity.') from exc
             if proxy is None:

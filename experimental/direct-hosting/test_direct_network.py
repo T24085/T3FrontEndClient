@@ -1,5 +1,7 @@
 import hashlib,json,pathlib,secrets,socket,sys,tempfile,threading,time,unittest
 from unittest.mock import Mock, patch
+from contextlib import closing
+from unittest.mock import patch
 ROOT=pathlib.Path(__file__).resolve().parent
 sys.path[:0]=[str(ROOT/'src')]
 from direct_network import InviteStore,ReplayWindow,UdpServer,UdpClient,frame,unframe,write_json,valid_public_address
@@ -155,5 +157,53 @@ class DirectNetworkTests(unittest.TestCase):
             server.grant('c'*32,1);alive[0]=False;server.prune();self.assertEqual(server.grants,{})
             with self.assertRaises(ValueError):server.grant('c'*32,1)
         finally:server.close();echo.close()
+
+    def test_relative_grant_survives_clock_skew_and_preserves_udp_relay(self):
+        echo = Echo()
+        self.addCleanup(echo.close)
+        server_time, client_time = [100.0], [500.0]
+        with closing(UdpServer('127.0.0.1', 0, echo.port, lambda *_: True,
+                               clock=lambda: server_time[0], renew=True)) as server:
+            match = 'f'*32
+            with patch('direct_network.time.time', return_value=10_000):
+                legacy = server.grant(match, 1, 'session')
+                grant = server.grant(match, 1, 'session', relative=True)
+            self.assertEqual(legacy.keys(), {'id', 'key', 'matchId', 'port', 'expires'})
+            self.assertEqual(grant['id'], legacy['id'])
+            with patch('direct_network.time.time', return_value=9_900):
+                with self.assertRaisesRegex(ValueError, 'deadline'):
+                    UdpClient('127.0.0.1', legacy)
+                client = UdpClient('127.0.0.1', grant, clock=lambda: client_time[0])
+            with closing(client), socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as game:
+                game.bind(('127.0.0.1', 0))
+                game.settimeout(2)
+                game.sendto(b'clock-skew fixture', ('127.0.0.1', client.port))
+                self.assertEqual(game.recv(100), b'clock-skew fixture')
+                server_time[0] += 10
+                client_time[0] += 12
+                repeated = server.grant(match, 1, 'session', relative=True)
+                self.assertEqual(repeated['expires_in'], grant['expires_in'] - 10)
+                client.renew(repeated, allow_extension=False)
+                self.assertEqual(client.deadline, 7700)
+                for altered in (dict(repeated, expires_in=7201), dict(repeated, key='a'*64)):
+                    with self.assertRaises(ValueError):
+                        client.renew(altered)
+                server_time[0] = 6750
+                client_time[0] = 7150
+                with patch('direct_network.time.time', return_value=-80_000):
+                    renewed = server.grant(match, 1, 'session', relative=True)
+                    self.assertTrue(server.voice_admitted(match, 1, 'session', grant['id']))
+                self.assertEqual((renewed['id'], renewed['renewal']), (grant['id'], 1))
+                with self.assertRaisesRegex(ValueError, 'Unexpected UDP grant renewal'):
+                    client.renew(renewed, allow_extension=False)
+                client.renew(renewed)
+                self.assertEqual(client.deadline, 14350)
+                client.renew(repeated)
+                self.assertEqual(client.deadline, 14350)
+                server_time[0] += 7200
+                self.assertFalse(server.voice_admitted(match, 1, 'session', grant['id']))
+                server.prune()
+                self.assertEqual(server.grants, {})
+
 
 if __name__=='__main__':unittest.main(verbosity=2)
