@@ -10,6 +10,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 from community_maps import LEGACY_MAPS, declared_definitions, declared_maps, declared_shared_content
+from verified_file_cache import MAX_MERGED_HOST_FILES, MAX_PACKAGE_FILES, MAX_PACKAGE_MANIFEST_BYTES
 from verified_file_cache import digest as verified_digest
 
 
@@ -21,8 +22,8 @@ class CompatibilityError(ValueError): pass
 
 def read_package_manifest(bundle):
     root=Path(bundle).resolve(strict=True)
-    with (root/'package-manifest.json').open('rb') as stream: raw=stream.read(2*1024*1024+1)
-    if len(raw)>2*1024*1024: raise CompatibilityError('Manifest is too large.')
+    with (root/'package-manifest.json').open('rb') as stream: raw=stream.read(MAX_PACKAGE_MANIFEST_BYTES+1)
+    if len(raw)>MAX_PACKAGE_MANIFEST_BYTES: raise CompatibilityError('Manifest is too large.')
     manifest=json.loads(raw)
     if not isinstance(manifest,dict): raise CompatibilityError('Invalid package manifest.')
     return root,manifest
@@ -37,7 +38,8 @@ def packaged_map_ids(bundle):
 def inventory(bundle, *, manifest_reader=read_package_manifest):
     root,manifest=manifest_reader(bundle)
     items=manifest.get('files')
-    if not isinstance(items,list) or not 1<=len(items)<=10000: raise CompatibilityError('Invalid manifest inventory.')
+    limit = MAX_PACKAGE_FILES if manifest_reader is read_package_manifest else MAX_MERGED_HOST_FILES
+    if not isinstance(items,list) or not 1<=len(items)<=limit: raise CompatibilityError('Invalid manifest inventory.')
     try:
         definitions=declared_definitions(manifest)
         maps=tuple(definitions)
