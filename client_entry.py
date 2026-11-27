@@ -365,6 +365,7 @@ def main():
     parser.add_argument('--show-flag-indicators', action='store_true')
     parser.add_argument('--projectile-inheritance', help=argparse.SUPPRESS)
     parser.add_argument('--no-weather', action='store_true')
+    parser.add_argument('--no-boundary-warning', action='store_true')
     parser.add_argument('--match-id')
     parser.add_argument('--watch-id')
     parser.add_argument('--test-source', choices=ISOLATED_TEST_SOURCES, help=argparse.SUPPRESS)
@@ -521,6 +522,12 @@ def main():
                 raise ValueError('The Damnation water runtime is incomplete. Update the community client.')
             template = template.replace('@@DAMNATION_WATER@@', json.dumps(water_runtime.as_posix(), ensure_ascii=False))
         template = template.replace('@@SHOW_FLAG_INDICATORS@@', 'true' if args.show_flag_indicators else 'false')
+        if args.no_boundary_warning:
+            # The lobby turned boundary warnings off for this match (#96).
+            switch_on = 'local missionBoundaryWarnings=true' + chr(10)
+            switch_off = 'local missionBoundaryWarnings=false' + chr(10)
+            assert template.count(switch_on) == 1, 'boundary warning switch missing'
+            template = template.replace(switch_on, switch_off)
         template = template.replace('@@STOCK_CLOUD_MAP@@', json.dumps(cloud_map))
         settings_path = profile / 'Saved/Config/Windows/GameUserSettings.ini'
         template = template.replace('@@MUSIC_SETTINGS@@', json.dumps(settings_path.as_posix(), ensure_ascii=False))

@@ -21,6 +21,7 @@ from community_transport import (
     decode_match_rule_preset, validated_match_result, validated_match_rule_preset,
 )
 from community_maps import BY_ID, options, read_options, LEGACY_MAPS
+from boundary_controls import BoundaryDialog, mode_selection, mode_values, summary as boundary_summary, with_mode
 from map_sync_contract import CATALOG_VERSION, SESSION_VERSION, valid_sha
 
 LOBBY_LOCK_RULES_ENABLED = 'lobbyLockRulesEnabled'
@@ -313,6 +314,20 @@ class Desktop:
         self.rule_presets.configure(menu=menu)
         self.rule_presets.pack(side='left', padx=(8, 0))
         self.weather_row.grid_remove()
+        # Boundary mutators (#97): a mode choice plus a dialog with every setting.
+        self.boundary_row = tk.Frame(self.rules_row, bg=PANEL)
+        self.boundary_row.grid(row=4, column=0, columnspan=3, sticky='w', pady=(2, 0))
+        self.label(self.boundary_row, 'Boundary', 9, bg=PANEL).pack(side='left', padx=(4, 6))
+        self.boundary_choice = ttk.Combobox(self.boundary_row, width=34, state='disabled')
+        self.boundary_choice.pack(side='left')
+        self.boundary_choice.bind('<<ComboboxSelected>>', self.change_boundary)
+        self.boundary_settings = ttk.Button(self.boundary_row, text='Boundary settings…',
+                                            command=self.open_boundary_settings, state='disabled')
+        self.boundary_settings.pack(side='left', padx=(8, 0))
+        self.boundary_text = tk.StringVar(value='')
+        tk.Label(self.boundary_row, textvariable=self.boundary_text, bg=PANEL, fg=MUTED,
+                 font=('Segoe UI', 8)).pack(side='left', padx=(8, 0))
+        self.boundary_row.grid_remove()
         self.limits_row = tk.Frame(fields, bg=PANEL)
         self.limits_row.grid(row=0, column=2, sticky='ew')
         self.limits_row.columnconfigure((0, 1), weight=1, uniform='limits')
@@ -1054,11 +1069,31 @@ class Desktop:
         if index in (0, 1, 2):
             self.call_action('rules', weather=(None, True, False)[index])
 
+    def change_boundary(self, _event=None):
+        room = self.room
+        index = self.boundary_choice.current()
+        if room is not None and index >= 0:
+            self.call_action('rules', boundary=with_mode(room.get('boundary'), index))
+
+    def open_boundary_settings(self):
+        room = self.room
+        if room is None or self.boundary_settings.instate(['disabled']):
+            return
+        code = room['code']
+
+        def apply(override):
+            if self.room is not None and self.room['code'] == code:
+                self.call_action('rules', boundary=override)
+
+        BoundaryDialog(self.root, room.get('boundaryDefault'), room.get('boundary'), apply)
+
     def save_rule_preset(self):
         room = self.room
         if room is None or self.rule_presets.instate(['disabled']):
             return
         preset = {'version': 1, 'weather': room.get('weather')}
+        if 'boundaryDefault' in room:
+            preset['boundary'] = room.get('boundary')
         if self.caps.get('matchRulesEnabled') is True:
             settings = room.get('rules', DEFAULT_LOBBY_RULES)
             rules = {key: settings[key] for key in ('flagIndicators', 'botCount')}
@@ -1106,6 +1141,16 @@ class Desktop:
             self.rule_presets.configure(state='normal' if editable else 'disabled')
         else:
             self.weather_row.grid_remove()
+        if room and 'boundaryDefault' in room:  # The server supports boundary mutators (#115).
+            default, override = room.get('boundaryDefault'), room.get('boundary')
+            self.boundary_row.grid()
+            self.boundary_choice.configure(values=mode_values(default), state='readonly' if editable else 'disabled')
+            self.boundary_choice.set(mode_selection(default, override))
+            self.boundary_settings.configure(state='normal' if editable else 'disabled')
+            settings = {**(default or {}), **(override or {})}
+            self.boundary_text.set(('Changed: ' if override else '') + boundary_summary(settings or None))
+        else:
+            self.boundary_row.grid_remove()
         locked = room.get('locked') if room else None
         if self.caps.get(LOBBY_LOCK_RULES_ENABLED) is True and type(locked) is bool:
             self.room_locked.set(locked)

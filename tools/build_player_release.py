@@ -7,7 +7,7 @@ sys.path.insert(0,str(ROOT))
 from tools.verify_player_release import map_catalog,safe_name
 SOURCE_MEMBERS={name:name for name in (
  'server_access.py','server_access_contract.py',
- 'desktop_launcher.py','community_transport.py','community_game.py','client_preparation.py',
+ 'desktop_launcher.py','boundary_controls.py','community_transport.py','community_game.py','client_preparation.py',
  'bulk_asset_cache.py','community_starter.pyw','map_catalog.py','compare_map_packages.py',
  'community_maps.py','steam_identity.py','player_names.py','runtime_health.py','startup_progress.py',
  'verified_file_cache.py','startup_timing.py','startup_paths.py','client_bootstrap.py',

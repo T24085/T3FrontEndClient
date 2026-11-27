@@ -45,6 +45,17 @@ def soundtrack_entry(raw, root):
     return raw.replace(marker, module + b'\n_SIGNED_SOUNDTRACK_PLAYER = soundtrack_player', 1)
 
 
+def bundled_boundary_launcher(raw, root):
+    source = root / 'boundary_controls.py'
+    if source.resolve(strict=True) != source:
+        raise ValueError('Linked source is not permitted: boundary controls')
+    marker = (b'from boundary_controls import BoundaryDialog, mode_selection, mode_values, '
+              b'summary as boundary_summary, with_mode')
+    if raw.count(marker) != 1:
+        raise ValueError('Missing canonical launcher boundary import.')
+    return raw.replace(marker, source.read_bytes() + b'\nboundary_summary = summary', 1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -90,12 +101,13 @@ def main():
         raw = source.read_bytes()
         if name == 'client.py':
             raw = client_entry_payload(raw, ROOT)
-        if name == "client.py":
             weather = ROOT / 'lua/weather.lua'
             if weather.resolve(strict=True) != weather:
                 raise ValueError('Linked weather runtime source is not permitted.')
             raw = bundled_client_entry(raw, weather.read_bytes())
             raw = soundtrack_entry(raw, ROOT)
+        if name == 'desktop_launcher.py':
+            raw = bundled_boundary_launcher(raw, ROOT)
         if not 0 < len(raw) <= MAX_FILE:
             raise ValueError('Unsupported Starter update file size: ' + name)
         if name.endswith('.py'):

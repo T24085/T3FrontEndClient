@@ -249,6 +249,29 @@ class CommunityGameTest(unittest.TestCase):
         self.assertEqual(captured[captured.index('--expected-map')+1], 'Stonehenge')
         self.assertEqual(captured[captured.index('--expected-content-hash')+1], 'a'*64)
 
+    def test_lobby_boundary_warning_off_reaches_the_game_client(self):
+        import json
+        (self.game.package/'package-manifest.json').write_text(json.dumps({'startup_contract':'verified-child-map-v1'}))
+        self.game.catalog_loader = lambda _: (_ for _ in ()).throw(AssertionError('duplicate parent hash'))
+        for boundary, expected in (({'warn_players': False}, True), ({'warn_players': True}, False), (None, False)):
+            with self.subTest(boundary=boundary):
+                done, captured = threading.Event(), []
+
+                def run(argv, *a, **k):
+                    captured.extend(argv)
+                    done.set()
+                    return {'status':'terminal','exit_code':1,'job_active_processes_after_cleanup':0}
+                self.game.owner.run_owned_job = run
+                target = dict(self.lobby.match_target())
+                target.pop('boundary', None)
+                if boundary is not None:
+                    target['boundary'] = boundary
+                self.lobby.match_target = lambda target=target: dict(target)
+                self.game.start()
+                self.assertTrue(done.wait(2))
+                self.game.wait(2)
+                self.assertEqual('--no-boundary-warning' in captured, expected)
+
     def test_unconfirmed_cleanup_is_quarantined(self):
         self.game.owner.run_owned_job = lambda *a,**k: {'status':'terminal','exit_code':0,'job_active_processes_at_parent_exit':1}
         self.game.start()
