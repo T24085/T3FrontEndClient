@@ -48,6 +48,18 @@ class PackagedMapWeatherTest(unittest.TestCase):
         file = write_map_definitions(self.root, self.run, self.definitions, KATA, {'files': rows}, public=public)
         return self.lua.execute(file.read_text(encoding='utf-8'))
 
+    def test_verified_adapter_passes_authored_liquids_to_the_selected_map(self):
+        world = f'{KATA.package}.{KATA.level}:'
+        adapter = self.add_adapter(f'''
+return {{format=1,map_id="{KATA.id}",package="{KATA.package}",world="{world}",
+         liquids={{{{id="River",liquid_type="river_water"}}}},
+         liquid_profile_packs={{{{format=1,profiles={{river_water={{minimum=10}}}}}}}}}}
+''')
+        maps = self.catalog([adapter], public=True)
+        self.assertEqual(maps[KATA.id].liquids[1].id, 'River')
+        self.assertEqual(maps[KATA.id].liquid_profile_packs[1].profiles.river_water.minimum, 10)
+        self.assertIsNone(maps[BLIZZARD.id].liquids)
+
     def test_weather_off_hides_only_safe_authored_meshes_and_fog_in_selected_world(self):
         adapter = self.add_adapter(DESCRIPTOR)
         path = write_map_definitions(self.root, self.run, self.definitions, KATA,

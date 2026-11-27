@@ -317,7 +317,7 @@ local function apply_weather(id,path)
   assert(type(authored)=='table' and authored.name==id and authored.package==row.package
          and authored.world==row.world,'weather_catalog_map_identity')
   layout=authored.base_layout
- elseif adapter.format==1 and (adapter.music~=nil or adapter.weather~=nil or adapter.emergency_lighting~=nil or adapter.hide_minimap~=nil
+ elseif adapter.format==1 and (adapter.music~=nil or adapter.weather~=nil or adapter.liquids~=nil or adapter.emergency_lighting~=nil or adapter.hide_minimap~=nil
      or (type(adapter.layout)=='table' and adapter.layout.radars_per_team~=nil)) then
   assert(adapter.map_id==id and adapter.package==row.package and adapter.world==row.world,
          'weather_catalog_map_identity')
@@ -335,6 +335,14 @@ local function apply_weather(id,path)
   assert(authored.weather==false or type(authored.weather)=='table','weather_catalog_config_required')
   row.weather=authored.weather or nil
   row.weather_authored=true
+ end
+ if authored.liquids~=nil then
+  if type(authored.liquids)=='table' then
+   row.liquids=authored.liquids
+   row.liquid_profile_packs=authored.liquid_profile_packs
+  else
+   print('Map objectives ignored invalid liquids for '..id)
+  end
  end
  if authored.emergency_lighting~=nil then
   assert(type(authored.emergency_lighting)=='boolean','emergency_lighting_setting_required')

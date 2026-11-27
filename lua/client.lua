@@ -145,7 +145,7 @@ local configure_base_lighting=(function()
   end
  end
 end)()
-local configure_water=assert(loadfile(@@DAMNATION_WATER@@))()({valid=valid,report=report})
+local configure_water=assert(loadfile(@@DAMNATION_WATER@@))()({valid=valid,report=report,descriptors=mapDefinitions})
 local allowedMaps={}
 for name,row in pairs(mapDefinitions)do
  assert(name==row.name,"map_descriptor_identity_disagreement");allowedMaps[#allowedMaps+1]=row
@@ -2573,7 +2573,7 @@ local function client_tick(sys)
     local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() or not valid(pc.PlayerState) then update_match_music(nil,nil);return end
     configure_weather(gs,pc)
     configure_base_lighting(gs)
-    configure_water(gs)
+    configure_water(gs,pc)
     local ps=pc.PlayerState
     if SPECTATOR_ROLE=="spectator" then
         if not spectatorRuntime then spectatorRuntime=assert(loadfile(@@SPECTATOR_RUNTIME@@))()({valid=valid,scope=scope,signature=signature,report=report,lease_id=SPECTATOR_LEASE,watch_id=SPECTATOR_WATCH,material_factory=assert(loadfile(@@SPECTATOR_MATERIAL_RUNTIME@@))()})end
