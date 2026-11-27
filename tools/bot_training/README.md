@@ -297,3 +297,34 @@ unfinished wave; Resume starts a fresh host at the next unsaved match.
 The team dashboard reports verified reuse and timed matches per hour,
 including recorded startup, reset preparation and failed-reset time. Older
 matches without wall-time evidence are excluded from that rate.
+# Sustained flight measurements
+
+New straight-flight drills compare the available ski and jet profiles using
+forward course progress, fast distance in the air, sustained fast flight,
+unpowered gliding and speed carried through landing with jet energy in reserve.
+The 45 km/h measurement threshold and scoring targets are provisional TRIBES
+settings. Continue using both sides for comparisons. Older checkpoints keep
+their original scoring. Team matches also record fast airtime, unpowered
+gliding and landing speed and energy, by bot.
+
+Use the offline reference analyzer to review public flight recordings alongside
+native traces. It prints a JSON summary and a SHA-256 fingerprint of the input.
+
+```text
+python tools/bot_training/flight_reference.py spacex "ABS-2A raw.json"
+python tools/bot_training/flight_reference.py neurobem "processed_recording.csv"
+python tools/bot_training/flight_reference.py native-team "DashboardRuns/RUN_ID/progress.json"
+```
+
+The [SpaceX ABS-2A webcast archive](https://github.com/shahar603/Telemetry-Data/tree/9019f96ceead37e56db52de4c88ca4221282b80d/ABS-2A/JSON)
+supplied 3,495 valid samples in its first 120 seconds. Its successive speed bins
+show why a speed trace reveals sustained acceleration more clearly than peak
+speed. The [UZH NeuroBEM dataset](https://rpg.ifi.uzh.ch/neuro_bem/Readme.html)
+supplies velocity, turn rates and individual motor speeds. The analyzer was
+checked against `processed_data/merged_2021-02-18-16-43-54_seg_1.csv` from the
+publisher's archive. Use these references to study acceleration and control
+separately. TRIBES traces supply every value used to rank the bot profiles.
+
+Run the native summary on the machine holding the saved traces. It reads the
+checkpoint and reports per-capper medians, zero-jet traces and unavailable
+traces without writing to the run.

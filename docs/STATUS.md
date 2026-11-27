@@ -267,3 +267,20 @@ The real-player join failure was reproduced: one admitted player remained on sta
 The direct-port-forwarding friend handoff is experimental and separate. It has transport/source checks, not complete off-site native qualification.
 
 Maps: Damnation, HighOctane, Scarabrae, Stonehenge, Snowblind, Rollercoaster, SnowblindBlizzard, HighOctane2026, Damnation2026, Scarabrae2026, Stonehenge2026, Snowblind2026, SnowblindBlizzard2026, Rollercoaster2026, Torment, DangerousCrossing, Drydock, Katabatic, Wavemist, Hollow, Raindance, Moonrise.
+
+## 2026-11-27 · M3 · Mirrored bot training checkpoint
+
+The trainer restores defense and offense tactic pairs as tuples before scoring
+the mirrored leg. The regression saves the first leg, reloads the checkpoint,
+and verifies that both sets of tactics remain usable as scoring keys and that
+the second result is saved. Frontend issue #109 tracks verification on the
+private laptop trainer.
+
+## 2026-11-27 · M3 · Sustained bot flight
+
+New straight-flight drills rank jet profiles using fast airborne advance,
+gliding and momentum through landing. The dashboard exposes these native
+measurements, and an offline analyzer reads saved capper traces and public
+flight references. Frontend issue #111 tracks native and laptop verification.
+Rescoring 600 saved High Octane traces switched the preferred profile from
+steady jets to long jets. The latter still needs a paired native evaluation.

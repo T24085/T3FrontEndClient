@@ -4,6 +4,7 @@ import csv
 from dataclasses import asdict, replace
 import json
 import math
+from flight_momentum import momentum
 import msvcrt
 import os
 from pathlib import Path
@@ -204,6 +205,12 @@ def team_bot_metrics(samples):
             if before >= 0 and after >= 0 and row['carrying'] == next_row['carrying']:
                 advance += (before - after) / 100
         data['airborne_objective_advance_m'] = max(0, advance)
+        if observed[0].get('energy'):
+            flight = momentum([(float(row['seconds']), speed, row['grounded'] == '0', row['jet'] == '1',
+                                float(row['energy']), 0)
+                               for row, speed in zip(observed, speeds, strict=True)], .35)
+            del flight['fast_air_forward_m']
+            data.update(flight)
     return data
 
 
@@ -605,8 +612,9 @@ def team_run(config, output, matches, seconds, seed, size=7, attack=None, mode='
                 return {(slot + first_red if slot <= first_blue else slot - first_blue): plan
                         for key, plan in assignments.items() if (slot := int(key)) > 0}
             trainer.guided = swapped(first['routes'])
-            trainer.defense_tactics = swapped(first['defense'])
-            trainer.offense_tactics = swapped(first['offense'])
+            # JSON restores tactic pairs as lists, but evidence groups use them as keys.
+            trainer.defense_tactics = {slot: tuple(plan) for slot, plan in swapped(first['defense']).items()}
+            trainer.offense_tactics = {slot: tuple(plan) for slot, plan in swapped(first['offense']).items()}
         elif mode == 'explore':
             policy = 'Flank exploration'
             candidate_on_blue = lead_with_blue if mirrored else index % 2 == 0 or not attack[1]
