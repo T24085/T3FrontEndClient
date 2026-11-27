@@ -11,7 +11,19 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from starter_update import CHANNEL, INDEX, MAX_FILE, UPDATE_CHANNELS, decode_index, encoded, sha
+from starter_update import CHANNEL, DIRECT_CHANNEL, INDEX, MAX_FILE, UPDATE_CHANNELS, decode_index, encoded, sha
+
+
+def client_entry_payload(raw, root):
+    """Embed a Lua dependency without adding a new path to older updater allowlists."""
+    module = root/'runtime-fixes/projectile_inheritance.lua'
+    if module.resolve(strict=True) != module:
+        raise ValueError('Linked source is not permitted: projectile inheritance runtime')
+    marker = b'_SIGNED_PROJECTILE_INHERITANCE_MODULE = None'
+    if raw.count(marker) != 1:
+        raise ValueError('Missing projectile inheritance slot in the canonical client entry.')
+    literal = ascii(module.read_text(encoding='utf-8')).encode('ascii')
+    return raw.replace(marker, b'_SIGNED_PROJECTILE_INHERITANCE_MODULE = ' + literal)
 
 
 def bundled_client_entry(raw, weather):
@@ -31,6 +43,17 @@ def soundtrack_entry(raw, root):
         raise ValueError('Missing canonical soundtrack player marker.')
     module = source.read_bytes()
     return raw.replace(marker, module + b'\n_SIGNED_SOUNDTRACK_PLAYER = soundtrack_player', 1)
+
+
+def bundled_boundary_launcher(raw, root):
+    source = root / 'boundary_controls.py'
+    if source.resolve(strict=True) != source:
+        raise ValueError('Linked source is not permitted: boundary controls')
+    marker = (b'from boundary_controls import BoundaryDialog, mode_selection, mode_values, '
+              b'summary as boundary_summary, with_mode')
+    if raw.count(marker) != 1:
+        raise ValueError('Missing canonical launcher boundary import.')
+    return raw.replace(marker, source.read_bytes() + b'\nboundary_summary = summary', 1)
 
 
 def main():
@@ -57,10 +80,12 @@ def main():
         previous = decode_index(raw, channel=args.channel, now=issued)
         paths.update(previous['files'])
         revision = previous['revision'] + 1
-    # The transport advertises weather support, so ship the matching launch
-    # and in-game runtime even when only the transport was selected.
-    if 'community_transport.py' in paths:
-        paths.update(('community_game.py', 'client.py', 'lua/client.lua'))
+    projectile_dependencies = {'client.py', 'community_game.py', 'community_transport.py',
+                               'desktop_launcher.py', 'player_profile.py', 'runtime_health.py', 'lua/client.lua'}
+    if args.channel == DIRECT_CHANNEL:
+        projectile_dependencies.add('direct_client.py')
+    if paths & projectile_dependencies:
+        paths.update(projectile_dependencies)
     if paths & {'client.py', 'lua/client.lua'}:
         paths.update(('client.py', 'lua/client.lua'))
     if not paths or not paths <= UPDATE_CHANNELS[args.channel][1]:
@@ -74,12 +99,15 @@ def main():
         if source.resolve(strict=True) != source:
             raise ValueError('Linked source is not permitted: ' + name)
         raw = source.read_bytes()
-        if name == "client.py":
+        if name == 'client.py':
+            raw = client_entry_payload(raw, ROOT)
             weather = ROOT / 'lua/weather.lua'
             if weather.resolve(strict=True) != weather:
                 raise ValueError('Linked weather runtime source is not permitted.')
             raw = bundled_client_entry(raw, weather.read_bytes())
             raw = soundtrack_entry(raw, ROOT)
+        if name == 'desktop_launcher.py':
+            raw = bundled_boundary_launcher(raw, ROOT)
         if not 0 < len(raw) <= MAX_FILE:
             raise ValueError('Unsupported Starter update file size: ' + name)
         if name.endswith('.py'):

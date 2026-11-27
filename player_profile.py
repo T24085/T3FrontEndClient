@@ -161,6 +161,43 @@ def _atomic(path, raw):
         raise ProfileError('Player-settings update could not be published; retained: '+str(temp))
 
 
+def load_projectile_settings():
+    from community_transport import validated_projectile_settings
+    path = _child(user_profile_root(), 'projectile-inheritance.json')
+    try:
+        with path.open('rb') as stream:
+            raw = stream.read(4097)
+    except FileNotFoundError:
+        return {}
+    if len(raw) > 4096:
+        raise ProfileError('Saved projectile settings exceeded their size limit.')
+    try:
+        return validated_projectile_settings(json.loads(raw))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ProfileError('Saved projectile settings are invalid.') from exc
+
+
+def update_projectile_settings(weapon, axes):
+    from community_transport import PROJECTILE_INHERITANCE_CLASSES, validated_projectile_settings
+
+    if weapon not in PROJECTILE_INHERITANCE_CLASSES:
+        raise ValueError('Unknown weapon in projectile inheritance settings.')
+    profile = user_profile_root()
+    handle = _acquire_profile_lock(profile, projectile=True)
+    try:
+        settings = load_projectile_settings()
+        if axes is None:
+            settings.pop(weapon, None)
+        else:
+            settings[weapon] = axes
+        settings = validated_projectile_settings(settings)
+        raw = json.dumps(settings, sort_keys=True).encode('ascii')
+        _atomic(_child(profile, 'projectile-inheritance.json'), raw)
+        return settings
+    finally:
+        _unlock_profile(handle)
+
+
 def _valid_bootstrap_map(map_name):
     if map_name == '/Game/Maps/Active/Drydock/Arena_Drydock_P':
         return True
@@ -342,10 +379,10 @@ def _initialize_profile(root, workspaces):
     return profile
 
 
-def _acquire_profile_lock(root):
+def _acquire_profile_lock(root, *, projectile=False):
     root.mkdir(parents=True, exist_ok=True)
     _plain(root)
-    lock = _child(root, 'profile.lock')
+    lock = _child(root, 'projectile-settings.lock' if projectile else 'profile.lock')
     handle = lock.open('a+b')
     try:
         os.set_inheritable(handle.fileno(), False)
@@ -362,6 +399,8 @@ def _acquire_profile_lock(root):
     except OSError as exc:
         handle.close()
         if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) or getattr(exc, 'winerror', None) in (33, 36):
+            if projectile:
+                raise ProfileBusy('Another Starter is saving projectile settings. Try again.') from exc
             raise ProfileBusy('Your community game is already using its saved settings. Close it and try again.') from exc
         raise ProfileError('The player-settings lock is unavailable: '+str(exc)) from exc
     return handle

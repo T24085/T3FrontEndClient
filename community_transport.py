@@ -13,6 +13,13 @@ import threading
 
 from dynamic_destination import destination,isolated_source
 from community_maps import BY_ID, MAX_MAPS, valid_id, valid_label
+try:
+    from community_maps import validated_boundary
+except ImportError:  # Starter updates replace this file but not community_maps.py; the host validates instead.
+    def validated_boundary(value):
+        if not isinstance(value, dict) or not value:
+            raise ValueError('Invalid boundary settings.')
+        return dict(value)
 from map_sync_contract import CATALOG_HEADER, CATALOG_VERSION, SESSION_HEADER, SESSION_VERSION, valid_sha
 from player_names import display_name
 
@@ -81,11 +88,75 @@ def validated_lobby_rules(value, *, partial=False):
     return dict(value)
 
 
+PROJECTILE_INHERITANCE_CLASSES = {
+    'assaultrifle': '/Game/Topaz/Abilities/Weapons/AssaultRifle/BP_Projectile_Topaz_AssaultRifle.BP_Projectile_Topaz_AssaultRifle_C',
+    'boltlauncher': '/Game/Topaz/Abilities/Weapons/BoltLauncher/BP_Projectile_Topaz_BoltLauncher.BP_Projectile_Topaz_BoltLauncher_C',
+    'bxt1rifle': '/Game/Topaz/Abilities/Weapons/BXT1Rifle/BP_Projectile_Topaz_BXT1Rifle.BP_Projectile_Topaz_BXT1Rifle_C',
+    'chaincannon': '/Game/Topaz/Abilities/Weapons/ChainCannon/BP_Projectile_Topaz_ChainCannon.BP_Projectile_Topaz_ChainCannon_C',
+    'chaingun': '/Game/Topaz/Abilities/Weapons/Chaingun/BP_Projectile_Topaz_Chaingun.BP_Projectile_Topaz_Chaingun_C',
+    'fusionmortar': '/Game/Topaz/Abilities/Weapons/FusionMortar/BP_Projectile_FusionMortar.BP_Projectile_FusionMortar_C',
+    'gladiator': '/Game/Topaz/Abilities/Weapons/Gladiator/BP_Projectile_Gladiator.BP_Projectile_Gladiator_C',
+    'grenadelauncher': '/Game/Topaz/Abilities/Weapons/GrenadeLauncher/BP_Projectile_GrenadeLauncher.BP_Projectile_GrenadeLauncher_C',
+    'heavyboltlauncher': '/Game/Topaz/Abilities/Weapons/HeavyBoltLauncher/BP_Projectile_Topaz_HeavyBoltLauncher.BP_Projectile_Topaz_HeavyBoltLauncher_C',
+    'heavyhonorfusor': '/Game/Topaz/Abilities/Weapons/HeavyHonorfusor/BP_Projectile_Topaz_HeavyHonorfusor.BP_Projectile_Topaz_HeavyHonorfusor_C',
+    'heavyspinfusor': '/Game/Topaz/Abilities/Weapons/HeavySpinfusor/BP_Projectile_Topaz_HeavySpinfusor.BP_Projectile_Topaz_HeavySpinfusor_C',
+    'heavyspinfusorxd': '/Game/Topaz/Abilities/Weapons/HeavySpinfusorXD/BP_Projectile_Topaz_HeavySpinfusorXD.BP_Projectile_Topaz_HeavySpinfusorXD_C',
+    'honorfusor': '/Game/Topaz/Abilities/Weapons/Honorfusor/BP_Projectile_Topaz_Honorfusor.BP_Projectile_Topaz_Honorfusor_C',
+    'jackal': '/Game/Topaz/Abilities/Weapons/Jackal/BP_Projectile_Jackal.BP_Projectile_Jackal_C',
+    'lightchaingun': '/Game/Topaz/Abilities/Weapons/LightChaingun/BP_Projectile_Topaz_LightChaingun.BP_Projectile_Topaz_LightChaingun_C',
+    'lighthonorfusor': '/Game/Topaz/Abilities/Weapons/LightHonorfusor/BP_Projectile_Topaz_LightHonorfusor.BP_Projectile_Topaz_LightHonorfusor_C',
+    'lightspinfusor': '/Game/Topaz/Abilities/Weapons/LightSpinfusor/BP_Projectile_Topaz_LightSpinfusor.BP_Projectile_Topaz_LightSpinfusor_C',
+    'lightspinfusorxd': '/Game/Topaz/Abilities/Weapons/LightSpinfusorXD/BP_Projectile_Topaz_LightSpinfusorXD.BP_Projectile_Topaz_LightSpinfusorXD_C',
+    'novacolt': '/Game/Topaz/Abilities/Weapons/NovaColt/BP_Projectile_Topaz_NovaColt.BP_Projectile_Topaz_NovaColt_C',
+    'phaserifle': '/Game/Topaz/Abilities/Weapons/PhaseRifle/BP_Projectile_Topaz_PhaseRifle.BP_Projectile_Topaz_PhaseRifle_C',
+    'plasmagun': '/Game/Topaz/Abilities/Weapons/PlasmaGun/BP_Projectile_Topaz_PlasmaGun.BP_Projectile_Topaz_PlasmaGun_C',
+    'saberlauncher': '/Game/Topaz/Abilities/Weapons/SaberLauncher/BP_Projectile_Topaz_SaberLauncher.BP_Projectile_Topaz_SaberLauncher_C',
+    'sparrow': '/Game/Topaz/Abilities/Weapons/Sparrow/BP_Projectile_Topaz_Sparrow.BP_Projectile_Topaz_Sparrow_C',
+    'spinfusor': '/Game/Topaz/Abilities/Weapons/Spinfusor/BP_Projectile_Topaz_Spinfusor.BP_Projectile_Topaz_Spinfusor_C',
+    'spinfusorxd': '/Game/Topaz/Abilities/Weapons/SpinfusorXD/BP_Projectile_Topaz_SpinfusorXD.BP_Projectile_Topaz_SpinfusorXD_C',
+    'throwingknives': '/Game/Topaz/Abilities/Weapons/ThrowingKnives/BP_Projectile_Topaz_ThrowingKnives.BP_Projectile_Topaz_ThrowingKnives_C',
+    'thumper': '/Game/Topaz/Abilities/Weapons/Thumper/BP_Projectile_Topaz_Thumper.BP_Projectile_Topaz_Thumper_C',
+}
+
+
+def validated_projectile_settings(value):
+    if not isinstance(value, dict) or not value.keys() <= PROJECTILE_INHERITANCE_CLASSES.keys():
+        raise ValueError('Unknown weapon in projectile inheritance settings.')
+    result = {}
+    for weapon, axes in value.items():
+        if (not isinstance(axes, (list, tuple)) or len(axes) != 2
+                or any(type(axis) is not int or not 0 <= axis <= 100 for axis in axes)):
+            raise ValueError('Use whole inheritance percentages from 0 to 100.')
+        result[weapon] = list(axes)
+    return result
+
+
+def projectile_settings_payload(value):
+    settings = validated_projectile_settings(value)
+    lines = ['T3PROJECTILE1']
+    for weapon, (forward, lateral) in sorted(settings.items()):
+        lines.append(f'{weapon}|{forward}|{lateral}')
+    return ('\n'.join(lines) + '\n').encode('ascii')
+
+
+def projectile_runtime_lua(runtime, *, directory=None, file=None):
+    paths = ','.join(f'[{json.dumps("BlueprintGeneratedClass " + path)}]={json.dumps(key)}'
+                     for key, path in PROJECTILE_INHERITANCE_CLASSES.items())
+    keys = ','.join(f'[{json.dumps(key)}]=true' for key in PROJECTILE_INHERITANCE_CLASSES)
+    if (directory is None) == (file is None):
+        raise ValueError('Supply exactly one projectile settings source.')
+    source = (',directory=' + json.dumps(directory, ensure_ascii=False) if directory is not None
+              else ',file=' + json.dumps(file, ensure_ascii=False))
+    return ('local applyProjectileInheritance=(function()\n'+runtime+'\nend)()('
+            + '{valid=valid,report=report,scope=scope,signature=signature,classes={'+paths
+            +'},keys={'+keys+'}'+source+'})\n')
+
+
 MAX_RULE_PRESET_BYTES = 8192
 
 
 def validated_match_rule_preset(value):
-    fields = {'rules', 'matchLimits', 'weather'}
+    fields = {'rules', 'matchLimits', 'weather', 'boundary'}
     if (not isinstance(value, dict) or type(value.get('version')) is not int or value['version'] != 1
             or not (value.keys() & fields) or not value.keys() <= fields | {'version'}):
         raise ValueError('Invalid lobby rule set.')
@@ -99,6 +170,8 @@ def validated_match_rule_preset(value):
         if weather is not None and type(weather) is not bool:
             raise ValueError('Choose Map default, On, or Off for weather.')
         result['weather'] = weather
+    if 'boundary' in value:
+        result['boundary'] = None if value['boundary'] is None else validated_boundary(value['boundary'])
     return result
 
 
@@ -373,6 +446,22 @@ class CommunityClient:
                 raise CommunityError('The match is not ready yet.')
             return self._validated_target(match,room.get('map'))
 
+    def projectile_settings(self, match_id, settings):
+        with self.lock:
+            response = self._request('projectile-settings', {
+                'code': self.code, 'matchId': match_id, 'settings': validated_projectile_settings(settings),
+            })
+            return self._projectile_reply(response, match_id)
+
+    @staticmethod
+    def _projectile_reply(response, match_id):
+        if response.get('matchId') != match_id:
+            raise CommunityError('The projectile settings belong to another match.')
+        try:
+            return validated_projectile_settings(response.get('settings'))
+        except ValueError as exc:
+            raise CommunityError('Invalid projectile settings returned by the host.') from exc
+
     def _validated_target(self,match,name,*,spectator=False):
         if not isinstance(match,dict):raise CommunityError('Invalid match response.')
         if match.get('map', name) != name:
@@ -399,10 +488,19 @@ class CommunityClient:
             if type(match['flagIndicators']) is not bool:
                 raise CommunityError('Invalid flag indicator policy.')
             target['flagIndicators'] = match['flagIndicators']
+        if not spectator and 'projectileSettings' in match:
+            if type(match['projectileSettings']) is not bool:
+                raise CommunityError('Invalid projectile settings capability.')
+            target['projectileSettings'] = match['projectileSettings']
         if 'weather' in match:
             if type(match['weather']) is not bool:
                 raise CommunityError('Invalid match weather policy.')
             target['weather'] = match['weather']
+        if match.get('boundary') is not None:
+            try:
+                target['boundary'] = validated_boundary(match['boundary'])
+            except ValueError as exc:
+                raise CommunityError('Invalid match boundary settings.') from exc
         if spectator:target['role']='spectator'
         return target
 

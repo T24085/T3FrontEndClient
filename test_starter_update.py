@@ -12,7 +12,7 @@ from starter_update import (CHANNEL, DIRECT_CHANNEL, INDEX, INVENTORY, accept, d
                             encoded, prepare, recover, run_startup, sha)
 
 
-from tools.build_starter_update import bundled_client_entry
+from tools.build_starter_update import bundled_boundary_launcher, bundled_client_entry
 
 
 def envelope(files, revision=1, issued=None, channel=CHANNEL):
@@ -27,6 +27,15 @@ def verify_fixture(payload, signature):
 
 
 class StarterUpdateTest(unittest.TestCase):
+    def test_signed_launcher_includes_boundary_controls_without_a_new_update_path(self):
+        root = Path(__file__).resolve().parent
+        launcher = bundled_boundary_launcher((root / 'desktop_launcher.py').read_bytes(), root)
+        self.assertNotIn(b'from boundary_controls import', launcher)
+        self.assertIn(b'class BoundaryDialog:', launcher)
+        self.assertIn(b'boundary_summary = summary', launcher)
+        compile(launcher, 'desktop_launcher.py', 'exec')
+
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

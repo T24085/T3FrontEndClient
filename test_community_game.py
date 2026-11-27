@@ -64,6 +64,39 @@ class CommunityGameTest(unittest.TestCase):
         self.assertIn('100.80.168.96:18818', captured['argv'])
         self.assertNotIn('-server', captured['argv'])
 
+    def test_projectile_settings_launch_uses_the_authenticated_host_response(self):
+        import json
+
+        target = self.lobby.match_target()
+        target['projectileSettings'] = True
+        self.lobby.match_target = lambda: target.copy()
+        proposed = {'lightspinfusor': [0, 100]}
+        accepted = {'lightspinfusor': [35, 8]}
+        event = threading.Event()
+        captured = {}
+
+        def register(ident, profile):
+            self.assertEqual((ident, profile), ('fixture', proposed))
+            captured['registered'] = True
+            return accepted
+
+        def run(argv, cwd, env, artifacts, budget, cancellation_path):
+            captured['argv'] = argv
+            event.wait(5)
+            return {'status': 'cancelled_by_owner_request', 'job_active_processes_at_parent_exit': 0}
+
+        self.lobby.projectile_settings = register
+        self.game.owner.run_owned_job = run
+        with patch('player_profile.load_projectile_settings', return_value=proposed):
+            self.assertEqual(self.game.start(), 'starting')
+        self.assertTrue(captured['registered'])
+        self.game.stop()
+        event.set()
+        self.assertEqual(self.game.wait(5)['status'], 'stopped')
+        argv = captured['argv']
+        self.assertEqual(json.loads(argv[argv.index('--projectile-inheritance') + 1]), accepted)
+
+
     def test_lobby_restart_closes_only_the_replaced_owned_player_session(self):
         self.game.status = 'playing'
         self.game.match_id = 'expected'
@@ -236,6 +269,29 @@ class CommunityGameTest(unittest.TestCase):
         self.game.wait(2)
         self.assertEqual(captured[captured.index('--expected-map')+1], 'Stonehenge')
         self.assertEqual(captured[captured.index('--expected-content-hash')+1], 'a'*64)
+
+    def test_lobby_boundary_warning_off_reaches_the_game_client(self):
+        import json
+        (self.game.package/'package-manifest.json').write_text(json.dumps({'startup_contract':'verified-child-map-v1'}))
+        self.game.catalog_loader = lambda _: (_ for _ in ()).throw(AssertionError('duplicate parent hash'))
+        for boundary, expected in (({'warn_players': False}, True), ({'warn_players': True}, False), (None, False)):
+            with self.subTest(boundary=boundary):
+                done, captured = threading.Event(), []
+
+                def run(argv, *a, **k):
+                    captured.extend(argv)
+                    done.set()
+                    return {'status':'terminal','exit_code':1,'job_active_processes_after_cleanup':0}
+                self.game.owner.run_owned_job = run
+                target = dict(self.lobby.match_target())
+                target.pop('boundary', None)
+                if boundary is not None:
+                    target['boundary'] = boundary
+                self.lobby.match_target = lambda target=target: dict(target)
+                self.game.start()
+                self.assertTrue(done.wait(2))
+                self.game.wait(2)
+                self.assertEqual('--no-boundary-warning' in captured, expected)
 
     def test_unconfirmed_cleanup_is_quarantined(self):
         self.game.owner.run_owned_job = lambda *a,**k: {'status':'terminal','exit_code':0,'job_active_processes_at_parent_exit':1}

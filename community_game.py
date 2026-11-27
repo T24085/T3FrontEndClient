@@ -314,10 +314,22 @@ class CommunityGame:
             weather_off = target.get('weather') is False
             if startup_contract in ('verified-child-map-v1','prepared-client-v1') or watch_id is not None or weather_off:
                 argv += ['--expected-map', target['map'], '--expected-content-hash', target['contentHash']]
+            if watch_id is None and target.get('projectileSettings') is True:
+                from player_profile import load_projectile_settings
+                proposed = load_projectile_settings()
+                if public_name is None:
+                    settings = self.lobby.projectile_settings(target['matchId'], proposed)
+                else:
+                    match_id, round_id = self.public_round
+                    settings = self.lobby.public_projectile_settings(match_id, round_id, proposed)
+                if settings:
+                    argv += ['--projectile-inheritance', json.dumps(settings, separators=(',',':'))]
             if target.get('flagIndicators') is True:
                 argv.append('--show-flag-indicators')
             if weather_off:
                 argv.append('--no-weather')
+            if (target.get('boundary') or {}).get('warn_players') is False:
+                argv.append('--no-boundary-warning')
             if public_name is not None:
                 argv.append('--public-session')
             if watch_id is not None:

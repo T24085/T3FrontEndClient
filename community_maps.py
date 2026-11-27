@@ -5,6 +5,51 @@ from pathlib import PurePosixPath
 import re
 
 
+# Boundary mutators (#115, T3FrontEndClient#46 item 10). Settings and per-game defaults:
+# docs/BOUNDARY_LAYER.md. A map or lobby may set any subset; unset keys keep the map's behaviour.
+BOUNDARY_CHOICES = {
+    'mode': ('ignore', 'block', 'flag_only', 'damage'),
+    'flag_rule': ('drop', 'return_after', 'none'),
+    'vehicles': ('ignore', 'destroy'),
+}
+BOUNDARY_FLAGS = ('warn_players', 'flag_pickup_outside', 'apply_flight_ceiling', 'apply_kill_floor')
+BOUNDARY_NUMBERS = {  # key: (low, high, whole seconds)
+    'flag_return_delay_s': (1, 60, True),
+    'grace_s': (0, 60, False),
+    'alert_interval_s': (0.5, 5, False),
+    'damage_per_s': (0, 1, False),
+}
+
+
+def validated_boundary(value):
+    """Validate boundary mutator settings and return a plain copy. Raises ValueError."""
+    known = BOUNDARY_CHOICES.keys() | set(BOUNDARY_FLAGS) | BOUNDARY_NUMBERS.keys()
+    if not isinstance(value, dict) or not value or not value.keys() <= known:
+        raise ValueError('Invalid boundary settings.')
+    result = {}
+    for key, item in value.items():
+        if key in BOUNDARY_CHOICES:
+            if item not in BOUNDARY_CHOICES[key]:
+                raise ValueError(f'Choose a valid boundary {key.replace("_", " ")}.')
+        elif key in BOUNDARY_FLAGS:
+            if type(item) is not bool:
+                raise ValueError(f'Boundary {key.replace("_", " ")} must be on or off.')
+        else:
+            low, high, whole = BOUNDARY_NUMBERS[key]
+            if (type(item) is not int if whole else type(item) not in (int, float)) or item != item or not low <= item <= high:
+                raise ValueError(f'Boundary {key.replace("_", " ")} must be between {low} and {high}.')
+        result[key] = item
+    if result.get('flag_rule') == 'return_after' and 'flag_return_delay_s' not in result:
+        raise ValueError('Set a flag return delay for the return-after rule.')
+    return result
+
+
+def boundary_items(value):
+    """Hashable form of validated boundary settings for frozen map definitions."""
+    return None if value is None else tuple(sorted(validated_boundary(value).items()))
+
+
+
 @dataclass(frozen=True)
 class MapDefinition:
     id: str
@@ -14,6 +59,7 @@ class MapDefinition:
     shared_group: str | None = None
     native: bool = False
     weather: bool = True
+    boundary: tuple | None = None  # map default boundary mutators, sorted (key, value) pairs (#115)
 
     @property
     def package(self):
