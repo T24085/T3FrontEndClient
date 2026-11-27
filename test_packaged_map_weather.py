@@ -48,6 +48,55 @@ class PackagedMapWeatherTest(unittest.TestCase):
         file = write_map_definitions(self.root, self.run, self.definitions, KATA, {'files': rows}, public=public)
         return self.lua.execute(file.read_text(encoding='utf-8'))
 
+    def test_weather_off_hides_only_safe_authored_meshes_and_fog_in_selected_world(self):
+        adapter = self.add_adapter(DESCRIPTOR)
+        path = write_map_definitions(self.root, self.run, self.definitions, KATA,
+                                     {'files': [adapter]}, weather_off=True)
+        maps = self.lua.execute(path.read_text(encoding='utf-8'))
+        self.assertIs(maps[KATA.id].weather_off, True)
+        self.assertIsNone(maps[BLIZZARD.id].weather_off)
+        self.lua.globals().maps = maps
+        self.lua.globals().runtime = (ROOT / 'lua/weather.lua').as_posix()
+        self.lua.execute('''
+          local row=maps.KatabaticT22026
+          local world={GetAddress=function()return 1 end}
+          local other={GetAddress=function()return 2 end}
+          local pc={GetWorld=function()return world end,IsLocalPlayerController=function()return true end}
+          local gs={GetWorld=pc.GetWorld,HasAuthority=function()return false end,
+                    GetFullName=function()return row.world.."PersistentLevel.State" end}
+          local function fog(owner)
+            return {GetWorld=function()return owner end,
+                    Component={SetVisibility=function(self,visible,propagate)
+                       assert(not propagate);self.visible=visible
+                    end}}
+          end
+          local function mesh(owner, name, replicated, collision)
+            return {GetWorld=function()return owner end,bReplicates=replicated,
+                    GetFullName=function()return "StaticMeshActor "..row.world.."PersistentLevel."..name end,
+                    StaticMeshComponent={GetCollisionEnabled=function()return collision end},
+                    SetActorHiddenInGame=function(self,hidden)self.hidden=hidden end}
+          end
+          local fogs={fog(world),fog(other)}
+          local meshes={mesh(world,"Snow00",false,0),mesh(world,"Snow01",false,0),
+                        mesh(other,"Snow00",false,0),mesh(world,"Terrain",false,0),
+                        mesh(world,"Snow00",true,0),mesh(world,"Snow01",false,1)}
+          function FindAllOf(kind)
+            if kind=="ExponentialHeightFog" then return fogs end
+            assert(kind=="StaticMeshActor")
+            return meshes
+          end
+          local reports={}
+          local config=assert(loadfile(runtime))()({descriptors=maps,valid=function(x)return x~=nil end,
+                     scope=function()error("weather motion should not start")end,
+                     report=function(line)reports[#reports+1]=line end})
+          config(gs,pc)
+          config(gs,pc)
+          assert(fogs[1].Component.visible==false and fogs[2].Component.visible==nil)
+          assert(meshes[1].hidden and meshes[2].hidden)
+          for i=3,#meshes do assert(meshes[i].hidden==nil) end
+          assert(#reports==1 and reports[1]=="WEATHER_OFF_READY|map="..row.name.."|fog=1|groups=2")
+        ''')
+
     def test_private_and_public_catalogs_use_the_packaged_descriptor(self):
         row = self.add_adapter(DESCRIPTOR)
         for public in (False, True):

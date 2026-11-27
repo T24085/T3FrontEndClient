@@ -13,6 +13,7 @@ class MapDefinition:
     level: str
     shared_group: str | None = None
     native: bool = False
+    weather: bool = True
 
     @property
     def package(self):

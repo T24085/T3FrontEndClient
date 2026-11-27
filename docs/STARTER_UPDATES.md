@@ -8,6 +8,12 @@ Publish `starter-file-<sha256>.bin` assets on the GitHub `starter-updates-v1` re
 
 The r12 channel covers the allowlisted Python and Lua paths in `starter_update.py`. A build that changes the bootstrap, packaged Python runtime, or map fingerprint runtime still needs a complete ZIP. Compatible cooked map updates use the existing server catalog. Test updates with a disposable r12 install and preserve the `.starter-update/previous` backup when debugging startup failures.
 
+For weather changes, include the managed `client.py` path. The signer embeds
+the current `lua/weather.lua` bytes in that payload so older full ZIPs receive
+the same runtime without adding a new path to their update allowlist. An
+update that manages `community_transport.py` includes the companion launch
+files because that transport advertises support for match weather.
+
 ## Windows Direct Starter
 
 The Direct package builder installs the signed updater. Players switch once to a group ZIP with the host-backed updater. After that, they open `Start Direct Starter.bat` as usual. The launcher downloads updates over HTTPS from the host in its invitation. It verifies them with the same release signing key as the regular Starter. The friend host also serves compatible maps.

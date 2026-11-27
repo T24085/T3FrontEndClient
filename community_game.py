@@ -279,10 +279,13 @@ class CommunityGame:
             ident = uuid.uuid4().hex
             argv = [str(self.package / 'python/python.exe'), '-B', '-u', str(self.package / 'client.py'),
                     '--endpoint', endpoint, '--game-dir', str(self.game_source), '--workspace', str(self.workspace)]
-            if startup_contract in ('verified-child-map-v1','prepared-client-v1') or watch_id is not None:
+            weather_off = target.get('weather') is False
+            if startup_contract in ('verified-child-map-v1','prepared-client-v1') or watch_id is not None or weather_off:
                 argv += ['--expected-map', target['map'], '--expected-content-hash', target['contentHash']]
             if target.get('flagIndicators') is True:
                 argv.append('--show-flag-indicators')
+            if weather_off:
+                argv.append('--no-weather')
             if public_name is not None:
                 argv.append('--public-session')
             if watch_id is not None:

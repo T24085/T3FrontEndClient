@@ -18,7 +18,7 @@ from player_names import display_name
 
 MAX_LOBBY_BOTS = 12
 PRIVATE_ADMISSION_HEADER = 'X-T3-Private-Join'
-LOBBY_LOCK_RULES_ENABLED = 'lobbyLockRulesEnabled'
+WEATHER_HEADER = 'X-T3-Match-Weather'
 
 DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True, 'fallDamage': False}
 MAX_SCORE_LIMIT = 50
@@ -79,6 +79,44 @@ def validated_lobby_rules(value, *, partial=False):
         elif type(selected) is not bool:
             raise ValueError('Use a checkbox to change this match rule.')
     return dict(value)
+
+
+MAX_RULE_PRESET_BYTES = 8192
+
+
+def validated_match_rule_preset(value):
+    fields = {'rules', 'matchLimits', 'weather'}
+    if (not isinstance(value, dict) or type(value.get('version')) is not int or value['version'] != 1
+            or not (value.keys() & fields) or not value.keys() <= fields | {'version'}):
+        raise ValueError('Invalid lobby rule set.')
+    result = {'version': 1}
+    if 'rules' in value:
+        result['rules'] = validated_lobby_rules(value['rules'], partial=True)
+    if 'matchLimits' in value:
+        result['matchLimits'] = validated_match_limits(value['matchLimits'])
+    if 'weather' in value:
+        weather = value['weather']
+        if weather is not None and type(weather) is not bool:
+            raise ValueError('Choose Map default, On, or Off for weather.')
+        result['weather'] = weather
+    return result
+
+
+def decode_match_rule_preset(raw):
+    if len(raw) > MAX_RULE_PRESET_BYTES:
+        raise ValueError('Lobby rule set is too large.')
+
+    def pairs(items):
+        result = dict(items)
+        if len(result) != len(items):
+            raise ValueError('Lobby rule set contains duplicate settings.')
+        return result
+
+    try:
+        value = json.loads(raw, object_pairs_hook=pairs)
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError('Lobby rule set is not valid JSON.') from exc
+    return validated_match_rule_preset(value)
 
 
 class CommunityError(RuntimeError):
@@ -161,7 +199,8 @@ class CommunityClient:
 
     def request_headers(self):
         return {'Host': self.authority, 'Accept': 'application/json',
-                CATALOG_HEADER: str(CATALOG_VERSION), 'X-T3-Map-Labels': '1', PRIVATE_ADMISSION_HEADER: '1'}
+                CATALOG_HEADER: str(CATALOG_VERSION), 'X-T3-Map-Labels': '1', PRIVATE_ADMISSION_HEADER: '1',
+                WEATHER_HEADER: '1'}
 
     def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True):
         headers = self.request_headers()
@@ -353,6 +392,10 @@ class CommunityClient:
             if type(match['flagIndicators']) is not bool:
                 raise CommunityError('Invalid flag indicator policy.')
             target['flagIndicators'] = match['flagIndicators']
+        if 'weather' in match:
+            if type(match['weather']) is not bool:
+                raise CommunityError('Invalid match weather policy.')
+            target['weather'] = match['weather']
         if spectator:target['role']='spectator'
         return target
 
