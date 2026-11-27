@@ -1,3 +1,15 @@
+# Starter r95 regression recovery (M6)
+
+Issue #121 reconciles the controls players had before r95 with the current
+Starter source. It restores the Phoenix backdrop and launcher skins, map
+download queue, lobby-code paste, Steam name fallback, first-launch retail
+import and the textured armor viewer. The signed builder embeds the artwork
+and viewport through paths already covered by the updater. Local Play,
+lobby mutators and the signed map and game runtime remain in the candidate.
+
+Production rollout remains pending after review and qualification of the
+signed release from main.
+
 # GameServer01 compatibility candidate
 
 The paired release keeps Public CTF team choices, remaining roster counts,

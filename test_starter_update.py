@@ -1,5 +1,5 @@
 import ast
-from base64 import b64decode, b64encode
+from base64 import b64decode, b64encode, b85decode
 import json
 import os
 from pathlib import Path
@@ -14,7 +14,7 @@ from starter_update import (CHANNEL, DIRECT_CHANNEL, LINUX_CHANNEL, LINUX_CHUNK_
                             encoded, prepare, recover, run_startup, sha)
 
 
-from tools.build_starter_update import bundled_boundary_launcher, bundled_client_entry
+from tools.build_starter_update import add_payload, bundled_boundary_launcher, bundled_client_entry, source_payload
 
 
 def envelope(files, revision=1, issued=None, channel=CHANNEL):
@@ -37,6 +37,35 @@ class StarterUpdateTest(unittest.TestCase):
         self.assertIn(b'boundary_summary = summary', launcher)
         compile(launcher, 'desktop_launcher.py', 'exec')
 
+
+    def test_signed_direct_payload_keeps_released_skins_and_armor_viewer(self):
+        root = Path(__file__).resolve().parent
+        launcher = source_payload(root, 'desktop_launcher.py')
+        profile = source_payload(root, 'player_profile.py')
+        direct = source_payload(root, 'direct_client.py')
+        for name, payload in [('desktop_launcher.py', launcher), ('player_profile.py', profile),
+                              ('direct_client.py', direct)]:
+            for channel in (DIRECT_CHANNEL, LINUX_CHANNEL):
+                add_payload(name, payload, {}, {}, channel=channel)
+
+        def literal(raw, name):
+            assignment, = (node for node in ast.parse(raw).body if isinstance(node, ast.Assign)
+                           and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name)
+            return ast.literal_eval(assignment.value)
+
+        artwork = {**literal(launcher, 'PHOENIX_ART'), **literal(profile, 'STARTER_SKIN_ART')}
+        self.assertEqual(len(artwork), 9)
+        for skin in ('phoenix', 'blood-eagle', 'blood-eagle-2', 'diamond-sword'):
+            for kind in ('world', 'emblem'):
+                name = f'{skin}-{kind}.png'
+                self.assertEqual(b85decode(artwork[name]), (root / 'branding' / name).read_bytes())
+        self.assertIn(b'class ArmorViewport:', direct)
+        self.assertNotIn(b'from armor_viewport import', direct)
+        models = literal(direct, 'ARMOR_MODEL_BLOBS')
+        self.assertTrue(all((weight, 'default') in models for weight in ('Light', 'Medium', 'Heavy')))
+        self.assertIn(b'class LocalHostSession:', direct)
+        self.assertIn(b'class BoundaryDialog:', launcher)
+        self.assertIn(b'def show_projectile_settings(', launcher)
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

@@ -25,6 +25,7 @@ from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLO
 from direct_network import TOOL_TIPS_ROUTE, TOOL_TIPS_LIMIT, decode_tool_tips
 from community_transport import (CommunityClient, CommunityConnectionError, CommunityError, PinnedHTTPSConnection,
                                  validated_projectile_settings)
+from armor_viewport import ArmorViewport, decode_model, read_model
 from community_game import CommunityGame
 from dynamic_destination import DIRECT_BRIDGE_POLICY
 
@@ -828,7 +829,6 @@ ARMOR_MODEL_BLOBS = {}
 
 def download_armor_model(lobby, key):
     import lzma
-    from armor_viewport import decode_model
     from direct_update_contract import ROUTE
 
     size, chunks = ARMOR_MODEL_BLOBS[key]
@@ -969,7 +969,6 @@ class ArmorPanel:
             if model is None:
                 if self.model_directory is None:
                     return False
-                from armor_viewport import read_model
                 path = self.model_directory / f'{weight.lower()}-{suit}.t3m'
                 model = read_model(path)
             if model.texture is None:
@@ -981,7 +980,6 @@ class ArmorPanel:
         return True
 
     def present_model(self, model):
-        from armor_viewport import ArmorViewport
         if self.viewport is None:
             self.viewport = ArmorViewport(self.model_frame)
         self.model_status.pack_forget()
@@ -2399,6 +2397,8 @@ def main(root=ROOT, *, on_ready=None):
             window.update_idletasks()
             on_ready()
         window.after_idle(gui.show_connection_info_once)
+        if os.name == 'nt':
+            window.after_idle(gui.offer_windows_retail_import, workspace)
         window.mainloop()
     finally:
         lobby.close()
