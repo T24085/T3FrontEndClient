@@ -22,6 +22,17 @@ def bundled_client_entry(raw, weather):
     return raw.replace(marker, b'_SIGNED_WEATHER_MODULE = ' + repr(weather).encode('ascii'), 1)
 
 
+def soundtrack_entry(raw, root):
+    source = root/'map_soundtracks.py'
+    if source.resolve(strict=True) != source:
+        raise ValueError('Linked soundtrack source is not permitted.')
+    marker = b'_SIGNED_SOUNDTRACK_PLAYER = None'
+    if raw.count(marker) != 1:
+        raise ValueError('Missing canonical soundtrack player marker.')
+    module = source.read_bytes()
+    return raw.replace(marker, module + b'\n_SIGNED_SOUNDTRACK_PLAYER = soundtrack_player', 1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -56,6 +67,8 @@ def main():
     # The launcher's lobby boundary controls live in their own module (#97).
     if 'desktop_launcher.py' in paths:
         paths.add('boundary_controls.py')
+    if paths & {'client.py', 'lua/client.lua'}:
+        paths.update(('client.py', 'lua/client.lua'))
     if not paths or not paths <= UPDATE_CHANNELS[args.channel][1]:
         raise ValueError('Select existing supported Starter package files.')
     files, payloads = {}, {}
@@ -72,6 +85,7 @@ def main():
             if weather.resolve(strict=True) != weather:
                 raise ValueError('Linked weather runtime source is not permitted.')
             raw = bundled_client_entry(raw, weather.read_bytes())
+            raw = soundtrack_entry(raw, ROOT)
         if not 0 < len(raw) <= MAX_FILE:
             raise ValueError('Unsupported Starter update file size: ' + name)
         if name.endswith('.py'):

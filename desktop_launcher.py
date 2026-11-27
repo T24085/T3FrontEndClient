@@ -23,6 +23,7 @@ from community_maps import BY_ID, options, read_options, LEGACY_MAPS
 from boundary_controls import BoundaryDialog, mode_selection, mode_values, summary as boundary_summary, with_mode
 from map_sync_contract import CATALOG_VERSION
 
+LOBBY_LOCK_RULES_ENABLED = 'lobbyLockRulesEnabled'
 ROOT = Path(__file__).resolve().parent
 CLIENT_PACKAGE = ROOT if (ROOT / 'connection-policy.json').is_file() else ROOT / 'dynamic-client-development'
 BG, PANEL, TEXT, MUTED, ACCENT = '#0a111b', '#132335', '#eff7ff', '#9fb3c6', '#4be4c1'
@@ -289,8 +290,13 @@ class Desktop:
         self.capture_toggle = tk.Checkbutton(self.rules_row,text='Retail capture point',variable=self.retail_capture_point,
             command=lambda:self.call_action('rules',retailCapturePoint=self.retail_capture_point.get()),**check_style)
         self.capture_toggle.grid(row=1, column=1, columnspan=2, sticky='w')
+        self.room_locked = tk.BooleanVar(value=False)
+        self.room_lock_toggle = tk.Checkbutton(self.rules_row, text='Lock lobby after start', variable=self.room_locked,
+            command=lambda: self.call_action('rules', locked=self.room_locked.get()), **check_style)
+        self.room_lock_toggle.grid(row=2, column=0, columnspan=3, sticky='w')
+        self.room_lock_toggle.grid_remove()
         self.weather_row = tk.Frame(self.rules_row, bg=PANEL)
-        self.weather_row.grid(row=2, column=0, columnspan=3, sticky='w')
+        self.weather_row.grid(row=3, column=0, columnspan=3, sticky='w')
         self.label(self.weather_row, 'Weather', 9, bg=PANEL).pack(side='left', padx=(4, 6))
         self.weather_choice = ttk.Combobox(self.weather_row, width=16, state='disabled')
         self.weather_choice.pack(side='left')
@@ -304,7 +310,7 @@ class Desktop:
         self.weather_row.grid_remove()
         # Boundary mutators (#97): a mode choice plus a dialog with every setting.
         self.boundary_row = tk.Frame(self.rules_row, bg=PANEL)
-        self.boundary_row.grid(row=3, column=0, columnspan=3, sticky='w', pady=(2, 0))
+        self.boundary_row.grid(row=4, column=0, columnspan=3, sticky='w', pady=(2, 0))
         self.label(self.boundary_row, 'Boundary', 9, bg=PANEL).pack(side='left', padx=(4, 6))
         self.boundary_choice = ttk.Combobox(self.boundary_row, width=34, state='disabled')
         self.boundary_choice.pack(side='left')
@@ -465,8 +471,8 @@ class Desktop:
         self.show_advanced_rules()
 
     def show_advanced_rules(self):
-        available = self.lobby_layout and (
-            self.caps.get('matchRulesEnabled') is True or self.caps.get('spectateEnabled') is True)
+        available = self.lobby_layout and any(
+            self.caps.get(key) is True for key in ('matchRulesEnabled', 'spectateEnabled', LOBBY_LOCK_RULES_ENABLED))
         if available:
             self.advanced_button.grid()
         else:
@@ -755,7 +761,8 @@ class Desktop:
             self.lobby_lock.configure(state='disabled' if in_room or self.controls_busy else 'normal')
         else:
             self.lobby_lock.grid_remove()
-        self.room_heading.set(('Lobby  '+room['code']+('  ·  Locked' if room.get('locked') else ''))
+        lock_active = phase in ('starting', 'ready') and room.get('locked') is True
+        self.room_heading.set(('Lobby  '+room['code']+('  ·  Locked' if lock_active else ''))
                               if in_room else 'Not in a lobby')
         self.phase.set(match_phase_text(room))
         available=room.get('availableMaps') if in_room else self.caps.get('maps')
@@ -1080,6 +1087,13 @@ class Desktop:
             self.boundary_text.set(('Changed: ' if override else '') + boundary_summary(settings or None))
         else:
             self.boundary_row.grid_remove()
+        locked = room.get('locked') if room else None
+        if self.caps.get(LOBBY_LOCK_RULES_ENABLED) is True and type(locked) is bool:
+            self.room_locked.set(locked)
+            self.room_lock_toggle.grid()
+            self.room_lock_toggle.configure(state='normal' if editable else 'disabled')
+        else:
+            self.room_lock_toggle.grid_remove()
         if self.caps.get('matchRulesEnabled') is not True:
             self.limits_row.grid_remove()
             self.flag_toggle.grid_remove()

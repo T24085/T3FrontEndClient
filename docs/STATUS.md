@@ -6,10 +6,35 @@ and plays the map's cue for the controlling player. The warning service
 clears its own label on reentry, death or travel. Source verification
 checks that the signed runtime embeds the same code as the offline
 preview. Retail runtime HUD and audio qualification remains open.
+# Map-declared soundtrack playback
+
+The candidate restores the signed Direct release's Windows soundtrack
+player and reads the choice from the verified map descriptor. It also
+resolves cooked tracks by map override, selected pack and default pack.
+Cooked assets must use the native music submix. Lua tests exercise candidate
+fallback, volume, match-end cleanup, and travel between worlds using the
+same track. The Windows helper opened the live desert and ice track blobs in
+a silent playback probe. A private Damnation 2026 match selected its
+fixture descriptor's desert track and cleared the request when the normal
+round timer expired. A separate private match loaded an original cooked
+Sound Wave through the map override and played it on the native music
+submix. Its component gain changed from 0.40 to 0.20 after the music
+setting was halved. Windows reached the memory reserve before this
+two-process test could observe round-end cleanup. A standalone test set the
+native game state to post-match and confirmed the cooked component stopped
+in the same world. See frontend issue #85.
 
 # Small-screen Play lobby
 
 The Play lobby keeps team rosters side by side, groups match setup fields, and keeps the match actions visible at the bottom. Join and create fields collapse while a lobby is active. Supported lobby options such as spectators, bots, and flag indicators are available under **Advanced rules**. At narrower widths, fields and secondary match actions can wrap while preserving their enabled states. See frontend issue #72.
+
+# Private lobby lock
+
+On supported hosts, the lobby leader can change **Lock lobby after start** in
+**Advanced rules** until the match starts. The checkbox follows the server's
+saved value for everyone in the lobby. The Create Lobby option sets the initial
+value. A locked match still allows original players to rejoin. See frontend
+issue #75 and backend issue #91.
 
 # Blink cue timing
 
@@ -53,13 +78,26 @@ spectator pawn or view is briefly unavailable, the client waits for it and
 re-enters the selected perspective once it is ready. This preserves the
 spectator-only camera scope.
 
-The signed Windows r93 and Linux r25 builds contain the earlier collision
-boom. This candidate carries the newer chase camera and the first-person
-and transition fixes. The isolated Unreal fixture confirmed the eye position,
-aim, and field of view, and checked that the chase camera clears static
-obstacles and ignores dynamic blockers. The Lua fixture covers transient
-spectator state and perspective changes. A rendered multiplayer check and
-Starter publication are pending. See frontend issue #76.
+On the signed Windows r94 and Linux r26 builds, observers still reported
+a split body in first person and jitter in chase. This follow-up activates
+only the selected viewer lens and holds the full body presentation until
+the camera reaches the eye. Chase follows the rendered mesh's interpolated
+position and eases replicated heading changes along the shortest arc. The
+viewer refreshes skin material overrides on each perspective change.
+
+Remote pawns normally lack the owning client's first-person arms and
+weapon. The spectator builds local viewmodel components from the active
+weapon descriptor and the stock tactical arms. The arms follow the
+weapon's pose and take their primary dye from the player's visible armor.
+The components use the native foreground material setting and culling
+bounds. The chase view restores the remote avatar and its own materials.
+
+The isolated Unreal fixtures checked camera selection, chase attachment
+movement, static clearance, dynamic blockers and the first-person weapon
+and arms against the native player view. A rendered multiplayer check
+through Starter Live Matches is still required before release, including
+remote skin changes, fast skiing and spectating through a respawn. See
+frontend issue #76.
 
 # Friendly flag carry border
 

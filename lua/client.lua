@@ -1581,6 +1581,9 @@ return function(env)
  if env.allow_standalone then assert(type(env.client_context_guard)=='function','radar_standalone_requires_native_context_guard') end
  local state=nil;local retired=false;local checkedBlueprints=false
  local capturePath='/Game/Common/Blueprints/Cameras/BP_MinimapCapture.BP_MinimapCapture_C'
+ local detectionRadiusPath='/Script/Topaz.TopRadarSensor:GetDetectionRadius'
+ local minimapManagerPath='/Script/Valhalla.ValGameState:GetMinimapManager'
+ local minimapManagerClass='Class /Script/Valhalla.ValMinimapManager'
  local targetName='TextureRenderTarget2D /Game/Maps/Game/CrossFire/Crossfire_RenderTarget2D.Crossfire_RenderTarget2D'
  local function same(a,b) return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() end
  local function finite(n) return type(n)=='number' and n==n and n>-math.huge and n<math.huge end
@@ -1648,6 +1651,74 @@ return function(env)
   state.component=component;state.target=target
   report('BASE_RADAR_CLIENT_CAPTURE_CREATED|mapSize='..size..'|width='..component.OrthoWidth..'|projectionSource=ValWorldSettings.MapSize|height='..height..'|mapMeshes='..meshes..'|target='..target:GetFullName()..'|pixels='..target.SizeX..'x'..target.SizeY)
  end
+ local function sync_detection_range(widget,record,sensor)
+  if valid(sensor) and not sensor:HasAuthority() then
+   if state.detection_radius_available==nil then
+    local ok,why=pcall(signature,detectionRadiusPath,{{'ReturnValue','FloatProperty',0}})
+    state.detection_radius_available=ok
+    if not ok then report('BASE_RADAR_CLIENT_RANGE_UNAVAILABLE|'..tostring(why):sub(1,400)) end
+   end
+   if state.detection_radius_available then
+    local radius=sensor:GetDetectionRadius()
+    if finite(radius) and radius>0 and finite(widget.DetectionRange) then
+     if not record.last_detection_range or widget.DetectionRange~=record.last_detection_range then
+      record.original_detection_range=widget.DetectionRange
+     end
+     if widget.DetectionRange~=radius then widget.DetectionRange=radius end
+     record.last_detection_range=radius
+     return
+    end
+   end
+  end
+  if record.last_detection_range and widget.DetectionRange==record.last_detection_range then
+   widget.DetectionRange=record.original_detection_range
+  end
+  record.last_detection_range=nil
+ end
+ local function adopted_manager(gs)
+  if not state.manager_signature_checked then
+   signature(minimapManagerPath,{{'ReturnValue','ObjectProperty',0}})
+   state.manager_signature_checked=true
+  end
+  local manager=gs:GetMinimapManager()
+  if valid(manager) then
+   if same(manager,state.adopted_manager) then return manager end
+   return
+  end
+  local candidate
+  for _,actor in ipairs(FindAllOf('ValMinimapManager') or {}) do
+   if valid(actor) and same(actor:GetWorld(),state.world) then
+    if candidate or actor:HasAuthority() or actor:GetClass():GetFullName()~=minimapManagerClass then return end
+    candidate=actor
+   end
+  end
+  if not candidate or candidate.r_MinimapPlayers:GetArrayNum()==0 then return end
+  -- The replicated actor can exist without a game-state reference. Recover
+  -- that reference locally so the stock widget can bind the feed.
+  gs.r_MinimapManager=candidate
+  if not same(gs:GetMinimapManager(),candidate) then
+   gs.r_MinimapManager=nil
+   error('radar_client_minimap_manager_readback_failed')
+  end
+  state.adopted_manager=candidate
+  return candidate
+ end
+ local function recover_minimap_data(gs,widget,record)
+  if state.minimap_data_failed then return end
+  local ok,why=pcall(function()
+   local manager=adopted_manager(gs)
+   if valid(manager) and not same(record.data_manager,manager) then
+    widget:BindMinimap()
+    widget:OnMinimapData()
+    record.data_manager=manager
+    report('BASE_RADAR_CLIENT_MINIMAP_DATA_BOUND|map='..env.descriptor.name)
+   end
+  end)
+  if not ok then
+   state.minimap_data_failed=true
+   report('BASE_RADAR_CLIENT_MINIMAP_DATA_ERROR|'..tostring(why):sub(1,400))
+  end
+ end
  local function bind_native_radars(widget,record)
   local canvas=widget.RadarSensors
   if not valid(canvas) then return false end
@@ -1655,15 +1726,23 @@ return function(env)
   local perTeam=env.descriptor.radars_per_team or 1
   local expected=2*perTeam
   local teams={0,0}
+  local friendly
+  local ps=state.pc.PlayerState
+  local localTeam=valid(ps) and ps.r_TeamId
   for _,actor in ipairs(FindAllOf('BP_Objective_RadarSensor_C') or {}) do
    if valid(actor) and same(actor:GetWorld(),state.world) then
     assert(actor:GetClass():GetFullName()=='BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_RadarSensor.BP_Objective_RadarSensor_C','radar_client_original_radar_class_required')
     local team=actor.r_TeamId
     if team~=1 and team~=2 then return false end
     teams[team]=teams[team]+1
+    if team==localTeam then friendly=actor end
    end
   end
-  if teams[1]~=perTeam or teams[2]~=perTeam then return false end
+  local complete=teams[1]==perTeam and teams[2]==perTeam
+  -- The original widget has one detection center. Match its range to the
+  -- friendly sensor only where there is exactly one center for that team.
+  if perTeam==1 then sync_detection_range(widget,record,complete and friendly or nil) end
+  if not complete then return false end
   -- Native initialization can run while only some replicated sensors exist.
   -- Rebuild that partial sensor layer once, after every team ID has arrived.
   if perTeam>1 and before>0 and before<expected and not record.rebuilt_partial_radars then
@@ -1739,6 +1818,7 @@ return function(env)
     if state.widgets[key] then
      assert(same(widget.MinimapCapture,state.capture) and same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_widget_binding_changed')
      projected=projected+1
+     recover_minimap_data(gs,widget,state.widgets[key])
      if not state.manual_capture then
       signature('/Script/Engine.SceneCaptureComponent2D:CaptureScene',{})
       state.component:CaptureScene()
@@ -2116,46 +2196,202 @@ end
 
 local update_match_music=(function()
     local busPath='/Game/Audio/Submixes/MUS_Game_Submix.MUS_Game_Submix'
-    local world, appliedWorld, appliedPhase, bus, muted, failed
+    local soundtrack=@@MAP_SOUNDTRACK@@
+    local world, bus, muted, failures
+    local request, requestTime
+    local native, nativeGain, assetOptions, bound
+    local matchEndSupported
+    local paused = {}
 
-    local function saved_music_is_muted()
+    local function release_native()
+        if valid(native) then pcall(native.Stop,native) end
+        native,nativeGain=nil,nil
+        for _,component in pairs(paused) do
+            if valid(component) then pcall(component.SetPaused,component,false) end
+        end
+        paused={}
+    end
+
+    local function native_candidate(spec)
+        local asset, registered=LoadAsset(spec.asset)
+        if not valid(asset) and registered==false then
+            local package=assert(spec.asset:match('^(/Game/Community/[A-Za-z0-9_/-]+)%.[A-Za-z0-9_]+$'),
+                                 'soundtrack_package_path_required')
+            local helpers=loaded('/Script/AssetRegistry.Default__AssetRegistryHelpers',
+                                 'AssetRegistryHelpers /Script/AssetRegistry.Default__AssetRegistryHelpers')
+            signature('/Script/AssetRegistry.AssetRegistryHelpers:GetAssetRegistry',
+                      {{'ReturnValue','InterfaceProperty',0}})
+            signature('/Script/AssetRegistry.AssetRegistry:ScanFilesSynchronous',
+                      {{'InFilePaths','ArrayProperty',0},{'bForceRescan','BoolProperty',16}})
+            local registry=helpers:GetAssetRegistry()
+            assert(valid(registry),'soundtrack_registry_required')
+            registry:ScanFilesSynchronous({package..'.uasset'},false)
+            asset=LoadAsset(spec.asset)
+        end
+        assert(valid(asset),'soundtrack_asset_unavailable')
+        local kind,path=asset:GetFullName():match('^(%S+) (.+)$')
+        assert((kind=='SoundWave' or kind=='SoundCue') and path==spec.asset,'soundtrack_asset_identity')
+        assert(asset.bEnableBaseSubmix==true and valid(asset.SoundSubmixObject)
+               and asset.SoundSubmixObject:GetFullName()=='SoundSubmix '..busPath,'soundtrack_music_submix_required')
+        return asset
+    end
+
+    local function sync_native(pc, selected, music)
+        if selected~=assetOptions then release_native();assetOptions=selected end
+        if not selected then return false end
+        if not bound then
+            local ok=pcall(function()
+                signature('/Script/Engine.GameplayStatics:SpawnSound2D',
+                    {{'WorldContextObject','ObjectProperty',0},{'Sound','ObjectProperty',8},
+                     {'VolumeMultiplier','FloatProperty',16},{'PitchMultiplier','FloatProperty',20},
+                     {'StartTime','FloatProperty',24},{'ConcurrencySettings','ObjectProperty',32},
+                     {'bPersistAcrossLevelTransition','BoolProperty',40},{'bAutoDestroy','BoolProperty',41},
+                     {'ReturnValue','ObjectProperty',48}})
+                signature('/Script/Engine.AudioComponent:Stop',{})
+                signature('/Script/Engine.AudioComponent:IsPlaying',{{'ReturnValue','BoolProperty',0}})
+                signature('/Script/Engine.AudioComponent:SetPaused',{{'bPause','BoolProperty',0}})
+                signature('/Script/Engine.AudioComponent:SetVolumeMultiplier',{{'NewVolumeMultiplier','FloatProperty',0}})
+            end)
+            bound=ok and 'ready' or 'unavailable'
+            if not ok then report('MATCH_MUSIC_NATIVE_UNAVAILABLE|schema') end
+        end
+        if bound~='ready' then return false end
+        if not valid(native) or not native:IsPlaying() then
+            for _,spec in ipairs(selected) do
+                if spec.available~=false then
+                    local ok, component=pcall(function()
+                        local asset=native_candidate(spec)
+                        local defaults=loaded('/Script/Engine.Default__GameplayStatics',
+                                              'GameplayStatics /Script/Engine.Default__GameplayStatics')
+                        local result=defaults:SpawnSound2D(pc,asset,music*spec.volume,spec.pitch,0,nil,false,true)
+                        assert(valid(result),'soundtrack_component_unavailable')
+                        return result
+                    end)
+                    if ok then
+                        native,nativeGain=component,spec.volume
+                        report('MATCH_MUSIC_NATIVE|'..spec.asset)
+                        break
+                    end
+                    spec.available=false
+                    report('MATCH_MUSIC_NATIVE_UNAVAILABLE|'..spec.asset..'|'..tostring(component):sub(1,300))
+                end
+            end
+        end
+        if not valid(native) then release_native();return false end
+        if not native:IsPlaying() then return false end
+        native:SetVolumeMultiplier(music*nativeGain)
+        for _,component in ipairs(FindAllOf('AudioComponent') or {}) do
+            if valid(component) and not same_object(component,native) and same_object(component:GetWorld(),world)
+                and not paused[component:GetAddress()] and component:IsPlaying() then
+                local sound=component.Sound
+                if valid(sound) and valid(sound.SoundSubmixObject)
+                    and sound.SoundSubmixObject:GetFullName()=='SoundSubmix '..busPath then
+                    component:SetPaused(true)
+                    paused[component:GetAddress()]=component
+                end
+            end
+        end
+        return true
+    end
+
+    local function set_request(value, now)
+        if not soundtrack or not soundtrack.directory or (value==request and (not value or now==requestTime)) then return end
+        local file=io.open(soundtrack.directory..'/map-soundtrack-request','wb')
+        if not file then return end
+        file:write(value or '')
+        file:close()
+        if not value and request then report("MATCH_MUSIC_REQUEST_CLEARED") end
+        request,requestTime=value,now
+    end
+
+    local function track_ready(map, now)
+        local file=io.open(soundtrack.directory..'/map-soundtrack-ready','rb')
+        if not file then return false end
+        local raw=file:read(96) or ''
+        file:close()
+        local name, stamp=raw:match('^(%w[%w_]*) (%d+)$')
+        stamp=tonumber(stamp)
+        return name==map and stamp and stamp<=now and now-stamp<2
+    end
+
+    local function saved_sound_levels()
         local config=io.open(@@MUSIC_SETTINGS@@,'rb')
         if not config then return end
         local raw=config:read(1048577)
         config:close()
         if not raw or #raw>1048576 then return end
-        if raw:sub(1,2)=='\255\254' or raw:sub(1,2)=='\254\255' then raw=raw:gsub('%z','') end
-        local row=raw:match('[\r\n]SavedSettingsConfig=([^\r\n]*)') or ''
-        local value=tonumber(row:match('"MusicSoundVolume"%s*,%s*"([^"]+)"'))
-        return value==0
+        if raw:sub(1,2)=='\255\254' or raw:sub(1,2)=='\254\255' then raw=raw:sub(3):gsub('%z','') end
+        raw=raw:gsub('^\239\187\191','')
+        local row
+        for entry in ('\n'..raw):gmatch('[\r\n]SavedSettingsConfig%s*=%s*([^\r\n]*)') do row=entry end
+        if not row then return end
+        local music=tonumber(row:match('"MusicSoundVolume"%s*,%s*"([^"]+)"'))
+        local master=tonumber(row:match('"MasterSoundVolume"%s*,%s*"([^"]+)"'))
+        return music,master
     end
 
-    return function(pc,gs,settingsApplied)
+    return function(pc,gs)
+        if not pc or not gs then release_native();assetOptions=nil;set_request(nil,os.time());return end
         local current=pc:GetWorld()
-        if not valid(current) then return end
-        if not same_object(current,world) then world=current;failed=nil end
-        if failed then return end
+        if not valid(current) then release_native();assetOptions=nil;set_request(nil,os.time());return end
+        local worldChanged=not same_object(current,world)
+        if worldChanged then
+            release_native()
+            assetOptions=nil
+            local previousRequest=request
+            set_request(nil,os.time())
+            if request then return end
+            world,failures=current,0
+            if previousRequest then return end
+        end
+        if failures>=3 then return end
         local ok,why=pcall(function()
-            local wantMute=saved_music_is_muted()
-            if wantMute==nil or (not wantMute and not muted) then return end
+            local music,master=saved_sound_levels()
+            local now=os.time()
+            local selected
             local phase=gs.r_GameplayPhaseInfo.Phase.TagName:ToString()
-            if wantMute and muted and not settingsApplied and same_object(current,appliedWorld)
-                and phase==appliedPhase then return end
-            if not valid(bus) then
-                signature('/Script/Engine.SoundSubmix:SetSubmixOutputVolume',
-                          {{'WorldContextObject','ObjectProperty',0},{'InOutputVolume','FloatProperty',8}})
-                bus=LoadAsset(busPath)
-                assert(valid(bus) and bus:GetFullName()=='SoundSubmix '..busPath,'match_music_submix_required')
+            if soundtrack and matchEndSupported==nil then
+                matchEndSupported=pcall(signature,'/Script/Engine.GameStateBase:HasMatchEnded',
+                                         {{'ReturnValue','BoolProperty',0}})
             end
-            -- The original match soundtrack submix has unity output. The
-            -- native sound settings still own nonzero Music slider levels.
-            bus:SetSubmixOutputVolume(pc,wantMute and 0.0 or 1.0)
-            muted=wantMute
-            appliedWorld=current
-            appliedPhase=phase
-            report('MATCH_MUSIC_MUTE|'..tostring(muted))
+            local ended=matchEndSupported and gs:HasMatchEnded()
+            if soundtrack and not ended and phase=='GamePhase.GameplayStartPhase' then
+                local fullname=gs:GetFullName()
+                for _,row in pairs(mapDefinitions) do
+                    if (row.music_route or row.music_candidates) and fullname:find(row.world,1,true) then
+                        selected=row
+                        break
+                    end
+                end
+            end
+            local gain=math.max(0,math.min(1,music or 1))
+            local nativePlaying=sync_native(pc,selected and selected.music_candidates,gain)
+            local route=not nativePlaying and selected and selected.music_route
+            if route and not soundtrack.routes[route] then route=nil end
+            local ready=route and track_ready(route,now)
+            local wantMute=music==0 or ready==true
+            if wantMute or (muted and (music~=nil or soundtrack)) then
+                if not valid(bus) then
+                    signature('/Script/Engine.SoundSubmix:SetSubmixOutputVolume',
+                              {{'WorldContextObject','ObjectProperty',0},{'InOutputVolume','FloatProperty',8}})
+                    bus=LoadAsset(busPath)
+                    assert(valid(bus) and bus:GetFullName()=='SoundSubmix '..busPath,'match_music_submix_required')
+                end
+                -- Native sound settings can refresh the mixer during a phase.
+                bus:SetSubmixOutputVolume(pc,wantMute and 0.0 or 1.0)
+                if worldChanged or muted~=wantMute then report('MATCH_MUSIC_MUTE|'..tostring(wantMute)) end
+                muted=wantMute
+            end
+            gain=gain*math.max(0,math.min(1,master or 1))
+            set_request(route and string.format('%s %d %d',route,math.floor(gain*1000+0.5),ready and 1 or 0),now)
         end)
-        if not ok then failed=true;report('MATCH_MUSIC_MUTE_UNAVAILABLE|'..tostring(why):sub(1,300)) end
+        if ok then failures=0
+        else
+            release_native()
+            set_request(nil,os.time())
+            failures=failures+1
+            if failures==3 then report('MATCH_MUSIC_MUTE_UNAVAILABLE|'..tostring(why):sub(1,300)) end
+        end
     end
 end)()
 
@@ -2318,6 +2554,7 @@ local function client_tick(sys)
         end
     end
     if not joined then
+        update_match_music(nil,nil)
         local modes=FindAllOf("TopGameMode_Topaz") or {};if #modes~=1 or not valid(modes[1]) then return end
         local gm=modes[1]
         assert(gm:GetClass():GetFullName()==MODE and gm:GetFullName():find("/Game/Maps/Active/Drydock/Arena_Drydock_P.Arena_Drydock_P:",1,true) and gm:HasAuthority() and sys:IsStandalone(gm)==true,"initial_standalone_drydock_required")
@@ -2327,13 +2564,13 @@ local function client_tick(sys)
         loaded("/Script/Engine.Default__GameplayStatics","GameplayStatics /Script/Engine.Default__GameplayStatics"):OpenLevel(gm,name,true,SPECTATOR_ROLE=="spectator" and "SpectatorOnly=1" or "")
         return
     end
-    local gs=state();if not gs or gs:HasAuthority() then return end
+    local gs=state();if not gs or gs:HasAuthority() then update_match_music(nil,nil);return end
     configure_geometry(gs)
     configure_community_lighting(gs)
     configure_stock_clouds(gs,sys)
     if clientWorld~=gs:GetFullName() then clientWorld=gs:GetFullName();report("CLIENT_WORLD|"..clientWorld) end
-    local pcs=FindAllOf("ValPlayerController") or {};if #pcs~=1 or not valid(pcs[1]) then return end
-    local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() or not valid(pc.PlayerState) then return end
+    local pcs=FindAllOf("ValPlayerController") or {};if #pcs~=1 or not valid(pcs[1]) then update_match_music(nil,nil);return end
+    local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() or not valid(pc.PlayerState) then update_match_music(nil,nil);return end
     configure_weather(gs,pc)
     configure_base_lighting(gs)
     configure_water(gs)
@@ -2360,8 +2597,8 @@ local function client_tick(sys)
         end
     end
     local pawnReady=valid(pc.Pawn) and pc.Pawn.bInitialized==true
-    local settingsApplied=pawnReady and apply_saved_sound_settings(pc)
-    update_match_music(pc,gs,settingsApplied)
+    if pawnReady then apply_saved_sound_settings(pc) end
+    update_match_music(pc,gs)
     configure_shield_wall_preview()
     reconcile_score_bar('refresh',function() refresh_ctf_score_bar(pc,ps,gs) end)
     if not shockLanceVisualFailed then
@@ -2402,7 +2639,7 @@ schedule=function()
             client_tick(scope())
             schedule()
         end)
-        if not ok then stopped=true;report("RUNTIME_ERROR|"..tostring(why)) end
+        if not ok then stopped=true;update_match_music(nil,nil);report("RUNTIME_ERROR|"..tostring(why)) end
     end
     local ok,handle=pcall(ExecuteInGameThreadWithDelay,1000,callback)
     if not ok or type(handle)~="number" or handle%1~=0 then stopped=true;report("RUNTIME_ERROR|timer_registration_unknown_no_retry");return end
