@@ -200,7 +200,7 @@ class CommunityClient:
     def request_headers(self):
         return {'Host': self.authority, 'Accept': 'application/json',
                 CATALOG_HEADER: str(CATALOG_VERSION), 'X-T3-Map-Labels': '1', PRIVATE_ADMISSION_HEADER: '1',
-                SESSION_HEADER: str(SESSION_VERSION)}
+                SESSION_HEADER: str(SESSION_VERSION),
                 WEATHER_HEADER: '1'}
 
     def _request(self, path, data=None, *, spectator_token=None, use_lobby_token=True):
