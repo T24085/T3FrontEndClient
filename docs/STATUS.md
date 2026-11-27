@@ -275,3 +275,12 @@ the mirrored leg. The regression saves the first leg, reloads the checkpoint,
 and verifies that both sets of tactics remain usable as scoring keys and that
 the second result is saved. Frontend issue #109 tracks verification on the
 private laptop trainer.
+
+## 2026-11-27 · M3 · Sustained bot flight
+
+New straight-flight drills rank jet profiles using fast airborne advance,
+gliding and momentum through landing. The dashboard exposes these native
+measurements, and an offline analyzer reads saved capper traces and public
+flight references. Frontend issue #111 tracks native and laptop verification.
+Rescoring 600 saved High Octane traces switched the preferred profile from
+steady jets to long jets. The latter still needs a paired native evaluation.
