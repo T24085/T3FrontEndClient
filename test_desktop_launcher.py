@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from desktop_launcher import Desktop
-from community_transport import CommunityError, RESULT_STATS
+from community_transport import CommunityError, LOBBY_LOCK_RULES_ENABLED, RESULT_STATS
 from community_maps import options
 
 
@@ -29,6 +29,8 @@ class FakeLobby:
             ident=data.get('playerId','one')
             next(p for p in self.room['players'] if p['id']==ident)['team']=data['team']
         elif operation=='map': self.room['map']=data['map']
+        elif operation == 'rules' and 'locked' in data:
+            self.room['locked'] = data['locked']
         elif operation=='start': self.room['phase']='ready'
         elif operation=='stop': self.room['phase']='stopped'
         elif operation=='leave': return None
@@ -162,6 +164,49 @@ class DesktopTest(unittest.TestCase):
                 app.join_live_selected()
                 enter.call_args.args[0]()
                 join.assert_called_once_with(match_id, 'Player', team='red')
+        finally:
+            app.close()
+            app.close_worker.join(2)
+
+    def test_advanced_rules_lock_checkbox_uses_lobby_state_and_leader_permissions(self):
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        app = Desktop(root, lobby, lambda _: FakeGame())
+
+        def wait_idle():
+            deadline = time.monotonic() + 2
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            self.assertFalse(app.busy)
+
+        try:
+            wait_idle()
+            app.caps['privateLobbyAdmission'] = True
+            lobby.room['locked'] = True
+            app.render(lobby.room)
+            self.assertFalse(app.room_lock_toggle.winfo_manager())
+            app.caps[LOBBY_LOCK_RULES_ENABLED] = True
+            app.render(lobby.room)
+            app.advanced_button.invoke()
+            self.assertEqual(app.rules_row.winfo_manager(), 'pack')
+            self.assertEqual(app.room_lock_toggle.cget('state'), 'normal')
+            self.assertTrue(app.room_locked.get())
+            self.assertNotIn('Locked', app.room_heading.get())
+
+            app.room_lock_toggle.invoke()
+            self.assertEqual(app.start_button.cget('state'), 'disabled')
+            wait_idle()
+            self.assertIn(('rules', {'locked': False}), lobby.calls)
+            self.assertFalse(app.room_locked.get())
+
+            app.render(dict(lobby.room, playerId='two', locked=True))
+            self.assertTrue(app.room_locked.get())
+            self.assertEqual(app.room_lock_toggle.cget('state'), 'disabled')
+            app.render(dict(lobby.room, phase='starting', locked=True))
+            self.assertIn('Locked', app.room_heading.get())
+            self.assertEqual(app.room_lock_toggle.cget('state'), 'disabled')
         finally:
             app.close()
             app.close_worker.join(2)

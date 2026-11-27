@@ -18,7 +18,7 @@ from player_names import display_name
 
 MAX_LOBBY_BOTS = 12
 PRIVATE_ADMISSION_HEADER = 'X-T3-Private-Join'
-WEATHER_HEADER = 'X-T3-Match-Weather'
+LOBBY_LOCK_RULES_ENABLED = 'lobbyLockRulesEnabled'
 
 DEFAULT_LOBBY_RULES = {'flagIndicators': False, 'botCount': 0, 'retailCapturePoint': True, 'fallDamage': False}
 MAX_SCORE_LIMIT = 50

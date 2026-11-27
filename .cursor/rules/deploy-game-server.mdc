@@ -1,0 +1,6 @@
+---
+description: Use the shared production game server deployment skill for PR merge and rollout work
+alwaysApply: false
+---
+
+Read [the production game server deployment skill](../../.claude/skills/deploy-game-server/SKILL.md) for PR merge, release preparation, deployment approval and live verification.

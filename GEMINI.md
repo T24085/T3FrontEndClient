@@ -4,4 +4,4 @@ Read and follow AGENTS.md at the repository root. It holds this repository's rul
 
 ## Skills
 
-None yet. When a shared skill is added under `.claude/skills/<name>/SKILL.md`, list it here (see "Harness parity" in AGENTS.md).
+- Use the [deploy-game-server skill](.claude/skills/deploy-game-server/SKILL.md) when taking a change through PR review or preparing and verifying a production game server release.

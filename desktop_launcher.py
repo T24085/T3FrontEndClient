@@ -16,8 +16,8 @@ from community_game import CommunityGame
 from startup_paths import installation_options
 from community_transport import (
     CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES,
-    DEFAULT_MATCH_LIMITS, MAX_LOBBY_BOTS, MAX_MATCH_MINUTES, MAX_RULE_PRESET_BYTES, MAX_SCORE_LIMIT,
-    decode_match_rule_preset, validated_match_result, validated_match_rule_preset,
+    DEFAULT_MATCH_LIMITS, LOBBY_LOCK_RULES_ENABLED, MAX_LOBBY_BOTS, MAX_MATCH_MINUTES,
+    MAX_SCORE_LIMIT, validated_match_result,
 )
 from community_maps import BY_ID, options, read_options, LEGACY_MAPS
 from map_sync_contract import CATALOG_VERSION
@@ -288,19 +288,11 @@ class Desktop:
         self.capture_toggle = tk.Checkbutton(self.rules_row,text='Retail capture point',variable=self.retail_capture_point,
             command=lambda:self.call_action('rules',retailCapturePoint=self.retail_capture_point.get()),**check_style)
         self.capture_toggle.grid(row=1, column=1, columnspan=2, sticky='w')
-        self.weather_row = tk.Frame(self.rules_row, bg=PANEL)
-        self.weather_row.grid(row=2, column=0, columnspan=3, sticky='w')
-        self.label(self.weather_row, 'Weather', 9, bg=PANEL).pack(side='left', padx=(4, 6))
-        self.weather_choice = ttk.Combobox(self.weather_row, width=16, state='disabled')
-        self.weather_choice.pack(side='left')
-        self.weather_choice.bind('<<ComboboxSelected>>', self.change_weather)
-        self.rule_presets = ttk.Menubutton(self.weather_row, text='Rule sets')
-        menu = tk.Menu(self.rule_presets, tearoff=False)
-        menu.add_command(label='Save rule set…', command=self.save_rule_preset)
-        menu.add_command(label='Load rule set…', command=self.load_rule_preset)
-        self.rule_presets.configure(menu=menu)
-        self.rule_presets.pack(side='left', padx=(8, 0))
-        self.weather_row.grid_remove()
+        self.room_locked = tk.BooleanVar(value=False)
+        self.room_lock_toggle = tk.Checkbutton(self.rules_row, text='Lock lobby after start', variable=self.room_locked,
+            command=lambda: self.call_action('rules', locked=self.room_locked.get()), **check_style)
+        self.room_lock_toggle.grid(row=2, column=0, columnspan=3, sticky='w')
+        self.room_lock_toggle.grid_remove()
         self.limits_row = tk.Frame(fields, bg=PANEL)
         self.limits_row.grid(row=0, column=2, sticky='ew')
         self.limits_row.columnconfigure((0, 1), weight=1, uniform='limits')
@@ -450,8 +442,8 @@ class Desktop:
         self.show_advanced_rules()
 
     def show_advanced_rules(self):
-        available = self.lobby_layout and (
-            self.caps.get('matchRulesEnabled') is True or self.caps.get('spectateEnabled') is True)
+        available = self.lobby_layout and any(
+            self.caps.get(key) is True for key in ('matchRulesEnabled', 'spectateEnabled', LOBBY_LOCK_RULES_ENABLED))
         if available:
             self.advanced_button.grid()
         else:
@@ -740,7 +732,8 @@ class Desktop:
             self.lobby_lock.configure(state='disabled' if in_room or self.controls_busy else 'normal')
         else:
             self.lobby_lock.grid_remove()
-        self.room_heading.set(('Lobby  '+room['code']+('  ·  Locked' if room.get('locked') else ''))
+        lock_active = phase in ('starting', 'ready') and room.get('locked') is True
+        self.room_heading.set(('Lobby  '+room['code']+('  ·  Locked' if lock_active else ''))
                               if in_room else 'Not in a lobby')
         self.phase.set(match_phase_text(room))
         available=room.get('availableMaps') if in_room else self.caps.get('maps')
@@ -1024,17 +1017,13 @@ class Desktop:
             self.call_action('rules', preset=preset)
 
     def render_match_rules(self, room, editable):
-        default = room.get('weatherDefault') if room else None
-        override = room.get('weather') if room else None
-        if type(default) is bool and (override is None or type(override) is bool):
-            self.weather_row.grid()
-            default_label = 'Map default (On)' if default else 'Map default (Off)'
-            self.weather_choice.configure(values=(default_label, 'On', 'Off'),
-                                          state='readonly' if editable else 'disabled')
-            self.weather_choice.set(default_label if override is None else 'On' if override else 'Off')
-            self.rule_presets.configure(state='normal' if editable else 'disabled')
+        locked = room.get('locked') if room else None
+        if self.caps.get(LOBBY_LOCK_RULES_ENABLED) is True and type(locked) is bool:
+            self.room_locked.set(locked)
+            self.room_lock_toggle.grid()
+            self.room_lock_toggle.configure(state='normal' if editable else 'disabled')
         else:
-            self.weather_row.grid_remove()
+            self.room_lock_toggle.grid_remove()
         if self.caps.get('matchRulesEnabled') is not True:
             self.limits_row.grid_remove()
             self.flag_toggle.grid_remove()

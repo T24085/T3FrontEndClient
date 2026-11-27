@@ -95,6 +95,13 @@ def archive_sha(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def verify_archive(path, expected_sha=None):
+    if expected_sha is not None and archive_sha(path) != expected_sha:
+        raise ValueError('Windows ZIP SHA-256 differs from the qualified release.')
+    with ZipFile(path) as package:
+        return verify_live_revision(package)
+
+
 def reissue(base, expected_sha, output):
     base, output = Path(base), Path(output)
     if output.suffix.lower() != '.zip' or output.exists():
@@ -158,14 +165,14 @@ def main():
     build.add_argument('--output', type=Path, required=True)
     verify = commands.add_parser('verify', help='Check a trusted ZIP against the current live signed feed.')
     verify.add_argument('archive', type=Path)
+    verify.add_argument('--sha256', help='Require the exact SHA-256 of the qualified archive.')
     args = parser.parse_args()
     try:
         if args.command == 'build':
             revision = reissue(args.base, args.base_sha256, args.output)
             print(f'Built and verified Windows Starter r{revision}: {args.output}')
         else:
-            with ZipFile(args.archive) as package:
-                revision = verify_live_revision(package)
+            revision = verify_archive(args.archive, args.sha256)
             print(f'Windows ZIP matches the live signed Starter r{revision} feed.')
     except (OSError, ValueError) as error:
         parser.exit(1, f'{error}\n')
