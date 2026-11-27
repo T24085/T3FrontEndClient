@@ -153,7 +153,7 @@ def main():
         dest = OUTPUT.joinpath(*PurePosixPath(name).parts)
         dest.parent.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(source,dest)
-    for name in ('server_access.py','server_access_contract.py','desktop_launcher.py','community_transport.py','community_game.py','map_catalog.py','compare_map_packages.py','community_maps.py','steam_identity.py','player_names.py','runtime_health.py','startup_progress.py','community_starter.pyw','verified_file_cache.py','startup_timing.py','startup_paths.py','bulk_asset_cache.py','client_preparation.py','client_bootstrap.py','bulk_verification_receipts.py','map_sync.py','map_sync_contract.py'):
+    for name in ('server_access.py','server_access_contract.py','desktop_launcher.py','boundary_controls.py','community_transport.py','community_game.py','map_catalog.py','compare_map_packages.py','community_maps.py','steam_identity.py','player_names.py','runtime_health.py','startup_progress.py','community_starter.pyw','verified_file_cache.py','startup_timing.py','startup_paths.py','bulk_asset_cache.py','client_preparation.py','client_bootstrap.py','bulk_verification_receipts.py','map_sync.py','map_sync_contract.py'):
         shutil.copyfile(ROOT/name,OUTPUT/name)
     for name in ('community_maps.py', 'compare_map_packages.py'):
         shutil.copyfile(ROOT/name, OUTPUT/'lib'/name)
@@ -161,6 +161,9 @@ def main():
     # stale generated CLI from its otherwise verified content source.
     (OUTPUT/'client.py').write_bytes(bundled_client_entry((ROOT/'client_entry.py').read_bytes(),
                                                          (ROOT/'lua/weather.lua').read_bytes()))
+    projectile_runtime = OUTPUT/'runtime-fixes/projectile_inheritance.lua'
+    projectile_runtime.parent.mkdir(exist_ok=True)
+    shutil.copyfile(ROOT/'runtime-fixes/projectile_inheritance.lua', projectile_runtime)
     shutil.copyfile(ROOT/'map_soundtracks.py', OUTPUT/'map_soundtracks.py')
     copy_spectator_runtime(manifest, OUTPUT)
     shutil.copyfile(ROOT/'player_profile.py', OUTPUT/'player_profile.py')
