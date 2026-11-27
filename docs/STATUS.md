@@ -43,6 +43,21 @@ departure and one arrival. The arrival cue and first-person flash wait for
 the movement to reach the player. Nearby observers still receive the native
 host cues. The fix for duplicate cues is tracked in frontend issue #60.
 
+# Play and ranked stats
+
+On a host that advertises ranked PUG support, Play offers a 7v7 queue.
+The launcher shows the automatically assigned teams, three-map ballot,
+winning map, and server-confirmed loading progress. Launch game verifies the
+selected room and map before connecting through the owned client session.
+
+Stats shows the host's ranked leaderboard and individual player totals.
+Click rank, μ, record, grabs or flag time to choose the leaderboard sort.
+Player search and My stats work against the same rating store. A host
+without ranked support continues to expose its existing launcher views.
+
+The retained client modules support the same Windows and native Ubuntu
+launch paths. Full native ranked play still requires a 14-player test.
+
 # Private-match fall damage
 
 Starter shows **Fall damage** beside **Flag indicators** when a host
