@@ -9,8 +9,8 @@ import tkinter as tk
 import unittest
 from unittest.mock import patch
 
-from desktop_launcher import Desktop
-from community_transport import CommunityError, LOBBY_LOCK_RULES_ENABLED, RESULT_STATS
+from desktop_launcher import Desktop, LOBBY_LOCK_RULES_ENABLED
+from community_transport import CommunityError, RESULT_STATS
 from community_maps import options
 
 

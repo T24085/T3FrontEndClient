@@ -16,12 +16,13 @@ from community_game import CommunityGame
 from startup_paths import installation_options
 from community_transport import (
     CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES,
-    DEFAULT_MATCH_LIMITS, LOBBY_LOCK_RULES_ENABLED, MAX_LOBBY_BOTS, MAX_MATCH_MINUTES,
-    MAX_SCORE_LIMIT, validated_match_result,
+    DEFAULT_MATCH_LIMITS, MAX_LOBBY_BOTS, MAX_MATCH_MINUTES, MAX_RULE_PRESET_BYTES, MAX_SCORE_LIMIT,
+    decode_match_rule_preset, validated_match_result, validated_match_rule_preset,
 )
 from community_maps import BY_ID, options, read_options, LEGACY_MAPS
 from map_sync_contract import CATALOG_VERSION
 
+LOBBY_LOCK_RULES_ENABLED = 'lobbyLockRulesEnabled'
 ROOT = Path(__file__).resolve().parent
 CLIENT_PACKAGE = ROOT if (ROOT / 'connection-policy.json').is_file() else ROOT / 'dynamic-client-development'
 BG, PANEL, TEXT, MUTED, ACCENT = '#0a111b', '#132335', '#eff7ff', '#9fb3c6', '#4be4c1'
@@ -293,6 +294,19 @@ class Desktop:
             command=lambda: self.call_action('rules', locked=self.room_locked.get()), **check_style)
         self.room_lock_toggle.grid(row=2, column=0, columnspan=3, sticky='w')
         self.room_lock_toggle.grid_remove()
+        self.weather_row = tk.Frame(self.rules_row, bg=PANEL)
+        self.weather_row.grid(row=3, column=0, columnspan=3, sticky='w')
+        self.label(self.weather_row, 'Weather', 9, bg=PANEL).pack(side='left', padx=(4, 6))
+        self.weather_choice = ttk.Combobox(self.weather_row, width=16, state='disabled')
+        self.weather_choice.pack(side='left')
+        self.weather_choice.bind('<<ComboboxSelected>>', self.change_weather)
+        self.rule_presets = ttk.Menubutton(self.weather_row, text='Rule sets')
+        menu = tk.Menu(self.rule_presets, tearoff=False)
+        menu.add_command(label='Save rule set…', command=self.save_rule_preset)
+        menu.add_command(label='Load rule set…', command=self.load_rule_preset)
+        self.rule_presets.configure(menu=menu)
+        self.rule_presets.pack(side='left', padx=(8, 0))
+        self.weather_row.grid_remove()
         self.limits_row = tk.Frame(fields, bg=PANEL)
         self.limits_row.grid(row=0, column=2, sticky='ew')
         self.limits_row.columnconfigure((0, 1), weight=1, uniform='limits')
@@ -1017,6 +1031,17 @@ class Desktop:
             self.call_action('rules', preset=preset)
 
     def render_match_rules(self, room, editable):
+        default = room.get('weatherDefault') if room else None
+        override = room.get('weather') if room else None
+        if type(default) is bool and (override is None or type(override) is bool):
+            self.weather_row.grid()
+            default_label = 'Map default (On)' if default else 'Map default (Off)'
+            self.weather_choice.configure(values=(default_label, 'On', 'Off'),
+                                          state='readonly' if editable else 'disabled')
+            self.weather_choice.set(default_label if override is None else 'On' if override else 'Off')
+            self.rule_presets.configure(state='normal' if editable else 'disabled')
+        else:
+            self.weather_row.grid_remove()
         locked = room.get('locked') if room else None
         if self.caps.get(LOBBY_LOCK_RULES_ENABLED) is True and type(locked) is bool:
             self.room_locked.set(locked)

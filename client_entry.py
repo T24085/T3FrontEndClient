@@ -163,7 +163,8 @@ def verified_music_packs(root, files, definitions):
     return music_lua({'packs': packs, 'maps': overrides})
 
 
-def write_map_definitions(root, run, definitions, selected, package, *, public=False, objectives=None):
+def write_map_definitions(root, run, definitions, selected, package, *, public=False, objectives=None,
+                          weather_off=False):
     """Extend the map catalog with descriptors verified during map preparation."""
     from hashlib import sha256
     from community_maps import BY_ID, lua_map_definitions
@@ -217,6 +218,10 @@ def write_map_definitions(root, run, definitions, selected, package, *, public=F
         return generated
     calls = [f'load_weather({json.dumps(map_id)}, {json.dumps(source.as_posix(), ensure_ascii=False)})'
              for map_id, source in adapters]
+    if weather_off:
+        if selected is None or public:
+            raise ValueError('The weather override requires a verified private match map.')
+        calls.append(f'assert(maps[{json.dumps(selected.id)}]).weather_off=true')
     music_packs = verified_music_packs(root, files, authored_maps)
     result = run / 'catalog-weather.lua'
     result.write_text(f'local maps=assert(loadfile({json.dumps(generated.as_posix(), ensure_ascii=False)}))()\n'
