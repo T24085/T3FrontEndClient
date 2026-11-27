@@ -97,6 +97,27 @@ class CommunityGameTest(unittest.TestCase):
         self.assertTrue((game.current_artifacts / 'stop.json').is_file())
         self.assertEqual(self.lobby.calls, 0)
 
+    def test_ranked_game_uses_the_fixed_room_target_and_owned_stop(self):
+        metadata = {'map': 'Stonehenge', 'matchId': 'a'*32, 'contentHash': 'a'*64}
+        calls = []
+
+        def target(room, game):
+            calls.append((room, game))
+            return dict(metadata, endpoint=self.lobby.endpoint)
+
+        self.lobby.pug_target = target
+        self.assertEqual(self.game.start_pug('room', metadata), 'starting')
+        self.game.wait(5)
+        self.assertEqual(calls, [('room', metadata)])
+        self.assertEqual(self.lobby.calls, 0)
+
+    def test_ranked_game_refuses_a_changed_match(self):
+        metadata = {'map': 'Stonehenge', 'matchId': 'a'*32, 'contentHash': 'a'*64}
+        self.lobby.pug_target = lambda *args: dict(metadata, matchId='b'*32, endpoint=self.lobby.endpoint)
+        with self.assertRaisesRegex(CommunityError, 'ranked match changed'):
+            self.game.start_pug('room', metadata)
+        self.assertIsNone(self.game.thread)
+
     def test_unready_lobby_does_not_start(self):
         self.lobby.endpoint = None
         with self.assertRaises(CommunityError):
