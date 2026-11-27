@@ -168,6 +168,7 @@ local practiceRecorder=assert(loadfile(@@DEMO_SCRIPT@@))()({
             argv = [prefix + value if arg.startswith(prefix) else arg for arg in argv]
         argv[0] = str(game / EXE)
         values = dict(EXPECTED=reference.engine_command_line(argv[2:]), OUTPUT=(folder / 'events.txt').as_posix(),
+                      GAME_CONTENT=(game / 'Topaz/Content').as_posix(),
                       MAP_DEFINITIONS=definitions.as_posix(), OBJECTIVES=objectives.as_posix(), **extra)
         lua_root = (package if role == 'host' else installed) / 'lua'
         files = {'GEOMETRY': 'geometry_runtime', 'SPECTATOR_RUNTIME': 'spectator_client',

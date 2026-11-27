@@ -1,6 +1,7 @@
 -- Private launcher runtime. All calls run on the game thread in this exact child.
 local EXPECTED=@@EXPECTED@@
 local OUTPUT=@@OUTPUT@@
+local GAME_CONTENT=@@GAME_CONTENT@@
 local DESTINATION=@@DESTINATION@@
 -- SPECTATOR_CLIENT_CONTRACT_V1
 local SPECTATOR_ROLE=@@SPECTATOR_ROLE@@
@@ -42,8 +43,7 @@ local mapDefinitions=assert(loadfile(@@MAP_DEFINITIONS@@))()
 -- The sand release changes only this tile's authored mesh identity.
 do
     local center='/Game/Community/RollercoasterSand2026/SM_RollercoasterCenter'
-    local session=assert(OUTPUT:match('^(.*/)'))
-    local asset=io.open(session..'game/Topaz/Content'..center:sub(6)..'.uasset','rb')
+    local asset=io.open(GAME_CONTENT..center:sub(6)..'.uasset','rb')
     if asset then
         asset:close()
         for _,row in ipairs(mapDefinitions.Rollercoaster2026.geometry) do
@@ -145,7 +145,7 @@ local configure_base_lighting=(function()
   end
  end
 end)()
-local configure_water=assert(loadfile(@@DAMNATION_WATER@@))()({valid=valid,report=report})
+local configure_water=assert(loadfile(@@DAMNATION_WATER@@))()({valid=valid,report=report,descriptors=mapDefinitions})
 local allowedMaps={}
 for name,row in pairs(mapDefinitions)do
  assert(name==row.name,"map_descriptor_identity_disagreement");allowedMaps[#allowedMaps+1]=row
@@ -1263,6 +1263,9 @@ return function(env)
  if env.allow_standalone then assert(type(env.client_context_guard)=='function','radar_standalone_requires_native_context_guard') end
  local state=nil;local retired=false;local checkedBlueprints=false
  local capturePath='/Game/Common/Blueprints/Cameras/BP_MinimapCapture.BP_MinimapCapture_C'
+ local detectionRadiusPath='/Script/Topaz.TopRadarSensor:GetDetectionRadius'
+ local minimapManagerPath='/Script/Valhalla.ValGameState:GetMinimapManager'
+ local minimapManagerClass='Class /Script/Valhalla.ValMinimapManager'
  local targetName='TextureRenderTarget2D /Game/Maps/Game/CrossFire/Crossfire_RenderTarget2D.Crossfire_RenderTarget2D'
  local function same(a,b) return valid(a) and valid(b) and a:GetAddress()==b:GetAddress() end
  local function finite(n) return type(n)=='number' and n==n and n>-math.huge and n<math.huge end
@@ -1330,6 +1333,74 @@ return function(env)
   state.component=component;state.target=target
   report('BASE_RADAR_CLIENT_CAPTURE_CREATED|mapSize='..size..'|width='..component.OrthoWidth..'|projectionSource=ValWorldSettings.MapSize|height='..height..'|mapMeshes='..meshes..'|target='..target:GetFullName()..'|pixels='..target.SizeX..'x'..target.SizeY)
  end
+ local function sync_detection_range(widget,record,sensor)
+  if valid(sensor) and not sensor:HasAuthority() then
+   if state.detection_radius_available==nil then
+    local ok,why=pcall(signature,detectionRadiusPath,{{'ReturnValue','FloatProperty',0}})
+    state.detection_radius_available=ok
+    if not ok then report('BASE_RADAR_CLIENT_RANGE_UNAVAILABLE|'..tostring(why):sub(1,400)) end
+   end
+   if state.detection_radius_available then
+    local radius=sensor:GetDetectionRadius()
+    if finite(radius) and radius>0 and finite(widget.DetectionRange) then
+     if not record.last_detection_range or widget.DetectionRange~=record.last_detection_range then
+      record.original_detection_range=widget.DetectionRange
+     end
+     if widget.DetectionRange~=radius then widget.DetectionRange=radius end
+     record.last_detection_range=radius
+     return
+    end
+   end
+  end
+  if record.last_detection_range and widget.DetectionRange==record.last_detection_range then
+   widget.DetectionRange=record.original_detection_range
+  end
+  record.last_detection_range=nil
+ end
+ local function adopted_manager(gs)
+  if not state.manager_signature_checked then
+   signature(minimapManagerPath,{{'ReturnValue','ObjectProperty',0}})
+   state.manager_signature_checked=true
+  end
+  local manager=gs:GetMinimapManager()
+  if valid(manager) then
+   if same(manager,state.adopted_manager) then return manager end
+   return
+  end
+  local candidate
+  for _,actor in ipairs(FindAllOf('ValMinimapManager') or {}) do
+   if valid(actor) and same(actor:GetWorld(),state.world) then
+    if candidate or actor:HasAuthority() or actor:GetClass():GetFullName()~=minimapManagerClass then return end
+    candidate=actor
+   end
+  end
+  if not candidate or candidate.r_MinimapPlayers:GetArrayNum()==0 then return end
+  -- The replicated actor can exist without a game-state reference. Recover
+  -- that reference locally so the stock widget can bind the feed.
+  gs.r_MinimapManager=candidate
+  if not same(gs:GetMinimapManager(),candidate) then
+   gs.r_MinimapManager=nil
+   error('radar_client_minimap_manager_readback_failed')
+  end
+  state.adopted_manager=candidate
+  return candidate
+ end
+ local function recover_minimap_data(gs,widget,record)
+  if state.minimap_data_failed then return end
+  local ok,why=pcall(function()
+   local manager=adopted_manager(gs)
+   if valid(manager) and not same(record.data_manager,manager) then
+    widget:BindMinimap()
+    widget:OnMinimapData()
+    record.data_manager=manager
+    report('BASE_RADAR_CLIENT_MINIMAP_DATA_BOUND|map='..env.descriptor.name)
+   end
+  end)
+  if not ok then
+   state.minimap_data_failed=true
+   report('BASE_RADAR_CLIENT_MINIMAP_DATA_ERROR|'..tostring(why):sub(1,400))
+  end
+ end
  local function bind_native_radars(widget,record)
   local canvas=widget.RadarSensors
   if not valid(canvas) then return false end
@@ -1337,15 +1408,23 @@ return function(env)
   local perTeam=env.descriptor.radars_per_team or 1
   local expected=2*perTeam
   local teams={0,0}
+  local friendly
+  local ps=state.pc.PlayerState
+  local localTeam=valid(ps) and ps.r_TeamId
   for _,actor in ipairs(FindAllOf('BP_Objective_RadarSensor_C') or {}) do
    if valid(actor) and same(actor:GetWorld(),state.world) then
     assert(actor:GetClass():GetFullName()=='BlueprintGeneratedClass /Game/Topaz/Game/Objectives/BP_Objective_RadarSensor.BP_Objective_RadarSensor_C','radar_client_original_radar_class_required')
     local team=actor.r_TeamId
     if team~=1 and team~=2 then return false end
     teams[team]=teams[team]+1
+    if team==localTeam then friendly=actor end
    end
   end
-  if teams[1]~=perTeam or teams[2]~=perTeam then return false end
+  local complete=teams[1]==perTeam and teams[2]==perTeam
+  -- The original widget has one detection center. Match its range to the
+  -- friendly sensor only where there is exactly one center for that team.
+  if perTeam==1 then sync_detection_range(widget,record,complete and friendly or nil) end
+  if not complete then return false end
   -- Native initialization can run while only some replicated sensors exist.
   -- Rebuild that partial sensor layer once, after every team ID has arrived.
   if perTeam>1 and before>0 and before<expected and not record.rebuilt_partial_radars then
@@ -1421,6 +1500,7 @@ return function(env)
     if state.widgets[key] then
      assert(same(widget.MinimapCapture,state.capture) and same(widget.MapTexture.Brush.ResourceObject,widget.Material),'radar_client_widget_binding_changed')
      projected=projected+1
+     recover_minimap_data(gs,widget,state.widgets[key])
      if not state.manual_capture then
       signature('/Script/Engine.SceneCaptureComponent2D:CaptureScene',{})
       state.component:CaptureScene()
@@ -2175,7 +2255,7 @@ local function client_tick(sys)
     local pc=pcs[1];if not pc:IsLocalPlayerController() or pc:HasAuthority() or not valid(pc.PlayerState) then update_match_music(nil,nil);return end
     configure_weather(gs,pc)
     configure_base_lighting(gs)
-    configure_water(gs)
+    configure_water(gs,pc)
     local ps=pc.PlayerState
     if SPECTATOR_ROLE=="spectator" then
         if not spectatorRuntime then spectatorRuntime=assert(loadfile(@@SPECTATOR_RUNTIME@@))()({valid=valid,scope=scope,signature=signature,report=report,lease_id=SPECTATOR_LEASE,watch_id=SPECTATOR_WATCH,material_factory=assert(loadfile(@@SPECTATOR_MATERIAL_RUNTIME@@))()})end

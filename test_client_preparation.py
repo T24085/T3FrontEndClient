@@ -15,8 +15,8 @@ from unittest.mock import patch
 import client_preparation
 
 from bulk_asset_cache import BulkStageCache
-from client_preparation import EXECUTABLE,consume,digest,stage
-from verified_file_cache import identity
+from client_preparation import EXECUTABLE,consume,digest,lock_stable_game,stable_session_executable,stage
+from verified_file_cache import identity, verify_package
 
 class ClientPreparationTest(unittest.TestCase):
  def setUp(self):
@@ -37,10 +37,10 @@ class ClientPreparationTest(unittest.TestCase):
  def tearDown(self):self.tmp.cleanup()
  def inventory(self,root):
   return {'files':[{'path':p.relative_to(root).as_posix(),'bytes':p.stat().st_size,'sha256':digest(p)}for p in sorted(root.rglob('*'))if p.is_file()]}
- def prepare(self):
+ def prepare(self,**kwargs):
   return stage(self.package,self.source,self.workspace,self.package_manifest,self.original,self.source_ids,'fixture verified bytes',
                catalog=self.catalog,emit=lambda _:None,
-               cache_factory=lambda p:BulkStageCache(p,filesystem_loader=lambda _:None,emit=lambda _:None),patches=((4,'e8621439ff'),))
+               cache_factory=lambda p:BulkStageCache(p,filesystem_loader=lambda _:None,emit=lambda _:None),patches=((4,'e8621439ff'),),**kwargs)
  def claim(self,descriptor,**kwargs):
   return consume(self.package,self.source,self.workspace,descriptor['path'],descriptor['sha256'],
                  expected_map='Stonehenge',expected_content_hash='a'*64,**kwargs)
@@ -69,6 +69,19 @@ class ClientPreparationTest(unittest.TestCase):
   record=self.claim(descriptor)
   self.assertEqual((Path(record['run'])/'game/Topaz/Content/Maps/map.uasset').read_bytes(),b'new-map')
   self.assertEqual((self.package/row['path']).read_bytes(),b'cooked-map')
+ def test_selected_map_preparation_does_not_read_unrelated_bundled_assets(self):
+  (self.package/'content/Maps/map.uasset').unlink()
+  package = verify_package(self.package, skip_cooked=True)
+  download = self.workspace/'selected.asset'
+  download.write_bytes(b'selected')
+  item = {'path':'content/Community/Selected/Tile.uasset','bytes':8,'sha256':digest(download)}
+  descriptor = stage(self.package,self.source,self.workspace,package,self.original,self.source_ids,'fixture',
+                     catalog=self.catalog,map_overlay=[(item,None,download)],emit=lambda _:None,
+                     patches=((4,'e8621439ff'),),
+                     cache_factory=lambda p:BulkStageCache(p,filesystem_loader=lambda _:None,emit=lambda _:None))
+  record = self.claim(descriptor)
+  self.assertEqual((Path(record['run'])/'game/Topaz/Content/Community/Selected/Tile.uasset').read_bytes(),b'selected')
+  self.assertNotIn('content/Maps/map.uasset', record['package_inputs'])
  def test_independent_bulk_jobs_overlap_and_publish_only_complete_outputs(self):
   barrier=threading.Barrier(2);entered=[];guard=threading.Lock()
   class ConcurrentCache(BulkStageCache):
@@ -117,6 +130,205 @@ class ClientPreparationTest(unittest.TestCase):
  def test_expired_stage_is_not_reused(self):
   descriptor=self.prepare()
   with self.assertRaisesRegex(ValueError,'expired'):self.claim(descriptor,clock=lambda:float('inf'))
+ def stable(self):
+  return lock_stable_game(self.package,self.source,self.workspace)
+ def test_stable_slot_reuses_verified_executable_runtime_and_bulk_across_preparations(self):
+  with self.stable() as stable:
+   first=self.prepare(stable=stable)
+   files=[stable.game/path for path in (EXECUTABLE,EXECUTABLE.parent/'ue4ss/runtime.dll',
+                                        'Topaz/Content/Paks/original.pak')]
+   first_stats=[(identity(path),path.stat().st_nlink) for path in files]
+  with self.stable() as stable:
+   second=self.prepare(stable=stable)
+   self.assertEqual(Path(first['path']).parent,stable.lobby)
+   self.assertEqual(first['path'],second['path'])
+   self.assertNotEqual(first['sha256'],second['sha256'])
+   self.assertEqual(list(self.workspace.glob('client-*')),[])
+   self.assertEqual(first_stats,[(identity(path),path.stat().st_nlink) for path in files])
+   self.assertFalse(files[0].samefile(self.source/EXECUTABLE))
+   self.assertFalse((Path(second['path']).parent/'game').exists())
+   with self.assertRaisesRegex(ValueError,'descriptor changed'):self.claim(first,stable=stable)
+   self.assertEqual(self.claim(second,stable=stable)['stable_game'],str(stable.game))
+ def test_stable_slot_refreshes_verified_map_files_and_removes_old_generated_files(self):
+  replacement=self.workspace/'new-map';replacement.write_bytes(b'new overlay')
+  member={'path':'content/Maps/new.uasset','sha256':digest(replacement),'bytes':len(b'new overlay')}
+  with self.stable() as stable:
+   first=self.prepare(stable=stable)
+   content=stable.game/'Topaz/Content/Maps'
+   stale=stable.game/EXECUTABLE.parent/'ue4ss/old-run.lua';stale.write_bytes(b'stale')
+   dll=stable.game/EXECUTABLE.parent/'ue4ss/runtime.dll'
+   dll.write_bytes(b'modified')
+   second=self.prepare(stable=stable,map_overlay=[(member,None,replacement)])
+   with self.assertRaisesRegex(ValueError,'descriptor changed'):self.claim(first,stable=stable)
+   self.claim(second,stable=stable)
+   self.assertEqual(dll.read_bytes(),b'runtime')
+   self.assertFalse(stale.exists())
+   self.assertFalse((content/'map.uasset').exists())
+   self.assertEqual((content/'new.uasset').read_bytes(),b'new overlay')
+   self.assertEqual(replacement.read_bytes(),b'new overlay')
+ def test_second_join_can_reset_spent_lobby_and_regenerate_launcher_script(self):
+  from client_entry import write_launcher_script
+  with self.stable() as stable:
+   first=self.prepare(stable=stable)
+   self.claim(first,stable=stable)
+   binary=stable.game/EXECUTABLE.parent
+   mod=binary/'ue4ss/Mods/CommunityLauncher/Scripts/main.lua'
+   write_launcher_script(binary,'return "first"')
+   self.assertEqual(mod.read_text(), 'return "first"')
+   (stable.lobby/'events.txt').write_text('stale run')
+  with self.stable() as stable:
+   second=self.prepare(stable=stable)
+   self.assertEqual(first['path'],second['path'])
+   self.assertFalse((stable.lobby/'claimed.json').exists())
+   self.assertFalse((stable.lobby/'events.txt').exists())
+   self.assertTrue(mod.parent.is_dir())
+   self.assertFalse(mod.exists())
+   self.claim(second,stable=stable)
+   write_launcher_script(binary,'return "second"')
+   self.assertEqual(mod.read_text(), 'return "second"')
+   self.assertEqual((mod.parents[2]/'mods.txt').read_text(), 'CommunityLauncher : 1\n')
+   self.assertEqual(list(self.workspace.glob('lobby-install-*')),[stable.lobby])
+ def test_stable_preparation_references_shared_objectives_without_copying_them(self):
+  cache=self.workspace/'map-downloads';cache.mkdir()
+  rows=[]
+  for name in ('KatabaticT22026','MinotaurT22026'):
+   raw=f'return {{map_id="{name}"}}'.encode()
+   sha=hashlib.sha256(raw).hexdigest()
+   destination=cache/(sha+'.asset');destination.write_bytes(raw)
+   rows.append(({'path':f'lua/{name}/objectives.lua','bytes':len(raw),'sha256':sha},None,destination))
+  with self.stable() as stable:
+   descriptor=self.prepare(stable=stable,map_overlay=rows,objectives_downloaded=True)
+   record=self.claim(descriptor,stable=stable)
+   self.assertTrue(record['map_objective_cache'])
+   self.assertEqual(record['map_objectives'],[row[0] for row in rows])
+   self.assertFalse((stable.lobby/'downloaded-objectives').exists())
+ def test_stable_slot_blocks_concurrent_access_and_requires_terminal_native_job_evidence(self):
+  with self.stable() as stable:
+   descriptor=self.prepare(stable=stable)
+   claimed=self.claim(descriptor,stable=stable)
+   run=Path(claimed['run'])
+   argv=[str(stable.game/EXECUTABLE),'-UserDir='+str(run/'profile')]
+   stable.starting(run,argv)
+   with self.assertRaisesRegex(ValueError,'already preparing'):
+    with self.stable():self.fail('Unexpected second stable lease')
+  with self.assertRaisesRegex(ValueError,'no confirmed cleanup'):
+   with self.stable():self.fail('Missing receipt authorized writes')
+  (run/'execution').mkdir()
+  (run/'session.json').write_text(json.dumps({'source':str(self.source),'argv':argv}))
+  receipt=run/'execution/execution.json'
+  record={'argv':argv,'cwd':str(stable.game),'status':'terminal','assigned_suspended':True,'job_active_processes_at_parent_exit':1}
+  receipt.write_text(json.dumps(record))
+  self.assertEqual(stable_session_executable(self.package,run,record),stable.game/EXECUTABLE)
+  with self.assertRaisesRegex(ValueError,'no confirmed cleanup'):
+   with self.stable():self.fail('A busy Job authorized writes')
+  record['job_active_processes_after_cleanup']=0
+  receipt.write_text(json.dumps(record))
+  with self.stable() as next_stage:
+   self.assertFalse(next_stage.native.exists())
+   self.prepare(stable=next_stage)
+   self.assertFalse(receipt.exists())
+ def test_desktop_cancellation_can_release_slot_without_inner_receipt(self):
+  path=self.workspace/'direct-desktop-control'/('a'*32)/'owner/execution.json'
+  path.parent.mkdir(parents=True)
+  wrapper=[str(self.package/'python/python.exe'),'-B','-u',str(self.package/'client.py'),
+           '--workspace',str(self.workspace)]
+  receipt={'argv':wrapper,'cwd':str(self.package),'pid':os.getpid(),'status':'running','assigned_suspended':True}
+  path.write_text(json.dumps(receipt))
+  from unittest.mock import patch
+  with self.stable() as stable, patch('client_preparation._retain_recovery_job', return_value=False):
+   record=self.claim(self.prepare(stable=stable),stable=stable)
+   stable.starting(Path(record['run']),[str(stable.game/EXECUTABLE)],path)
+  with self.assertRaisesRegex(ValueError,'no confirmed cleanup'):
+   with self.stable():self.fail('A running wrapper cannot release the slot')
+  path.write_text(json.dumps(dict(receipt,status='cancelled_by_owner_request',job_active_processes_after_cleanup=0)))
+  with self.stable() as next_stage:self.assertFalse(next_stage.native.exists())
+ @unittest.skipUnless(os.name == 'nt', 'Windows Job objects')
+ def test_named_desktop_job_recovers_a_missing_cleanup_receipt(self):
+  import uuid
+  from unittest.mock import patch
+  from owned_native_session import K
+  attempt = uuid.uuid4().hex
+  path = self.workspace/'direct-desktop-control'/attempt/'owner/execution.json'
+  path.parent.mkdir(parents=True)
+  name = client_preparation.desktop_game_job_name(attempt)
+  job = K.CreateJobObjectW(None, name)
+  self.assertTrue(job)
+  try:
+   wrapper = [str(self.package/'python/python.exe'), '-B', '-u', str(self.package/'client.py'),
+              '--workspace', str(self.workspace)]
+   receipt = {'argv': wrapper, 'cwd': str(self.package), 'pid': os.getpid(), 'status': 'running',
+              'assigned_suspended': True, 'job_name': name}
+   path.write_text(json.dumps(receipt))
+   with self.stable() as stable, patch('client_preparation._retain_recovery_job', return_value=True) as retain:
+    record = self.claim(self.prepare(stable=stable), stable=stable)
+    stable.starting(Path(record['run']), [str(stable.game/EXECUTABLE)], path)
+    retain.assert_called_once_with(name)
+   path.unlink()
+   self.assertFalse(client_preparation._recovery_job_is_gone(name))
+   with self.assertRaisesRegex(ValueError, 'no confirmed cleanup'):
+    with self.stable(): self.fail('An existing Job authorized writes')
+  finally:
+   K.CloseHandle(job)
+  self.assertTrue(client_preparation._recovery_job_is_gone(name))
+  with self.stable() as next_stage:
+   self.assertFalse(next_stage.native.exists())
+
+ @unittest.skipUnless(os.name == 'nt', 'Windows Job objects')
+ def test_missing_session_recovers_only_after_the_named_job_is_gone(self):
+  import uuid
+  from owned_native_session import K
+
+  attempt = uuid.uuid4().hex
+  name = client_preparation.desktop_game_job_name(attempt)
+  job = K.CreateJobObjectW(None, name)
+  self.assertTrue(job)
+  try:
+   with self.stable() as stable:
+    argv = [str(stable.game/EXECUTABLE)]
+    # The stable payload and ownership record can outlive the session directory.
+    self.assertFalse(stable.lobby.exists())
+    desktop = {
+     'path': str(self.workspace/'direct-desktop-control'/attempt/'owner/execution.json'),
+     'pid': os.getpid(),
+     'argv': [str(self.package/'python/python.exe'), '-B', '-u', str(self.package/'client.py'),
+              '--workspace', str(self.workspace)],
+     'job_name': name,
+    }
+    record = {'run': str(stable.lobby), 'argv': argv, 'desktop': desktop}
+    stable.native.write_text(json.dumps(record))
+   with self.assertRaisesRegex(ValueError, 'no confirmed cleanup'):
+    with self.stable(): self.fail('An existing Windows Job authorized writes')
+  finally:
+   K.CloseHandle(job)
+
+  with self.subTest('foreign session path'):
+   stable.native.write_text(json.dumps(dict(record, run=str(self.root/stable.lobby.name))))
+   with self.assertRaisesRegex(ValueError, 'no confirmed cleanup'):
+    with self.stable(): self.fail('A foreign session authorized writes')
+
+  with self.subTest('older reservation without named Job or terminal receipt'):
+   stable.native.write_text(json.dumps(dict(record, desktop={'path': desktop['path']})))
+   with self.assertRaisesRegex(ValueError, 'no confirmed cleanup'):
+    with self.stable(): self.fail('A legacy marker had no cleanup proof')
+
+  with self.subTest('named Job has exited'):
+   stable.native.write_text(json.dumps(record))
+   with self.stable() as next_stage:
+    self.assertFalse(next_stage.native.exists())
+
+  with self.subTest('older reservation with matching terminal desktop receipt'):
+   older = {key: value for key, value in desktop.items() if key != 'job_name'}
+   receipt = Path(older['path'])
+   receipt.parent.mkdir(parents=True)
+   receipt.write_text(json.dumps({
+    'cwd': str(self.package), 'pid': older['pid'], 'argv': older['argv'],
+    'assigned_suspended': True, 'status': 'terminal', 'job_active_processes_after_cleanup': 0,
+   }))
+   stable.native.write_text(json.dumps(dict(record, desktop=older)))
+   with self.stable() as next_stage:
+    self.assertFalse(next_stage.native.exists())
+    self.prepare(stable=next_stage)
+
  def test_exactly_one_concurrent_consumer_wins(self):
   descriptor=self.prepare();results=[];barrier=threading.Barrier(2)
   def claim():
@@ -168,7 +380,9 @@ class ClientPreparationTest(unittest.TestCase):
   phases=[json.loads(row[len('STARTUP_PHASE|'):])for row in rows if row.startswith('STARTUP_PHASE|')]
   self.assertTrue(any(row['phase']=='client-preparation'and row['state']=='complete'for row in phases))
   descriptors=[json.loads(row[len('CLIENT_PREPARED|'):])for row in rows if row.startswith('CLIENT_PREPARED|')]
-  self.assertEqual(len(descriptors),1);record=self.claim(descriptors[0]);self.assertFalse(record['native_started'])
+  self.assertEqual(len(descriptors),1)
+  with self.stable() as stable:record=self.claim(descriptors[0],stable=stable)
+  self.assertFalse(record['native_started'])
   self.assertFalse((Path(record['run'])/'profile').exists())
 
 if __name__=='__main__':unittest.main()
@@ -176,6 +390,40 @@ if __name__=='__main__':unittest.main()
 
 
 class StorageCleanupTests(unittest.TestCase):
+    def test_legacy_metadata_cleanup_requires_terminal_receipt_and_preserves_profiles(self):
+        from tools.cleanup_client_sessions import historical_payloads, remove_historical_session
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            package, workspace = root/'package', root/'workspace'
+            package.mkdir()
+            workspace.mkdir()
+            control = workspace/'direct-desktop-control'
+            for number in range(4):
+                run = workspace/f'client-{number:012x}'
+                run.mkdir()
+                (run/'claimed.json').write_text('{}')
+                if number == 2:
+                    (run/'profile').mkdir()
+                os.utime(run, (1, 1))
+                if number == 3:
+                    continue
+                owner = control/f'{number:032x}'/'owner'
+                owner.mkdir(parents=True)
+                (owner/'stdout.log').write_text('Session: '+str(run)+'\n')
+                (owner/'execution.json').write_text(json.dumps({
+                    'argv': [str(package/'python/python.exe'), '-B', '-u', str(package/'client.py'),
+                             '--workspace', str(workspace)],
+                    'cwd': str(package), 'assigned_suspended': True, 'status': 'terminal',
+                    'job_active_processes_after_cleanup': int(number == 1),
+                }))
+            self.assertEqual(historical_payloads(workspace, package), ([], []))
+            eligible, kept = historical_payloads(workspace, package, remove_sessions=True)
+            self.assertEqual(eligible, [workspace/'client-000000000000'])
+            self.assertEqual(len(kept), 3)
+            remove_historical_session(workspace, eligible[0])
+            self.assertFalse(eligible[0].exists())
+            self.assertTrue(all(path.is_dir() for path in kept))
+
     def test_payload_removal_preserves_hardlink_source_and_evidence(self):
         from client_preparation import remove_staged_game
         with tempfile.TemporaryDirectory() as directory:

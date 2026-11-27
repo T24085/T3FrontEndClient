@@ -42,6 +42,8 @@ The T3BackEndServer repository holds the reference setup (shared skills, the age
 - When a tested fix is in a PR, apply `fix ready` and post a plain-language status such as **Fix ready, pending server deployment**. Link the PR, name the target server or client update feed, and state what passed and which symptoms still need verification.
 - For issues that require rollout, keep the issue open through release. Update it when the fix ships, record the deployed revision and live verification result, and close it once the reported symptoms are resolved. If rollout or verification is blocked, record the blocker and next action on the issue.
 
+Verify pull request checks in `Tribes3-Modded` after opening a PR, after each push or base update, and immediately before merge. Use `gh pr checks <number> -R Tribes3-Modded/<repo>` and confirm the checks belong to the current PR head and target. Wait for pending required checks. If a check fails, read the failing job log, fix and recheck failures within your scope, and record any unresolved check with its run link and next action. Never mark a PR ready or merge while a required check is pending or failing. For paired PRs, verify both sides.
+
 ## Live server approval
 
 Commit the source in the relevant repos and verify the push on GitHub first. Then send Chris the issue and commit or PR links, the target server, what would go live, the verification results, and any restart or player impact. Wait for his explicit approval for that deployment before uploading, staging, or applying changes on a live server or restarting it. Follow the approved scope and timing, and record the approval and live verification on the issue.

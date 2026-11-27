@@ -8,7 +8,8 @@ from pathlib import Path
 import threading
 import uuid
 
-from client_preparation import empty_client_job, logged_stage, remove_staged_game
+from client_preparation import (MAX_PREPARED_IDENTITIES, empty_client_job, logged_stage,
+                                remove_staged_game, stable_lobby_path, staged_session)
 from community_transport import CommunityError
 from map_catalog import verified_catalog
 from runtime_health import runtime_failure
@@ -98,13 +99,15 @@ class CommunityGame:
         if self._startup_contract() != 'prepared-client-v1': return False
         with self.lock:
             if self.preparation_status=='quarantined':return False
-            if not for_start and self.preparation_status in ('failed','stopped'):return False
+            if not for_start and self.preparation_status in ('failed','stopped','spent'):return False
             if self.status not in ('idle','stopped','finished','failed') and not (for_start and self.status=='starting'):
                 return False
             if self.preparation_status in ('preparing','ready'): return True
             if self.preparation_thread and self.preparation_thread.is_alive(): return False
             if self.map_sync is not None and not for_start:
-                revision = self.map_sync.current[0]
+                revision, catalog = self.map_sync.current
+                if self.map_sync.available and not catalog:
+                    return False
             artifacts=self.artifacts/('prepare-'+uuid.uuid4().hex)
             artifacts.mkdir(exist_ok=False)
             self.preparation_artifacts=artifacts
@@ -140,7 +143,8 @@ class CommunityGame:
             if result.get('status')!='terminal' or result.get('exit_code')!=0 or len(descriptors)!=1:
                 raise CommunityError(observed_failure(lines) or 'Client file preparation did not finish.')
             descriptor=json.loads(descriptors[0]);path=Path(descriptor['path'])
-            if (path.name!='prepared.json' or path.parent.parent!=self.workspace or not path.parent.name.startswith('client-')
+            staged_session(self.workspace, path.parent, package=self.package)
+            if (path.name!='prepared.json'
                     or path.resolve(strict=True)!=path or path.stat().st_size>4*1024*1024
                     or hashlib.sha256(path.read_bytes()).hexdigest()!=descriptor['sha256']):
                 raise CommunityError('Client preparation returned an invalid owned descriptor.')
@@ -159,7 +163,7 @@ class CommunityGame:
             self._retire_payload(unused)
 
     def _retire_payload(self, run):
-        if run is None:
+        if run is None or run == stable_lobby_path(self.workspace, self.package):
             return
         try:
             remove_staged_game(self.workspace, run)
@@ -195,8 +199,12 @@ class CommunityGame:
     def start(self, *, expected_map=None, expected_match_id=None):
         return self._start(expected_map=expected_map, expected_match_id=expected_match_id)
 
+    def start_pug(self, room_id, game):
+        return self._start(expected_map=game['map'], expected_match_id=game['matchId'],
+                           pug_target=lambda: self.lobby.pug_target(room_id, game), pug_map=game)
+
     def _start(self, *, watch_id=None, expected_map=None, expected_match_id=None, public_name=None,
-               public_cancel=None):
+               public_cancel=None, pug_target=None, pug_map=None):
         self._release_watch()
         # Desktop calls this on a worker. Reserve the session briefly, then keep
         # expensive verification outside the snapshot lock used by the Tk loop.
@@ -223,6 +231,8 @@ class CommunityGame:
             if public_name is not None:
                 target_loader = self.lobby.public_target
                 target = self.lobby.public_map()
+            elif pug_target is not None:
+                target_loader, target = pug_target, pug_map
             else:
                 target_loader = (lambda: self.lobby.spectator_target(watch_id)) if watch_id is not None else self.lobby.match_target
                 target = target_loader()
@@ -252,7 +262,7 @@ class CommunityGame:
                 revision = None
                 if self.map_sync is not None:
                     with self.lock:self.startup_phase='checking_maps'
-                    revision = self.map_sync.revision_for(target['map'], target['contentHash'])
+                    revision = self._map_revision(target)
                 with self.lock:self.startup_phase='preparing_client'
                 prepared=self._prepared_for_join(revision)
                 if prepared is None:
@@ -269,10 +279,32 @@ class CommunityGame:
                     self.startup_phase = 'checking_match'
                 self.lobby.public_map()
                 self.lobby.public_join(public_name)
+                prepared_target = target
                 target = target_loader()
                 self.public_round = target.get('publicRound')
+                if (prepared is not None and getattr(self.map_sync, 'session_enabled', False)
+                        and any(target.get(key) != prepared_target.get(key)
+                                for key in ('map', 'contentHash', 'manifestHash'))):
+                    self._retire_payload(Path(prepared['path']).parent)
+                    prepared = None
+                    with self.lock:self.startup_phase='checking_maps'
+                    revision = self._map_revision(target)
+                    with self.lock:self.startup_phase='preparing_client'
+                    prepared = self._prepared_for_join(revision)
+                    if prepared is None:
+                        with self.lock:self.status = 'stopped'
+                        return self.status
+                    if target_loader() != target:
+                        raise CommunityError('The public round changed while preparing its map. Please join again.')
                 if startup_contract is None and catalog.get(target['map']) != target['contentHash']:
                     raise CommunityError('Your map files do not match this match. Update the community client.')
+            elif pug_target is not None:
+                verified = target_loader()
+                if any(verified.get(key) != target.get(key)
+                       for key in ('map', 'matchId', 'contentHash', 'manifestHash')):
+                    raise CommunityError('The ranked match changed while preparing the game.')
+                target = verified
+                self.match_id = target['matchId']
             elif target_loader() != target:
                 raise CommunityError('The match changed while verifying your map. Please try again.')
             endpoint = target['endpoint']
@@ -320,6 +352,12 @@ class CommunityGame:
             if prepared is not None:
                 self._retire_payload(Path(prepared['path']).parent)
 
+    def _map_revision(self, target):
+        args = (target['map'], target['contentHash'])
+        if 'manifestHash' in target:
+            return self.map_sync.revision_for(*args, target['manifestHash'])
+        return self.map_sync.revision_for(*args)
+
     def _session(self, artifacts):
         log = artifacts / 'owner/stdout.log'
         if log.is_file():
@@ -332,17 +370,16 @@ class CommunityGame:
             if failure is not None: self.startup_failure = failure
             for line in lines:
                 if line.startswith('Session: '):
-                    path = Path(line[9:]).resolve()
-                    if path.parent != self.workspace or not path.name.startswith('client-'):
-                        raise CommunityError('Unexpected client session path.')
-                    self.run = path
+                    self.run = staged_session(self.workspace, Path(line[9:]), package=self.package)
                     break
         return self.run
 
     def _run(self, argv, artifacts):
         retire = None
         try:
-            result = self.owner.run_owned_job(argv, self.package, dict(os.environ), artifacts / 'owner',
+            owner = artifacts / 'owner'
+            env = dict(os.environ, T3_CLIENT_DESKTOP_EXECUTION=str(owner/'execution.json'))
+            result = self.owner.run_owned_job(argv, self.package, env, owner,
                                               budget=None, cancellation_path=artifacts / 'stop.json')
             empty = empty_client_job(result)
             if empty:
@@ -441,7 +478,7 @@ class CommunityGame:
                         match=re.fullmatch(r'CLIENT_PREPARATION_PROGRESS\|([0-9]{1,5})/([0-9]{1,5})',line)
                         if match:
                             done,total=map(int,match.groups())
-                            if 0<=done<=total<=10000 and total>0:
+                            if 0<=done<=total<=MAX_PREPARED_IDENTITIES and total>0:
                                 progress=f'Preparing game files: {done:,} / {total:,} files…'
                                 break
             return {'status':self.preparation_status,'error':self.preparation_error,
