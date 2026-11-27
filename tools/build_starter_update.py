@@ -14,6 +14,17 @@ sys.path.insert(0, str(ROOT))
 from starter_update import CHANNEL, INDEX, MAX_FILE, UPDATE_CHANNELS, decode_index, encoded, sha
 
 
+def soundtrack_entry(raw, root):
+    source = root/'map_soundtracks.py'
+    if source.resolve(strict=True) != source:
+        raise ValueError('Linked soundtrack source is not permitted.')
+    marker = b'_SIGNED_SOUNDTRACK_PLAYER = None'
+    if raw.count(marker) != 1:
+        raise ValueError('Missing canonical soundtrack player marker.')
+    module = source.read_bytes()
+    return raw.replace(marker, module + b'\n_SIGNED_SOUNDTRACK_PLAYER = soundtrack_player', 1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -38,6 +49,8 @@ def main():
         previous = decode_index(raw, channel=args.channel, now=issued)
         paths.update(previous['files'])
         revision = previous['revision'] + 1
+    if paths & {'client.py', 'lua/client.lua'}:
+        paths.update(('client.py', 'lua/client.lua'))
     if not paths or not paths <= UPDATE_CHANNELS[args.channel][1]:
         raise ValueError('Select existing supported Starter package files.')
     files, payloads = {}, {}
@@ -49,6 +62,8 @@ def main():
         if source.resolve(strict=True) != source:
             raise ValueError('Linked source is not permitted: ' + name)
         raw = source.read_bytes()
+        if name == "client.py":
+            raw = soundtrack_entry(raw, ROOT)
         if not 0 < len(raw) <= MAX_FILE:
             raise ValueError('Unsupported Starter update file size: ' + name)
         if name.endswith('.py'):

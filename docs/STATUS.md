@@ -1,3 +1,21 @@
+# Map-declared soundtrack playback
+
+The candidate restores the signed Direct release's Windows soundtrack
+player and reads the choice from the verified map descriptor. It also
+resolves cooked tracks by map override, selected pack and default pack.
+Cooked assets must use the native music submix. Lua tests exercise candidate
+fallback, volume, match-end cleanup, and travel between worlds using the
+same track. The Windows helper opened the live desert and ice track blobs in
+a silent playback probe. A private Damnation 2026 match selected its
+fixture descriptor's desert track and cleared the request when the normal
+round timer expired. A separate private match loaded an original cooked
+Sound Wave through the map override and played it on the native music
+submix. Its component gain changed from 0.40 to 0.20 after the music
+setting was halved. Windows reached the memory reserve before this
+two-process test could observe round-end cleanup. A standalone test set the
+native game state to post-match and confirmed the cooked component stopped
+in the same world. See frontend issue #85.
+
 # Small-screen Play lobby
 
 The Play lobby keeps team rosters side by side, groups match setup fields, and keeps the match actions visible at the bottom. Join and create fields collapse while a lobby is active. Supported lobby options such as spectators, bots, and flag indicators are available under **Advanced rules**. At narrower widths, fields and secondary match actions can wrap while preserving their enabled states. See frontend issue #72.
