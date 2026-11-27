@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -22,7 +23,7 @@ def regular_text(path, maximum):
     return payload.decode('utf-8')
 
 
-def historical_payloads(workspace, package):
+def historical_payloads(workspace, package, *, remove_sessions=False):
     """Select only expired sessions announced by this installation's owned jobs."""
     control_names = ('direct-desktop-control', 'desktop-control')
     receipts = {}
@@ -69,15 +70,24 @@ def historical_payloads(workspace, package):
             game = run/'game'
             if game.is_symlink() or game.is_junction():
                 raise ValueError('Staged payload is a link.')
-            if not game.is_dir():
+            if not remove_sessions and not game.is_dir():
                 continue
-            if (run.stat().st_mtime <= expiry and receipts.get(run) and all(receipts[run])):
+            keep_profile = remove_sessions and os.path.lexists(run/'profile')
+            if not keep_profile and run.stat().st_mtime <= expiry and receipts.get(run) and all(receipts[run]):
                 eligible.append(run)
             else:
                 kept.append(run)
         except (OSError, ValueError):
             kept.append(run)
     return eligible, kept
+
+
+def remove_historical_session(workspace, run):
+    run = staged_session(workspace, run)
+    if os.path.lexists(run/'profile'):
+        raise ValueError('A legacy profile is still in this session.')
+    remove_staged_game(workspace, run)
+    shutil.rmtree(run)
 
 
 def require_closed(workspace, package):
@@ -106,6 +116,8 @@ def main():
     parser.add_argument('--workspace', required=True, type=Path)
     parser.add_argument('--package', required=True, type=Path)
     parser.add_argument('--apply', action='store_true', help='Remove eligible game payloads with Starter closed')
+    parser.add_argument('--remove-sessions', action='store_true',
+                        help='Include expired legacy session folders without profiles')
     args = parser.parse_args()
     workspace = args.workspace.resolve(strict=True)
     package = args.package.resolve(strict=True)
@@ -115,13 +127,16 @@ def main():
         parser.error('Select the installed Starter package.')
     if args.apply:
         require_closed(workspace, package)
-    eligible, kept = historical_payloads(workspace, package)
+    eligible, kept = historical_payloads(workspace, package, remove_sessions=args.remove_sessions)
     failures = []
     removed = 0
     if args.apply:
         for run in eligible:
             try:
-                remove_staged_game(workspace, run)
+                if args.remove_sessions:
+                    remove_historical_session(workspace, run)
+                else:
+                    remove_staged_game(workspace, run)
                 removed += 1
             except (OSError, ValueError) as exc:
                 failures.append({'session': run.name, 'error': str(exc)})

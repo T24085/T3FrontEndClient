@@ -43,7 +43,7 @@ class SpectatorGameTest(unittest.TestCase):
         self.assertEqual(self.argv[self.argv.index('--match-id') + 1], self.lease)
         self.assertIn('--watch-id=' + self.watch, self.argv)
         self.assertIn('--spectate', self.argv); self.assertIn('--expected-content-hash', self.argv)
-        run = self.game.workspace / 'client-spectator'; run.mkdir()
+        run = self.game.workspace / 'client-000000000001'; run.mkdir()
         owner = self.game.current_artifacts / 'owner'; owner.mkdir()
         (owner / 'stdout.log').write_text('Session: ' + str(run) + '\n')
         events = run / 'events.txt'
@@ -109,7 +109,7 @@ class SpectatorGameTest(unittest.TestCase):
         def owner(argv, cwd, env, artifacts, **kwargs):
             calls.append(argv)
             if '--prepare-only' in argv:
-                run = self.game.workspace / 'client-prepared'; run.mkdir()
+                run = self.game.workspace / 'client-000000000002'; run.mkdir()
                 descriptor = run / 'prepared.json'; descriptor.write_text('{}')
                 artifacts.mkdir(parents=True)
                 (artifacts / 'stdout.log').write_text('CLIENT_PREPARED|' + json.dumps(dict(path=str(descriptor), sha256=hashlib.sha256(descriptor.read_bytes()).hexdigest())) + '\n')

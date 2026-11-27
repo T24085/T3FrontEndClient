@@ -35,6 +35,20 @@ departure and one arrival. The arrival cue and first-person flash wait for
 the movement to reach the player. Nearby observers still receive the native
 host cues. The fix for duplicate cues is tracked in frontend issue #60.
 
+# Windows stable game cleanup recovery
+
+The owned Windows game wrapper joins a named, kill-on-close Job before it
+launches the game. The stable game reservation records that Job's identity
+alongside the existing owner evidence. A later launch uses the normal terminal
+receipts first. If the receipts are missing after an interruption, it can
+release the reservation once Windows confirms the recorded Job is gone. A live
+Job or an inconclusive lookup keeps the reservation. Older reservations without
+a named Job still require their original cleanup receipts.
+The desktop Job evidence can release the reservation even if the previous
+session directory has gone away.
+
+The change fits the existing signed Windows update allowlist.
+
 # Private-match fall damage
 
 Starter shows **Fall damage** beside **Flag indicators** when a host
@@ -122,11 +136,16 @@ Rendered minimap verification is pending.
 
 # Client staging cleanup
 
-Starter retires the private `game` folder when a session's owned Job reports zero
-processes. It also retires cancelled or replaced preparations and descriptors
-whose join was abandoned before launch. Session logs, saved profiles, the game
-install, and shared caches stay in place. A Job without a confirmed empty state
-keeps its staging data for investigation.
+Starter now launches the game from a stable private path per installation and
+workspace. Each preparation creates a fresh `client-*` record for the lobby,
+profile and log evidence. The game executable and runtime files are reused when
+their digests match. Each preparation refreshes its map inventory and removes
+stale files inside its private game tree. An exclusive lease and owned Job
+receipts keep preparation from changing a running game's files.
+
+Starter still retires historical per-session `game` folders after confirmed Job
+cleanup. Session logs and saved profiles remain available for troubleshooting
+and settings migration.
 
 Run `python tools/cleanup_client_sessions.py --workspace <workspace> --package
 <installed-Starter>` for a dry run of historical cleanup. Add `--apply` with
