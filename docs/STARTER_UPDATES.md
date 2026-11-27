@@ -50,10 +50,31 @@ that path. Include the archive name, hash, revision, and qualification result
 in the release notes. Use the verified archive as the download players see
 when they install for the first time.
 
-After replacing a shared Drive ZIP, download it from the same player-facing
-URL while signed out. Verify the download against the SHA-256 recorded during
-qualification and the current signed feed before announcing the release.
+## Map-declared music
 
-```powershell
-python tools/windows_starter_release.py verify "<downloaded public ZIP>" --sha256 <qualified-zip-sha256>
-```
+A map can set `music = {track = "t2-desert"}` in its verified `objectives.lua`.
+Use `music = {playlist = "t1", first = 8}` to play the existing T1 playlist
+starting at track 8. The client selects a track when gameplay starts and
+releases it at match end or travel.
+
+For cooked tracks, use the shared sound pack format in
+[backend PR #99](https://github.com/Tribes3-Modded/T3BackEndServer/pull/99).
+In a full client package, keep the Map Tool's directory layout under
+`Client Files/sound-packs/`. Put the metadata files in the verified client
+inventory.
+
+- Game pack files live at `sound-packs/<SET>/pack.json`.
+- Per-map overrides live at `sound-packs/maps/<MapId>/override.json`.
+
+Use `music = {track = "music.match"}` in `objectives.lua` to select the
+match binding. The client resolves the map override, the selected `sound_set`
+pack, and the T3 fallback pack in that order. A map may also declare a music
+event ID exported by the Map Tool. A single-wave event and its loop wrapper
+can play directly. Cook more elaborate graphs into a Sound Cue and link the
+cue with an `asset` binding. The cooked Sound Cue or Sound Wave must route its
+base output to `MUS_Game_Submix`. Set looping on the cooked asset for continuous
+music.
+
+The signed Windows Direct feed can also resolve the legacy MP3 tracks by
+their existing SHA-256 addresses. The signed builder embeds their addresses
+and the player code, and updates the Python entry and Lua template together.

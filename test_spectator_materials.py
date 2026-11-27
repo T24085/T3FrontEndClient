@@ -140,8 +140,12 @@ class SpectatorMaterialsTest(unittest.TestCase):
         policy.poll(target,true)
         assert(mesh.slots[1]==clone and clone.texture=='selected later')
         assert(clone.scalar==0 and original.scalar==1)
+        original.texture='new selection before refresh'
         policy.apply(target,false)
-        assert(clone.scalar==1)
+        assert(clone.texture=='new selection before refresh' and clone.scalar==1)
+        original.texture='chase selection'
+        policy.apply(target,true)
+        assert(clone.texture=='chase selection' and clone.scalar==0)
         """)
 
     def test_wait_for_missing_slot_and_rebind_after_mesh_replacement(self):
