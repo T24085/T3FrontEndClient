@@ -23,8 +23,8 @@ from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLO
                             VOICE_RELEASE, VOICE_ROUTE, VOICE_SAMPLE_RATE,
                             locked_state, read_json, valid_public_address, validate_endpoint, validate_group, write_json)
 from direct_network import TOOL_TIPS_ROUTE, TOOL_TIPS_LIMIT, decode_tool_tips
-from community_transport import (CommunityClient, CommunityConnectionError, CommunityError,
-                                 PinnedHTTPSConnection, validated_projectile_settings)
+from community_transport import (CommunityClient, CommunityConnectionError, CommunityError, PinnedHTTPSConnection,
+                                 validated_projectile_settings)
 from community_game import CommunityGame
 from dynamic_destination import DIRECT_BRIDGE_POLICY
 
@@ -1952,6 +1952,157 @@ def main(root=ROOT, *, on_ready=None):
     class DirectDesktop(Desktop):
         public_panel = None
         armor_panel = None
+        local_host = None
+        local_desktop = None
+        local_room = None
+        local_row = 'this-pc-local-host'
+
+        def local_play_enabled(self):
+            return (not self.closing and not self.controls_busy and self.room is None
+                    and self.game_status in ('idle', 'stopped', 'finished', 'failed'))
+
+        def refresh_local_controls(self):
+            buttons = getattr(self, 'local_buttons', ())
+            if not buttons:
+                return
+            server = self.local_host
+            running = server is not None and server.thread is not None and server.thread.is_alive()
+            if server is not None and not running and not self.controls_busy:
+                self.local_host = self.local_room = None
+            enabled = (running or self.local_play_enabled()) and not self.controls_busy
+            for button in buttons:
+                button.configure(text='Stop local host' if running else 'Start local host',
+                                 state='normal' if enabled else 'disabled')
+            if self.current_panel == 'live':
+                self.render_local_row()
+
+        def render_local_row(self):
+            server = self.local_host
+            if server is None or server.client is None or not server.thread.is_alive():
+                if self.live_list.exists(self.local_row):
+                    self.live_list.delete(self.local_row)
+                return
+            room = self.local_room or {}
+            map_name = server.client.map_label(room['map']) if room.get('map') else 'Choose in lobby'
+            players = str(len(room.get('players', [])))
+            values = ('Local host · This PC', map_name or room.get('map', ''), players, '—', 'Private')
+            if self.live_list.exists(self.local_row):
+                self.live_list.item(self.local_row, values=values)
+            else:
+                self.live_list.insert('', 0, iid=self.local_row, values=values)
+
+        def render_live_matches(self, matches):
+            local_selected = self.live_list.selection() == (self.local_row,)
+            super().render_live_matches(matches)
+            self.render_local_row()
+            if local_selected and self.live_list.exists(self.local_row):
+                self.live_list.selection_set(self.local_row)
+            self.render_live_controls()
+
+        def render_live_controls(self):
+            super().render_live_controls()
+            self.refresh_local_controls()
+            if self.live_list.exists(self.local_row) and not self.live_targets and self.watch_id is None:
+                self.live_status.set('The private host on this PC is available.')
+            if self.live_list.selection() == (self.local_row,):
+                if not self.live_join_row.winfo_manager():
+                    self.live_join_row.pack(before=self.live_status_label, fill='x', pady=(8, 0))
+                self.live_team.configure(state='disabled')
+                self.live_join_reason.set('Opens the private lobby on this PC.')
+                self.live_join_button.configure(text='Open local host',
+                                                state='normal' if self.local_play_enabled() else 'disabled')
+
+        def join_live_selected(self):
+            if self.live_list.selection() == (self.local_row,):
+                if self.local_play_enabled():
+                    self.open_local_host()
+                return
+            super().join_live_selected()
+
+        def toggle_local_host(self):
+            previous = self.local_host
+            if previous is not None:
+                self.stop_local_host(previous)
+                return
+            if not self.local_play_enabled():
+                return
+            server = LocalHostSession(root, source, workspace)
+            self.local_host = server
+            self.status.set('Verifying the local host package…')
+
+            def started(_):
+                self.status.set('Local host ready. Choose it in Lobby Browser.')
+                self.show_panel('live')
+                self.render_local_row()
+                if self.live_list.exists(self.local_row):
+                    self.live_list.selection_set(self.local_row)
+                self.render_live_controls()
+
+            self.run_async(server.start, started)
+            self.refresh_local_controls()
+
+        def stop_local_host(self, server):
+            self.status.set('Stopping the local host…')
+
+            def stopped(_):
+                if self.local_host is server:
+                    self.local_host = self.local_room = None
+                    self.status.set('Local host stopped.')
+                self.render_live_controls()
+
+            self.run_async(server.stop, stopped)
+
+        def open_local_host(self):
+            server = self.local_host
+            if server is None or server.client is None or not server.thread.is_alive():
+                self.status.set('The local host has stopped.')
+                self.render_live_controls()
+                return
+            client = server.client
+            window = tk.Toplevel(self.root)
+            local_workspace = workspace/'local-play-client'
+            local_sync = MapSync(client, root, local_workspace)
+            owner = self
+
+            class LocalDesktop(Desktop):
+                def render(self, room):
+                    owner.local_room = room
+                    super().render(room)
+
+                def close(self):
+                    match = (self.room or {}).get('match')
+                    super().close()
+                    if not isinstance(match, dict) or match.get('status') not in ('starting', 'ready'):
+                        owner.local_room = None
+                    owner.local_desktop = None
+                    owner.root.deiconify()
+                    owner.render_live_controls()
+
+            factory = lambda current: DirectGame(current, root, source, local_workspace,
+                                                 local_workspace/'direct-desktop-control', map_sync=local_sync)
+            self.local_desktop = LocalDesktop(window, client, factory, map_sync=local_sync)
+            if self.name.get().strip():
+                self.local_desktop.name.set(self.name.get())
+            window.title('Tribes Rivals: Clan Wars · Local Play')
+
+            def stop_here():
+                if self.local_desktop is not None:
+                    self.local_desktop.close()
+                self.stop_local_host(server)
+
+            self.local_desktop.button(self.local_desktop.play_actions, 'Stop local host', stop_here, False).pack(
+                side='left', padx=(4, 0))
+            self.root.withdraw()
+            self.watch_local_host(server, self.local_desktop)
+
+        def watch_local_host(self, server, desktop):
+            if self.closing or self.local_desktop is not desktop:
+                return
+            if not server.thread.is_alive():
+                desktop.close()
+                self.status.set('The local host stopped. The local match was closed.')
+                return
+            self.root.after(500, self.watch_local_host, server, desktop)
         pug_panel = None
         local_host = None
         local_desktop = None
