@@ -193,7 +193,7 @@ def write_launcher_script(binary, template):
 
 
 def write_map_definitions(root, run, definitions, selected, package, *, public=False, objectives=None,
-                          weather_off=False, objectives_cache=None, minimap=None):
+                          weather_off=False, objectives_cache=None, minimap=None, objectives_session_cache=False):
     """Extend the map catalog with descriptors verified during map preparation."""
     from hashlib import sha256
     from community_maps import BY_ID, lua_map_definitions
@@ -230,8 +230,8 @@ def write_map_definitions(root, run, definitions, selected, package, *, public=F
             source_root = root
         if row is None:
             continue
-        path = (cache_path(objectives_cache, row['sha256'] + '.asset') if objectives_cache is not None
-                else source_root / name)
+        path = (cache_path(objectives_cache, row['sha256'] + '.asset', session=objectives_session_cache)
+                if objectives_cache is not None else source_root / name)
         if path.resolve(strict=True) != path or path.is_symlink() or not 0 < row['bytes'] <= 256 * 1024:
             raise ValueError(f'Invalid map-local objectives file: {name}')
         with path.open('rb') as stream:
@@ -494,7 +494,8 @@ def prepare_or_join(args, source, workspace, startup, stable):
         startup_progress('verifying_package')
         with startup.phase('package-verification'):
             from map_sync import has_session_revision
-            if has_session_revision(workspace, args.map_revision):
+            session_map_cache = has_session_revision(workspace, args.map_revision)
+            if session_map_cache:
                 from verified_file_cache import verify_package as verify_client_package
                 package = verify_client_package(ROOT, skip_cooked=True)
             else:
@@ -520,7 +521,7 @@ def prepare_or_join(args, source, workspace, startup, stable):
         with startup.phase('client-preparation'):
             descriptor=stage(ROOT,source,workspace,package,manifest,identities,verification,catalog=catalog,map_overlay=map_overlay,
                              custom_maps=custom_maps, objectives_downloaded=objectives_downloaded, stable=stable, minimap=minimap,
-                             emit=lambda line:print(line,flush=True))
+                             session_map_cache=session_map_cache, emit=lambda line:print(line,flush=True))
         if args.prepare_only:return
         prepared=consume(ROOT,source,workspace,descriptor['path'],descriptor['sha256'],
                          expected_map=args.expected_map,expected_content_hash=args.expected_content_hash,stable=stable)
@@ -555,6 +556,7 @@ def prepare_or_join(args, source, workspace, startup, stable):
                                             package, public=args.public_session,
                                             objectives=prepared.get('map_objectives'), weather_off=args.no_weather,
                                             objectives_cache=workspace if prepared.get('map_objective_cache') else None,
+                                            objectives_session_cache=prepared.get('map_objective_session_cache') is True,
                                             minimap=prepared.get('map_minimap'))
     diagnostic_profile = bool(args.headless or args.test_source or args.seconds is not None)
     with ProfileSession(mode=MODE, workspaces=(workspace, source.parent / 'TRIBES3 Client Sessions'),

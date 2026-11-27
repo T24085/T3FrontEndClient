@@ -228,6 +228,21 @@ class ClientPreparationTest(unittest.TestCase):
    self.assertTrue(record['map_objective_cache'])
    self.assertEqual(record['map_objectives'],[row[0] for row in rows])
    self.assertFalse((stable.lobby/'downloaded-objectives').exists())
+ def test_stable_preparation_records_the_per_map_objective_cache(self):
+  from map_sync import cache_path
+  raw=b'return {}'
+  sha=hashlib.sha256(raw).hexdigest()
+  cached=cache_path(self.workspace,sha+'.asset',session=True)
+  cached.parent.mkdir()
+  cached.write_bytes(raw)
+  item={'path':'lua/BeggarsRunTWLT22026/objectives.lua','bytes':len(raw),'sha256':sha}
+  with self.stable() as stable:
+   descriptor=self.prepare(stable=stable,map_overlay=[(item,None,cached)],objectives_downloaded=True,session_map_cache=True)
+   record=self.claim(descriptor,stable=stable)
+   self.assertTrue(record['map_objective_cache'])
+   self.assertTrue(record['map_objective_session_cache'])
+   self.assertEqual(record['map_objectives'],[item])
+
  def test_stable_slot_blocks_concurrent_access_and_requires_terminal_native_job_evidence(self):
   with self.stable() as stable:
    descriptor=self.prepare(stable=stable)

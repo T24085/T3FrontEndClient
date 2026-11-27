@@ -89,9 +89,8 @@ def overlay(package, remote):
     if 'objectives' in fields:
         authored = map_objective_rows(remote['objectives'], selected)
         rows.update(authored)
-        bundled_objectives = {row['path']:row for row in package['files'] if row['path'] in authored}
-        sources.update({name: name if version == SESSION_VERSION and bundled_objectives.get(name) == row else None
-                        for name, row in authored.items()})
+        # Authored inputs are staged by the host hash for the selected session.
+        sources.update(dict.fromkeys(authored))
     if 'minimap' in fields:
         entry = minimap_payload(next(iter(catalog)), remote['minimap'])
         if entry['image'] is not None:

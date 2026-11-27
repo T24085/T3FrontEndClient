@@ -122,6 +122,32 @@ class MapSyncTest(unittest.TestCase):
                 self.assertFalse(self.sync.session_path(item['sha256'] + '.asset').exists())
             self.assertTrue(self.sync.session_path(shared[0]['sha256'] + '.asset').is_file())
 
+    def test_session_objectives_use_the_cache_even_when_the_bundled_copy_matches(self):
+        name = 'Stonehenge'
+        cooked = self.bundled['files'][1:]
+        payload = b'return {}'
+        objective = row(f'lua/{name}/objectives.lua', payload)
+        package = {'community_maps': [name], 'map_runtime': {name: []},
+                   'files': [self.bundled['files'][0], *cooked, objective]}
+        self.manifest.write_text(json.dumps(package))
+        catalog = map_catalog(package)
+        remote = {'format': 3, 'maps': catalog, 'community_maps': [name], 'shared_content': {},
+                  'map_definitions': {}, 'files': cooked, 'runtime': [], 'objectives': [objective]}
+
+        def download(item, destination):
+            self.assertEqual(item, objective)
+            destination.write_bytes(payload)
+
+        with (patch.object(self.sync, '_session_document', return_value=remote),
+              patch.object(self.sync, '_download', side_effect=download) as fetch):
+            revision = self.sync.sync_map(name, catalog[name], 'b'*64)
+        fetch.assert_called_once()
+        entries, _, _, _ = load_overlay(self.root, revision, package)
+        _, bundled, cached = next(entry for entry in entries if entry[0] == objective)
+        self.assertIsNone(bundled)
+        self.assertEqual(cached, self.sync.session_path(objective['sha256'] + '.asset'))
+        self.assertEqual(cached.read_bytes(), payload)
+
     def test_minimap_graphic_is_optional_and_cached_with_its_verified_map(self):
         from community_transport import CommunityError
 

@@ -353,7 +353,7 @@ def _stage_executable(source, target, original_sha, patches, stable):
 
 def stage(root,source,workspace,package,original,original_identities,verification,*,catalog,
           emit=print,cache_factory=BulkStageCache,patches=PATCHES,map_overlay=None,custom_maps=None,
-          objectives_downloaded=False,stable=None,minimap=None):
+          objectives_downloaded=False,stable=None,minimap=None,session_map_cache=False):
  """Stage the verified inventory while the caller owns any stable slot."""
  root=Path(root).resolve(strict=True);source=Path(source).resolve(strict=True);workspace=Path(workspace).resolve(strict=True)
  if workspace==source or source in workspace.parents:raise ValueError('Client workspace must be outside the original game.')
@@ -420,7 +420,8 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
    if name.startswith('lua/'):
     if stable:
      from map_sync import cache_path
-     if bundled is not None or src!=cache_path(workspace,item['sha256']+'.asset'):
+     expected=cache_path(workspace,item['sha256']+'.asset',session=session_map_cache)
+     if bundled is not None or src!=expected:
       raise ValueError('Prepared map objectives must use the shared download cache: '+name)
     else:
      target=run/'downloaded-objectives'/_relative(name)
@@ -480,7 +481,9 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
  if stable:
   record['stable_game']=str(game)
   record['generation']=uuid.uuid4().hex
-  if objectives_downloaded:record['map_objective_cache']=True
+  if objectives_downloaded:
+   record['map_objective_cache']=True
+   if session_map_cache:record['map_objective_session_cache']=True
  path=run/'prepared.json'
  _replace_file(path,lambda temp:_write(temp,record))
  sha=digest(path)
