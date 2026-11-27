@@ -85,6 +85,16 @@ class WindowsStarterReleaseTests(unittest.TestCase):
             release.reissue(self.base, release.archive_sha(self.base), self.output)
         self.assertFalse(self.output.exists())
 
+    def test_public_download_must_match_the_qualified_zip_even_at_the_same_revision(self):
+        self.write_package(revision=94, handler=self.current)
+        expected_sha = release.archive_sha(self.base)
+        with patch.object(release, 'live_fetch'), patch.object(release, 'live_index', return_value=self.index):
+            self.assertEqual(release.verify_archive(self.base, expected_sha), 94)
+            self.write_package(revision=94, handler=self.current, map_count=2)
+            self.assertEqual(release.verify_archive(self.base), 94)
+            with self.assertRaisesRegex(ValueError, 'SHA-256 differs from the qualified release'):
+                release.verify_archive(self.base, expected_sha)
+
 
 if __name__ == '__main__':
     unittest.main()
