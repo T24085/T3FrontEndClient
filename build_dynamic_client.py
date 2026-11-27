@@ -12,7 +12,7 @@ SOURCE_MANIFEST_SHA256 = '740081ed79694c486fcff871b4e5ff3329100e5f7407eaf01985d3
 OUTPUT = ROOT / 'dynamic-client-development'
 CANONICAL_HELPERS = ('server_access.py', 'server_access_contract.py', 'player_profile.py', 'client_bootstrap.py', 'bulk_verification_receipts.py', 'runtime_health.py', 'startup_progress.py', 'startup_paths.py', 'startup_timing.py',
                      'client_preparation.py', 'bulk_asset_cache.py', 'verified_file_cache.py',
-                     'map_sync.py', 'map_sync_contract.py', 'community_maps.py', 'compare_map_packages.py')
+                     'map_sync.py', 'map_sync_contract.py', 'community_maps.py', 'compare_map_packages.py', 'community_transport.py')
 SPECTATOR_RUNTIME_FILES = ('lua/spectator_client.lua', 'lua/spectator_materials.lua')
 
 
@@ -94,6 +94,9 @@ def build_candidate(source, output):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(original, target)
     shutil.copyfile(ROOT / 'client_entry.py', output / 'client.py')
+    projectile_runtime = output/'runtime-fixes/projectile_inheritance.lua'
+    projectile_runtime.parent.mkdir(exist_ok=True)
+    shutil.copyfile(ROOT/'runtime-fixes/projectile_inheritance.lua', projectile_runtime)
     shutil.copyfile(ROOT/'map_soundtracks.py', output/'map_soundtracks.py')
     copy_spectator_runtime(manifest, output)
     shutil.copyfile(ROOT / 'dynamic_destination.py', output / 'lib/dynamic_destination.py')

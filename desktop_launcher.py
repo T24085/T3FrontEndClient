@@ -1,6 +1,7 @@
 """Development-only Community Starter lobby and owned game launcher."""
 import argparse
 import json
+import re
 import os
 import webbrowser
 from pathlib import Path
@@ -20,6 +21,7 @@ from community_transport import (
     decode_match_rule_preset, validated_match_result, validated_match_rule_preset,
 )
 from community_maps import BY_ID, options, read_options, LEGACY_MAPS
+from boundary_controls import BoundaryDialog, mode_selection, mode_values, summary as boundary_summary, with_mode
 from map_sync_contract import CATALOG_VERSION, SESSION_VERSION, valid_sha
 
 LOBBY_LOCK_RULES_ENABLED = 'lobbyLockRulesEnabled'
@@ -312,6 +314,20 @@ class Desktop:
         self.rule_presets.configure(menu=menu)
         self.rule_presets.pack(side='left', padx=(8, 0))
         self.weather_row.grid_remove()
+        # Boundary mutators (#97): a mode choice plus a dialog with every setting.
+        self.boundary_row = tk.Frame(self.rules_row, bg=PANEL)
+        self.boundary_row.grid(row=4, column=0, columnspan=3, sticky='w', pady=(2, 0))
+        self.label(self.boundary_row, 'Boundary', 9, bg=PANEL).pack(side='left', padx=(4, 6))
+        self.boundary_choice = ttk.Combobox(self.boundary_row, width=34, state='disabled')
+        self.boundary_choice.pack(side='left')
+        self.boundary_choice.bind('<<ComboboxSelected>>', self.change_boundary)
+        self.boundary_settings = ttk.Button(self.boundary_row, text='Boundary settings…',
+                                            command=self.open_boundary_settings, state='disabled')
+        self.boundary_settings.pack(side='left', padx=(8, 0))
+        self.boundary_text = tk.StringVar(value='')
+        tk.Label(self.boundary_row, textvariable=self.boundary_text, bg=PANEL, fg=MUTED,
+                 font=('Segoe UI', 8)).pack(side='left', padx=(8, 0))
+        self.boundary_row.grid_remove()
         self.limits_row = tk.Frame(fields, bg=PANEL)
         self.limits_row.grid(row=0, column=2, sticky='ew')
         self.limits_row.columnconfigure((0, 1), weight=1, uniform='limits')
@@ -1053,11 +1069,31 @@ class Desktop:
         if index in (0, 1, 2):
             self.call_action('rules', weather=(None, True, False)[index])
 
+    def change_boundary(self, _event=None):
+        room = self.room
+        index = self.boundary_choice.current()
+        if room is not None and index >= 0:
+            self.call_action('rules', boundary=with_mode(room.get('boundary'), index))
+
+    def open_boundary_settings(self):
+        room = self.room
+        if room is None or self.boundary_settings.instate(['disabled']):
+            return
+        code = room['code']
+
+        def apply(override):
+            if self.room is not None and self.room['code'] == code:
+                self.call_action('rules', boundary=override)
+
+        BoundaryDialog(self.root, room.get('boundaryDefault'), room.get('boundary'), apply)
+
     def save_rule_preset(self):
         room = self.room
         if room is None or self.rule_presets.instate(['disabled']):
             return
         preset = {'version': 1, 'weather': room.get('weather')}
+        if 'boundaryDefault' in room:
+            preset['boundary'] = room.get('boundary')
         if self.caps.get('matchRulesEnabled') is True:
             settings = room.get('rules', DEFAULT_LOBBY_RULES)
             rules = {key: settings[key] for key in ('flagIndicators', 'botCount')}
@@ -1105,6 +1141,16 @@ class Desktop:
             self.rule_presets.configure(state='normal' if editable else 'disabled')
         else:
             self.weather_row.grid_remove()
+        if room and 'boundaryDefault' in room:  # The server supports boundary mutators (#115).
+            default, override = room.get('boundaryDefault'), room.get('boundary')
+            self.boundary_row.grid()
+            self.boundary_choice.configure(values=mode_values(default), state='readonly' if editable else 'disabled')
+            self.boundary_choice.set(mode_selection(default, override))
+            self.boundary_settings.configure(state='normal' if editable else 'disabled')
+            settings = {**(default or {}), **(override or {})}
+            self.boundary_text.set(('Changed: ' if override else '') + boundary_summary(settings or None))
+        else:
+            self.boundary_row.grid_remove()
         locked = room.get('locked') if room else None
         if self.caps.get(LOBBY_LOCK_RULES_ENABLED) is True and type(locked) is bool:
             self.room_locked.set(locked)
@@ -1307,9 +1353,87 @@ class Desktop:
                        if changed else 'Your community settings already match the saved retail settings.')
 
         self.button(window, 'Import settings from retail', import_settings).pack(anchor='w')
+        self.button(window, 'Projectile inheritance', lambda: self.show_projectile_settings(window),
+                    False).pack(anchor='w', pady=(8, 0))
         tk.Label(window, textvariable=status, bg=BG, fg=MUTED, font=('Segoe UI', 10),
                  justify='left', wraplength=420, anchor='w').pack(fill='x', pady=(12, 0))
         window.bind('<Escape>', lambda _event: window.destroy())
+
+    def show_projectile_settings(self, parent):
+        from community_transport import PROJECTILE_INHERITANCE_CLASSES
+        from player_profile import ProfileError, load_projectile_settings, update_projectile_settings
+
+        window = tk.Toplevel(parent, bg=BG, padx=22, pady=18)
+        window.title('Projectile inheritance')
+        window.transient(parent)
+        window.resizable(False, False)
+        window.grab_set()
+        window.bind('<Escape>', lambda _event: window.destroy())
+        self.label(window, 'Projectile inheritance', 18, True).pack(anchor='w')
+        self.label(window, 'Choose how much of your movement a shot carries.\nChanges apply in your next supported match.',
+                   10, color=MUTED).pack(anchor='w', pady=(5, 14))
+        status = tk.StringVar(window)
+        try:
+            settings = load_projectile_settings()
+        except (OSError, ProfileError) as exc:
+            tk.Label(window, text=str(exc), bg=BG, fg=TEXT, wraplength=380).pack(anchor='w')
+            return
+
+        labels = {}
+        for key, path in PROJECTILE_INHERITANCE_CLASSES.items():
+            name = path.split('/')[-2]
+            label = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', name)
+            labels[label] = key
+        weapon = tk.StringVar(window)
+        select = ttk.Combobox(window, textvariable=weapon, values=tuple(sorted(labels)), state='readonly', width=32)
+        select.pack(anchor='w', fill='x')
+        stock = tk.BooleanVar(window)
+        row = tk.Frame(window, bg=BG)
+        row.pack(anchor='w', fill='x', pady=(8, 10))
+        forward, lateral = tk.StringVar(window), tk.StringVar(window)
+        fields = []
+        for column, (label, value) in enumerate((('Forward (%)', forward), ('Lateral (%)', lateral))):
+            self.label(row, label, 10, color=MUTED).grid(row=0, column=column, sticky='w', padx=(0, 15))
+            field = ttk.Spinbox(row, from_=0, to=100, textvariable=value, width=12)
+            field.grid(row=1, column=column, sticky='w', padx=(0, 15))
+            fields.append(field)
+
+        def toggle():
+            for field in fields:
+                field.configure(state='disabled' if stock.get() else 'normal')
+
+        def select_weapon(_event=None):
+            axes = settings.get(labels[weapon.get()])
+            stock.set(axes is None)
+            forward.set('' if axes is None else str(axes[0]))
+            lateral.set('' if axes is None else str(axes[1]))
+            status.set('')
+            toggle()
+
+        def save_weapon():
+            key = labels[weapon.get()]
+            try:
+                axes = None if stock.get() else [int(forward.get()), int(lateral.get())]
+                updated = update_projectile_settings(key, axes)
+            except ValueError:
+                status.set('Enter whole percentages from 0 to 100.')
+                return
+            except (OSError, ProfileError) as exc:
+                status.set(str(exc))
+                return
+            settings.clear()
+            settings.update(updated)
+            status.set(f'Saved {weapon.get()}.')
+
+        tk.Checkbutton(window, text='Use game defaults', variable=stock, command=toggle,
+                       bg=BG, fg=TEXT, activebackground=BG, activeforeground=TEXT,
+                       selectcolor=PANEL).pack(anchor='w')
+        self.button(window, 'Save weapon setting', save_weapon).pack(anchor='w', pady=(8, 0))
+        tk.Label(window, textvariable=status, bg=BG, fg=MUTED, anchor='w',
+                 justify='left', wraplength=370).pack(fill='x', pady=(7, 0))
+        select.bind('<<ComboboxSelected>>', select_weapon)
+        select.current(0)
+        select_weapon()
 
     def live_browser_supported(self):
         return self.caps.get('spectateEnabled') is True or self.caps.get('privateLobbyAdmission') is True

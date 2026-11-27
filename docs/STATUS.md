@@ -1,3 +1,12 @@
+# Authored mission boundary warnings
+
+The connected client reads opt-in warning markers and the local sound
+actor from the cooked map. Crossing the boundary shows a HUD message
+and plays the map's cue for the controlling player. The warning service
+clears its own label on reentry, death or travel. Source verification
+checks that the signed runtime embeds the same code as the offline
+preview. Retail runtime HUD and audio qualification remains open.
+
 # Windows stable game cleanup recovery
 
 The owned Windows game wrapper joins a named, kill-on-close Job before it

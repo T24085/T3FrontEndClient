@@ -20,7 +20,8 @@ from direct_network import (ENDPOINT_FIELDS, ENROLL_ROUTE, GROUP_FILE, MATCH_SLO
                             VOICE_RELEASE, VOICE_ROUTE, VOICE_SAMPLE_RATE,
                             locked_state, read_json, valid_public_address, validate_endpoint, validate_group, write_json)
 from direct_network import TOOL_TIPS_ROUTE, TOOL_TIPS_LIMIT, decode_tool_tips
-from community_transport import CommunityClient, CommunityError, PinnedHTTPSConnection
+from community_transport import (CommunityClient, CommunityError, PinnedHTTPSConnection,
+                                 validated_projectile_settings)
 from community_game import CommunityGame
 from dynamic_destination import DIRECT_BRIDGE_POLICY
 
@@ -435,6 +436,15 @@ class DirectClient(CommunityClient):
             if not state.get('team') or time.monotonic() >= deadline:
                 raise CommunityError(state.get('error') or 'Your public match seat was not ready. Try joining again.')
             time.sleep(1)
+
+    def public_projectile_settings(self, match_id, round_id, settings):
+        with self.lock:
+            response = self._request('public-projectile-settings', {
+                'matchId': match_id, 'round': round_id, 'settings': validated_projectile_settings(settings),
+            }, use_lobby_token=False)
+            if type(response.get('round')) is not int or response['round'] != round_id:
+                raise CommunityError('The projectile settings belong to another public round.')
+            return self._projectile_reply(response, match_id)
 
     def public_vote(self, round_id, map_id):
         return self._public('vote', round=round_id, map=map_id)

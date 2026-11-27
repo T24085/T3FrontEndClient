@@ -106,7 +106,9 @@ def build(source, proof_path, output, *, feed=None, catalog=None, assets=None,
         # Ship the stub once the selected host catalog no longer pins that file.
         if not any('lua/snowblind_weather.lua' in names for names in manifest['map_runtime'].values()):
             replace['lua/snowblind_weather.lua'] = (ROOT / 'lua/snowblind_weather.lua').read_bytes()
-        replace['client.py'] = (ROOT / 'client_entry.py').read_bytes()
+        if 'client.py' not in replace:
+            from tools.build_starter_update import client_entry_payload
+            replace['client.py'] = client_entry_payload((ROOT / 'client_entry.py').read_bytes(), ROOT)
     with tarfile.open(source, 'r|gz') as original, ZipFile(partial, 'x', ZIP_DEFLATED, compresslevel=1) as package:
         for name, data in top.items():
             write_bytes(package, name, data)
