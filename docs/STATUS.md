@@ -1,3 +1,11 @@
+# Per-map objective cache handoff (M5)
+
+Starter now carries the verified per-map cache selection through game
+preparation and launch. The shared-cache error on Beggar's Run occurred
+after its verified objective download. Authored objectives always use the
+host hash in the selected cache. Existing prepared records using the
+legacy shared cache remain supported. See issue #89.
+
 # Starter r95 regression recovery (M6)
 
 Issue #121 reconciles the controls players had before r95 with the current

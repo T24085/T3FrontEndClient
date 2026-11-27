@@ -206,6 +206,16 @@ return {{format=1,map_id="{KATA.id}",package="{KATA.package}",world="{world}",
             self.assertEqual(replacement.read_bytes(), module)
         self.assertEqual(weather_runtime_path(self.root, self.run, package), self.root / 'lua/weather.lua')
 
+    def test_per_map_cache_materializes_the_selected_verified_objectives(self):
+        objective = self.add_adapter(DESCRIPTOR)
+        cache = self.root / 'session-map-downloads'
+        cache.mkdir()
+        (self.root / objective['path']).replace(cache / (objective['sha256'] + '.asset'))
+        catalog = write_map_definitions(self.root, self.run, self.definitions, KATA, {'files': []},
+                                        objectives=[objective], objectives_cache=self.root,
+                                        objectives_session_cache=True)
+        self.assertEqual(self.lua.execute(catalog.read_text())[KATA.id].weather.density, .5)
+
     def test_shared_objectives_cache_only_materializes_private_selected_map(self):
         other = MapDefinition('MinotaurT22026', 'Minotaur', 'MinotaurT2', 'Arena_MinotaurT2_2026_P')
         self.definitions[other.id] = other
