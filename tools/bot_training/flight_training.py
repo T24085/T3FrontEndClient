@@ -6,6 +6,7 @@ from statistics import median
 import time
 
 from dashboard_run import TeamTrainer
+from flight_momentum import SCORING, momentum, sustained_score
 from learning_history import past_runs
 from practice import HERE, MAP, MAX_TRAINING_BOTS, NativeMemoryBusy, check_between_matches, start, training_wait
 from team_waves import evidence_path, ready_receipt, validate_reset, wave_plan
@@ -74,7 +75,7 @@ def validate_flight(bots, seconds, course='straight'):
         raise ValueError('Choose a flight course.')
 
 
-def measure_flight(trace, course='straight', strict=False):
+def measure_flight(trace, course='straight', strict=False, scoring=None):
     with trace.open(newline='', encoding='utf-8') as source:
         rows = list(csv.DictReader(source))
         if len(rows) < 2:
@@ -126,6 +127,11 @@ def measure_flight(trace, course='straight', strict=False):
                 peak_kmh=round(max(speeds), 2), airborne_m=round(air_forward, 2), airborne_seconds=round(air_time, 2),
                 longest_air_seconds=round(longest_air, 2), slow_seconds=round(slow, 2), jet_seconds=round(jet, 2),
                 ski_seconds=round(ski, 2), score=round(score, 5))
+    if course == 'straight':
+        result.update(momentum([(t, speed, air, jet, energy, distance)
+                               for t, distance, speed, air, jet, _, energy in frames], .75))
+        if scoring == SCORING:
+            result['score'] = round(sustained_score(forward, COURSE_M, result), 5)
     if course in HILL_PROFILES:
         result.update(measure_hill(rows, frames, course, heading, forward))
     elif course == 'recovery':
@@ -299,13 +305,14 @@ class FlightTrainer(TeamTrainer):
     verify_start = True
     record_combat = False
 
-    def __init__(self, selection, seconds, testing, course='straight', strict=False):
+    def __init__(self, selection, seconds, testing, course='straight', strict=False, scoring=None):
         side = ('Capper',)*(len(selection)//2)
         super().__init__(side, side, seconds)
         self.selection = selection
         self.testing = testing
         self.course = course
         self.strict_flight = strict
+        self.scoring = scoring
         profiles = profiles_for(course, strict)
         self.flight_plan = {slot: profiles[profile] for slot, profile in enumerate(selection, 1)}
 
@@ -330,7 +337,7 @@ class FlightTrainer(TeamTrainer):
         bots = []
         for slot, (profile, (team, _)) in enumerate(zip(self.selection, self.roster, strict=True), 1):
             trace = evidence_path(out, wave, f'team-bot-{slot}-trace.csv')
-            measured = measure_flight(trace, self.course, self.strict_flight)
+            measured = measure_flight(trace, self.course, self.strict_flight, self.scoring)
             bots.append(dict(bot=slot, team=team, profile=profile, trace=str(trace), **measured))
         self.result = dict(bots=bots, testing=self.testing)
 
@@ -341,6 +348,8 @@ def flight_run(config, output, waves, seconds, bots, waves_per_launch, course='s
     expected = dict(scenario=SCENARIO, map=config.get('training_map', MAP), target=waves, seconds=seconds,
                     bots=bots, course_m=COURSE_M if course == 'straight' else HILL_M)
     initial = expected | {'waves': [], 'reset_fallbacks': []}
+    if course == 'straight':
+        initial['scoring'] = SCORING
     if course != 'straight':
         initial['course'] = course
     report = json.loads(path.read_bytes()) if path.exists() else initial
@@ -358,7 +367,7 @@ def flight_run(config, output, waves, seconds, bots, waves_per_launch, course='s
         index = len(saved)
         candidate = choose_profile(saved[:evaluation_start], course, strict) if index >= evaluation_start else None
         selection = assignments(index, bots, candidate, evaluation_start, course, strict)
-        return FlightTrainer(selection, seconds, candidate, course, strict)
+        return FlightTrainer(selection, seconds, candidate, course, strict, report.get('scoring'))
 
     def checkpoint(trainer):
         saved.append(trainer.result)

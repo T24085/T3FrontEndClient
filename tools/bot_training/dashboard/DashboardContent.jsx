@@ -704,6 +704,14 @@ function TeamAnalysis({ phase, keepRun, initialMatch, mapLabel }) {
         detail={row.base_equipment.map((side) => `${side.team === 1 ? "Blue" : "Red"} base · ${side.generators} generators · ${side.turrets} turrets`).join(" / ")} />}
       {bot?.airborne_seconds !== undefined && <Metric label={`Bot ${bot.bot} airborne`} value={format(bot.airborne_seconds, " s")}
         detail={`${format(bot.airborne_objective_advance_m, " m")} toward a flag objective`} />}
+      {bot?.fast_air_seconds !== undefined && <>
+        <Metric label="Fast airborne time" value={format(bot.fast_air_seconds, " s")}
+          detail={`${format(bot.longest_fast_air_seconds, " s")} longest stretch at 45 km/h or faster`} />
+        <Metric label="Fast glide without jets" value={format(bot.fast_glide_seconds, " s")}
+          detail={`${format(bot.jet_seconds, " s")} under jet power`} />
+        {bot.landing_count > 0 && <Metric label="Speed retained on landing" value={percent(bot.landing_speed_retained)}
+          detail={`${format(bot.landing_energy)} jet energy at landing across ${bot.landing_count} landings`} />}
+      </>}
       {bot?.ground_jog_seconds !== undefined && <Metric label={`Bot ${bot.bot} grounded jogging`}
         value={format(bot.ground_jog_seconds, " s")} />}
       {bot?.open_travel_jog_ratio !== undefined && <Metric label={`Bot ${bot.bot} jogging in open travel`}
@@ -847,6 +855,14 @@ function FlightAnalysis({ phase, keepRun }) {
         <Metric label="Median cruising speed" value={format(medianValue(row.bots, "median_kmh"), " km/h")} />
         <Metric label="Median forward distance in air" value={format(medianValue(row.bots, "airborne_m"), " m")} />
         <Metric label="Median time below 15 km/h" value={format(medianValue(row.bots, "slow_seconds"), " s")} />
+      </>}
+      {!hill && !recovery && row.bots.some(bot => Number.isFinite(bot.fast_air_seconds)) && <>
+        <Metric label="Median fast airborne advance" value={format(medianValue(row.bots, "fast_air_forward_m"), " m")}
+          detail="Forward distance at 45 km/h or faster" />
+        <Metric label="Median longest fast flight" value={format(medianValue(row.bots, "longest_fast_air_seconds"), " s")} />
+        <Metric label="Median fast glide without jets" value={format(medianValue(row.bots, "fast_glide_seconds"), " s")} />
+        <Metric label="Median speed retained on landing" value={percent(medianValue(row.bots, "landing_speed_retained"))}
+          detail={`${format(medianValue(row.bots, "landing_energy"))} median jet energy at landing`} />
       </>}
       {strict && <Metric label="Worst grounded jogging" value={percent(Math.max(...row.bots.map(bot => bot.ground_jog_ratio)))}
         detail="Profiles must stay at or below 5% to pass" />}

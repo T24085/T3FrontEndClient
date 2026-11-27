@@ -350,6 +350,8 @@ def live_results(root, runs=(), legacy_metrics=None):
                 bot_fields = ("bot", "team", "role", "peak_kmh", "samples", "flag_samples", "median_kmh",
                               "pickups", "fast_pickups", "median_pickup_kmh", "releases", "captures", "deaths",
                               "ski_seconds", "jet_seconds", "airborne_seconds", "airborne_objective_advance_m", "ground_jog_seconds",
+                              "fast_air_seconds", "longest_fast_air_seconds", "fast_glide_seconds", "landing_count",
+                              "landing_speed_retained", "landing_energy",
                               "open_travel_seconds", "open_travel_jog_ratio",
                               "carry_seconds", "health_lost",
                               "home_flag_seconds", "enemy_flag_seconds")

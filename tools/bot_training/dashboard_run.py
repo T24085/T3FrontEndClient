@@ -4,6 +4,7 @@ import csv
 from dataclasses import asdict, replace
 import json
 import math
+from flight_momentum import momentum
 import msvcrt
 import os
 from pathlib import Path
@@ -204,6 +205,12 @@ def team_bot_metrics(samples):
             if before >= 0 and after >= 0 and row['carrying'] == next_row['carrying']:
                 advance += (before - after) / 100
         data['airborne_objective_advance_m'] = max(0, advance)
+        if observed[0].get('energy'):
+            flight = momentum([(float(row['seconds']), speed, row['grounded'] == '0', row['jet'] == '1',
+                                float(row['energy']), 0)
+                               for row, speed in zip(observed, speeds, strict=True)], .35)
+            del flight['fast_air_forward_m']
+            data.update(flight)
     return data
 
 
