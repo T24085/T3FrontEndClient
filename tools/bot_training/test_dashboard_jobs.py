@@ -239,6 +239,34 @@ class TrainingQueueTest(unittest.TestCase):
         self.assertEqual([row['attack_team'] for row in report['matches']], [1, 2])
         self.assertNotIn('pending_mirror', report)
 
+    def test_mirrored_tactics_keep_hashable_assignments_after_resume(self):
+        output = self.root/'mirrored-tactics'
+        config = {'training_map': 'HighOctane2026', 'runs': str(self.root/'sessions')}
+        assignments = []
+
+        def save_leg(_, trainer):
+            assignments.append((trainer.defense_tactics, trainer.offense_tactics))
+            trainer.result = dict(blue=0, red=0, bots=[], guided_routes=[])
+            trainer.save_match(trainer)
+
+        def interrupt_second_leg(cfg, trainer):
+            if assignments:
+                raise InterruptedError('before mirrored leg')
+            save_leg(cfg, trainer)
+
+        with patch('dashboard_run.start', side_effect=interrupt_second_leg):
+            with self.assertRaisesRegex(InterruptedError, 'before mirrored leg'):
+                team_run(config, output, 2, 60, 2026, mode='offdef')
+        with patch('dashboard_run.start', side_effect=save_leg):
+            team_run(config, output, 2, 60, 2026, mode='offdef')
+
+        for first, second in zip(*assignments):
+            self.assertTrue(first)
+            self.assertEqual(set(second.values()), set(first.values()))
+        report = json.loads((output/'progress.json').read_bytes())
+        self.assertEqual(len(report['matches']), 2)
+        self.assertNotIn('pending_mirror', report)
+
     def test_defender_comparison_covers_each_setup_with_the_same_route(self):
         output = self.root/'defended'
         config = {'training_map': 'HighOctane2026', 'runs': str(self.root/'sessions')}

@@ -605,8 +605,9 @@ def team_run(config, output, matches, seconds, seed, size=7, attack=None, mode='
                 return {(slot + first_red if slot <= first_blue else slot - first_blue): plan
                         for key, plan in assignments.items() if (slot := int(key)) > 0}
             trainer.guided = swapped(first['routes'])
-            trainer.defense_tactics = swapped(first['defense'])
-            trainer.offense_tactics = swapped(first['offense'])
+            # JSON restores tactic pairs as lists, but evidence groups use them as keys.
+            trainer.defense_tactics = {slot: tuple(plan) for slot, plan in swapped(first['defense']).items()}
+            trainer.offense_tactics = {slot: tuple(plan) for slot, plan in swapped(first['offense']).items()}
         elif mode == 'explore':
             policy = 'Flank exploration'
             candidate_on_blue = lead_with_blue if mirrored else index % 2 == 0 or not attack[1]
