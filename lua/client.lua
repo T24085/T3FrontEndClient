@@ -1,6 +1,7 @@
 -- Private launcher runtime. All calls run on the game thread in this exact child.
 local EXPECTED=@@EXPECTED@@
 local OUTPUT=@@OUTPUT@@
+local GAME_CONTENT=@@GAME_CONTENT@@
 local DESTINATION=@@DESTINATION@@
 -- SPECTATOR_CLIENT_CONTRACT_V1
 local SPECTATOR_ROLE=@@SPECTATOR_ROLE@@
@@ -42,8 +43,7 @@ local mapDefinitions=assert(loadfile(@@MAP_DEFINITIONS@@))()
 -- The sand release changes only this tile's authored mesh identity.
 do
     local center='/Game/Community/RollercoasterSand2026/SM_RollercoasterCenter'
-    local session=assert(OUTPUT:match('^(.*/)'))
-    local asset=io.open(session..'game/Topaz/Content'..center:sub(6)..'.uasset','rb')
+    local asset=io.open(GAME_CONTENT..center:sub(6)..'.uasset','rb')
     if asset then
         asset:close()
         for _,row in ipairs(mapDefinitions.Rollercoaster2026.geometry) do
