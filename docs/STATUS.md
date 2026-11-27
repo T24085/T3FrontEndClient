@@ -2,6 +2,14 @@
 
 The Play lobby keeps team rosters side by side, groups match setup fields, and keeps the match actions visible at the bottom. Join and create fields collapse while a lobby is active. Supported lobby options such as spectators, bots, and flag indicators are available under **Advanced rules**. At narrower widths, fields and secondary match actions can wrap while preserving their enabled states. See frontend issue #72.
 
+# Private lobby lock
+
+On supported hosts, the lobby leader can change **Lock lobby after start** in
+**Advanced rules** until the match starts. The checkbox follows the server's
+saved value for everyone in the lobby. The Create Lobby option sets the initial
+value. A locked match still allows original players to rejoin. See frontend
+issue #75 and backend issue #91.
+
 # Blink cue timing
 
 The owning client applies the authoritative Blink movement and presents one
