@@ -1,3 +1,12 @@
+# Authored mission boundary warnings
+
+The connected client reads opt-in warning markers and the local sound
+actor from the cooked map. Crossing the boundary shows a HUD message
+and plays the map's cue for the controlling player. The warning service
+clears its own label on reentry, death or travel. Source verification
+checks that the signed runtime embeds the same code as the offline
+preview. Retail runtime HUD and audio qualification remains open.
+
 # Small-screen Play lobby
 
 The Play lobby keeps team rosters side by side, groups match setup fields, and keeps the match actions visible at the bottom. Join and create fields collapse while a lobby is active. Supported lobby options such as spectators, bots, and flag indicators are available under **Advanced rules**. At narrower widths, fields and secondary match actions can wrap while preserving their enabled states. See frontend issue #72.

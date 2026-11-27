@@ -21,7 +21,7 @@ BASE_URL = 'https://github.com/T24085/T3FrontEndClient/releases/download/starter
 INDEX = 'starter-update.json'
 ALLOWED = frozenset({
     'bulk_asset_cache.py', 'bulk_verification_receipts.py', 'client.py', 'client_bootstrap.py',
-    'client_preparation.py', 'community_game.py', 'community_transport.py', 'desktop_launcher.py',
+    'boundary_controls.py', 'client_preparation.py', 'community_game.py', 'community_transport.py', 'desktop_launcher.py',
     'map_catalog.py', 'map_sync.py', 'map_sync_contract.py', 'player_names.py', 'player_profile.py',
     'runtime_health.py', 'server_access.py', 'server_access_contract.py', 'startup_paths.py',
     'startup_progress.py', 'startup_timing.py', 'steam_identity.py', 'verified_file_cache.py',
