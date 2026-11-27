@@ -15,12 +15,13 @@ from community_game import CommunityGame
 from startup_paths import installation_options
 from community_transport import (
     CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES,
-    DEFAULT_MATCH_LIMITS, LOBBY_LOCK_RULES_ENABLED, MAX_LOBBY_BOTS, MAX_MATCH_MINUTES,
+    DEFAULT_MATCH_LIMITS, MAX_LOBBY_BOTS, MAX_MATCH_MINUTES,
     MAX_SCORE_LIMIT, validated_match_result,
 )
 from community_maps import BY_ID, options, read_options, LEGACY_MAPS
 from map_sync_contract import CATALOG_VERSION, SESSION_VERSION, valid_sha
 
+LOBBY_LOCK_RULES_ENABLED = 'lobbyLockRulesEnabled'
 ROOT = Path(__file__).resolve().parent
 CLIENT_PACKAGE = ROOT if (ROOT / 'connection-policy.json').is_file() else ROOT / 'dynamic-client-development'
 BG, PANEL, TEXT, MUTED, ACCENT = '#0a111b', '#132335', '#eff7ff', '#9fb3c6', '#4be4c1'
