@@ -9,7 +9,9 @@ import unittest
 from unittest.mock import Mock, patch
 
 from map_sync import MapSync, load_overlay, overlay
-from map_sync_contract import map_catalog
+from map_sync_contract import (MAP_ARCHIVE_ASSETS, MAP_ARCHIVE_NAME,
+                               SESSION_CORE, SESSION_INDEX, SESSION_MAP, SESSION_SHARED,
+                               encode, map_catalog, sha256_bytes)
 from community_maps import custom_definitions, lua_map_definitions
 from client_bootstrap import CONTRACT, map_name
 
@@ -47,6 +49,82 @@ class MapSyncTest(unittest.TestCase):
         response = HTTPResponse(Mock(makefile=Mock(return_value=BytesIO(wire))))
         response.begin()
         return Mock(getresponse=Mock(return_value=response))
+
+    def test_per_map_sync_has_no_startup_request_and_reuses_only_shared_files(self):
+        names = ('Stonehenge', 'Rollercoaster')
+        prefix = 'content/Community/SharedFixture/'
+        data = {prefix + 'Shared.uasset': b'shared'}
+        files = {}
+        for name in names:
+            level = f'content/Maps/Community/{name}/Arena_{name}_P'
+            files[name] = [row(path, path.encode()) for path in
+                           (level + '.umap', level + '.uexp', f'content/Community/{name}/Prop.uasset')]
+            data.update({item['path']:item['path'].encode() for item in files[name]})
+        shared = [row(path, raw) for path, raw in data.items() if path.startswith(prefix)]
+        catalog = map_catalog(dict(self.bundled, community_maps=list(names),
+                                   map_runtime=dict.fromkeys(names, []), shared_content={prefix: list(names)},
+                                   files=[self.bundled['files'][0], *shared, *files[names[0]], *files[names[1]]]))
+        core = {'format':3, 'baseGameHash':self.bundled['files'][0]['sha256']}
+        shared_doc = {'format':3, 'files':shared, 'prefixes':[prefix]}
+        core_hash, shared_hash = sha256_bytes(encode(core)), sha256_bytes(encode(shared_doc))
+        docs = {SESSION_CORE:core, SESSION_SHARED+shared_hash:shared_doc}
+        meta = []
+        for name in names:
+            document = {'format':3, 'id':name, 'contentHash':catalog[name], 'coreHash':core_hash,
+                        'sharedHash':shared_hash, 'definition':None, 'files':files[name], 'objectives':[], 'runtime':[]}
+            docs[SESSION_MAP + name] = document
+            meta.append({'id':name, 'label':name, 'gameTag':'Community', 'hasObjectives':False,
+                         'bytes':sum(item['bytes'] for item in files[name]+shared), 'fileCount':4,
+                         'contentHash':catalog[name], 'manifestHash':sha256_bytes(encode(document))})
+        docs[SESSION_INDEX] = {'format':3, 'maps':meta, 'coreHash':core_hash}
+        requests, transfers = [], []
+
+        def document(path, fingerprint=None):
+            requests.append(path)
+            response = docs[path]
+            if fingerprint is not None:
+                self.assertEqual(sha256_bytes(encode(response)), fingerprint)
+            return response
+
+        def download(item, destination):
+            transfers.append(item['path'])
+            self.sync._write_asset(BytesIO(data[item['path']]), destination, item['sha256'], item['bytes'])
+
+        with (patch.object(self.sync, '_document', side_effect=document),
+              patch.object(self.sync, '_download', side_effect=download)):
+            self.sync.start(2, session_version=3)
+            self.assertEqual(requests, [])
+            index = self.sync.map_index()
+            self.assertTrue(all(item['state'] == 'Not downloaded' for item in self.sync.local_maps(index)))
+            first = meta[0]
+            version = self.sync.revision_for(first['id'], first['contentHash'], first['manifestHash'])
+            self.assertEqual(requests, [SESSION_INDEX, SESSION_MAP+first['id'], SESSION_CORE, SESSION_SHARED+shared_hash])
+            self.assertEqual(set(transfers), {item['path'] for item in files[first['id']]+shared})
+            entries, current, _, _ = load_overlay(self.root, version, self.bundled)
+            self.assertEqual(current, {first['id']: first['contentHash']})
+            self.assertEqual(len(entries), 4)
+            requests.clear()
+            transfers.clear()
+            self.assertEqual(self.sync.revision_for(first['id'], first['contentHash'], first['manifestHash']), version)
+            self.assertEqual((requests, transfers), ([], []))
+            second = meta[1]
+            self.sync.revision_for(second['id'], second['contentHash'], second['manifestHash'])
+            self.assertEqual(set(transfers), {item['path'] for item in files[second['id']]})
+            self.assertTrue(all(item['state'] == 'Downloaded' for item in self.sync.local_maps(index)))
+            changed = dict(first, manifestHash='b'*64)
+            self.assertEqual(self.sync.local_maps([changed])[0]['state'], 'Update available')
+            self.sync.remove_map(first['id'])
+            state = {item['id']:item['state'] for item in self.sync.local_maps(index)}
+            self.assertEqual(state, {first['id']:'Not downloaded', second['id']:'Downloaded'})
+            for item in files[first['id']]:
+                self.assertFalse(self.sync.session_path(item['sha256'] + '.asset').exists())
+            self.assertTrue(self.sync.session_path(shared[0]['sha256'] + '.asset').is_file())
+
+    def test_map_manifest_with_the_wrong_hash_is_rejected(self):
+        response = self.inventory_connection(b'{}', 2)
+        with (patch.object(self.sync, 'lobby', Mock()), patch.object(self.sync, '_connection', return_value=response)):
+            with self.assertRaisesRegex(ValueError, 'manifest changed'):
+                self.sync._document(SESSION_MAP + 'Stonehenge', 'a'*64)
 
     def test_inventory_retries_truncated_http_body(self):
         body = json.dumps(self.remote).encode()

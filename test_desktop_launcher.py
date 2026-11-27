@@ -5,9 +5,10 @@ from tempfile import TemporaryDirectory
 import time
 import gc
 import sys
+from threading import Event
 import tkinter as tk
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from desktop_launcher import Desktop, LOBBY_LOCK_RULES_ENABLED
 from community_transport import CommunityError, RESULT_STATS
@@ -47,6 +48,56 @@ class FakeGame:
 class DesktopTest(unittest.TestCase):
     def tearDown(self):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
+
+    def test_maps_browser_manages_downloads_and_lobby_changes_prefetch_only_the_selection(self):
+        sync = Mock(session_enabled=True, cancelled=Event(), status='', progress=None)
+        metadata = {'id':'Stonehenge', 'label':'Stonehenge', 'gameTag':'Community', 'bytes':1048576,
+                    'contentHash':'a'*64, 'manifestHash':'b'*64}
+        download = dict(metadata, state='Update available', removable=True)
+        sync.map_index.return_value = [metadata]
+        sync.local_maps.side_effect = lambda _: [dict(download)]
+        sync.sync_map.side_effect = lambda *_: download.update(state='Downloaded')
+        sync.remove_map.side_effect = lambda *_: download.update(state='Not downloaded', removable=False)
+        root = tk.Tk(); root.withdraw()
+        lobby = FakeLobby()
+        lobby.capabilities = lambda: {'mapFileSync':2, 'mapSessionSync':3, 'matchStartEnabled':True}
+        app = Desktop(root, lobby, lambda _: FakeGame(), map_sync=sync)
+
+        def wait(predicate):
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                root.update()
+                if predicate():
+                    return
+                time.sleep(.01)
+            self.fail('Map browser did not complete its action.')
+
+        try:
+            wait(lambda: not app.busy)
+            sync.start.assert_called_once_with(2, session_version=3)
+            sync.map_index.assert_not_called()
+            sync.prefetch.assert_not_called()
+            app.show_panel('maps')
+            wait(lambda: not app.busy and 'Stonehenge' in app.map_rows)
+            app.maps_table.selection_set('Stonehenge')
+            root.update()
+            self.assertEqual(app.map_download.cget('text'), 'Update')
+            app.map_download.invoke()
+            wait(lambda: not app.busy and app.map_rows['Stonehenge']['state'] == 'Downloaded')
+            sync.sync_map.assert_called_once_with('Stonehenge', 'a'*64, 'b'*64)
+            app.map_remove.invoke()
+            wait(lambda: not app.busy and app.map_rows['Stonehenge']['state'] == 'Not downloaded')
+            sync.remove_map.assert_called_once_with('Stonehenge')
+            original = dict(lobby.room, contentHash='a'*64, manifestHash='b'*64)
+            app.render(original)
+            app.render(original)
+            changed = dict(original, map='Snowblind', contentHash='c'*64, manifestHash='d'*64)
+            app.render(changed)
+            self.assertEqual([call.args[0] for call in sync.prefetch.call_args_list], [
+                ('Stonehenge', 'a'*64, 'b'*64), ('Snowblind', 'c'*64, 'd'*64)])
+        finally:
+            app.close()
+            app.close_worker.join(2)
 
     def test_match_results_show_final_scores_and_remain_available_in_setup(self):
         root = tk.Tk()
