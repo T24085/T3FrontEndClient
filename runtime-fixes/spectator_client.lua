@@ -98,6 +98,21 @@ return function(env)
   signature('/Script/Engine.SceneComponent:K2_SetWorldRotation',{{'NewRotation','StructProperty',0},
    {'bSweep','BoolProperty',24},{'SweepHitResult','StructProperty',32},{'bTeleport','BoolProperty',264}})
   signature('/Script/Engine.Pawn:GetBaseAimRotation',{{'ReturnValue','StructProperty',0}})
+  signature('/Script/Valhalla.ValCharacter:GetMesh3P',{{'ReturnValue','ObjectProperty',0}})
+  signature('/Script/Valhalla.ValCharacter:GetMesh1P',{{'ReturnValue','ObjectProperty',0}})
+  signature('/Script/Valhalla.ValCharacter:GetGunMesh1P',{{'ReturnValue','ObjectProperty',0}})
+  signature('/Script/Valhalla.ValCharacter:GetActiveEquipSlotAV',{{'ReturnValue','ObjectProperty',0}})
+  signature('/Script/Engine.SkeletalMeshComponent:SetSkeletalMeshAsset',{{'NewMesh','ObjectProperty',0}})
+  signature('/Script/Engine.SkeletalMeshComponent:SetAnimClass',{{'NewClass','ClassProperty',0}})
+  signature('/Script/Engine.SkinnedMeshComponent:SetLeaderPoseComponent',
+   {{'NewLeaderBoneComponent','ObjectProperty',0},{'bForceUpdate','BoolProperty',8},{'bInFollowerShouldTickPose','BoolProperty',9}})
+  signature('/Script/Engine.SceneComponent:SetVisibility',{{'bNewVisibility','BoolProperty',0},{'bPropagateToChildren','BoolProperty',1}})
+  signature('/Script/Engine.SceneComponent:IsVisible',{{'ReturnValue','BoolProperty',0}})
+  signature('/Script/Engine.PrimitiveComponent:SetCollisionEnabled',{{'NewType','ByteProperty',0}})
+  signature('/Script/Engine.PrimitiveComponent:SetCastShadow',{{'NewCastShadow','BoolProperty',0}})
+  signature('/Script/Engine.PrimitiveComponent:SetBoundsScale',{{'NewBoundsScale','FloatProperty',0}})
+  signature('/Script/Engine.ActorComponent:IsActive',{{'ReturnValue','BoolProperty',0}})
+  signature('/Script/Engine.ActorComponent:SetActive',{{'bNewActive','BoolProperty',0},{'bReset','BoolProperty',1}})
   signature(chaseTrace,{{'WorldContextObject','ObjectProperty',0},{'Start','StructProperty',8},{'End','StructProperty',32},
    {'Radius','FloatProperty',56},{'ObjectTypes','ArrayProperty',64},{'bTraceComplex','BoolProperty',80},
    {'ActorsToIgnore','ArrayProperty',88},{'DrawDebugType','ByteProperty',104},{'OutHit','StructProperty',112},
@@ -145,6 +160,135 @@ return function(env)
   local spectator=pc:GetSpectatorPawn()
   if valid(spectator) and same(spectator:GetWorld(),world) then return spectator end
  end
+ local viewmodelTransform={
+  Rotation={X=0,Y=0,Z=0,W=1},Translation={X=0,Y=0,Z=0},Scale3D={X=1,Y=1,Z=1},
+ }
+ local armsMesh='/Game/Character/PC_Suit_Segments/Bodysuits/PC_Tactical/1P/MESH_1P_Tactical.MESH_1P_Tactical'
+ local function asset_path(ref)
+  local path=ref:GetObjectID():GetAssetPathName():ToString()
+  if path:sub(1,6)=='/Game/'then return path end
+ end
+ local function load_view_asset(path)
+  if not path then return end
+  local loaded=StaticFindObject(path)
+  if not valid(loaded)then loaded=LoadAsset(path)end
+  if valid(loaded)then return loaded end
+ end
+ local function restore_world_parts(r)
+  for key,part in pairs(r.hiddenParts or{})do
+   if valid(part)and identity(part)==key and same(part:GetOwner(),r.target)then
+    part:SetVisibility(true,false)
+   end
+  end
+  r.hiddenParts=nil
+ end
+ local function hide_viewmodel(r)
+  restore_world_parts(r)
+  if valid(r.viewArms)and r.viewArms:IsVisible()then r.viewArms:SetVisibility(false,false)end
+  if valid(r.viewGun)and r.viewGun:IsVisible()then r.viewGun:SetVisibility(false,false)end
+ end
+ local function attach_viewmodel(r,field,boundsScale)
+  local component=r.target:AddComponentByClass(StaticFindObject('/Script/Engine.SkeletalMeshComponent'),true,viewmodelTransform,false)
+  r[field]=component
+  assert(valid(component)and same(component:GetOwner(),r.target),'spectator_viewmodel_owner_required')
+  r[field..'Identity']=identity(component)
+  component:SetVisibility(false,false)
+  component:SetCollisionEnabled(0)
+  component:SetCastShadow(false)
+  -- The material moves these vertices in the foreground pass. Retain the
+  -- native first-person bounds so the weapon isn't culled before that pass.
+  component:SetBoundsScale(boundsScale)
+  assert(component:K2_AttachToComponent(r.first,FName('None'),2,2,2,false),'spectator_viewmodel_attach_failed')
+  return component
+ end
+ local function hide_world_part(r,part)
+  if not valid(part)or not same(part:GetOwner(),r.target)then return end
+  if part:IsVisible()then
+   r.hiddenParts=r.hiddenParts or{}
+   r.hiddenParts[identity(part)]=part
+   part:SetVisibility(false,false)
+  end
+ end
+ local function foreground_materials(component)
+  local count=component:GetNumMaterials()
+  if count<1 or count>64 then return 0 end
+  local library=StaticFindObject('/Script/Engine.Default__KismetMaterialLibrary')
+  local parameter=FName('RenderToForeground?')
+  for index=0,count-1 do
+   local parent=component:GetMaterial(index)
+   if valid(parent)then
+    local slot=library:CreateDynamicMaterialInstance(component,parent,FName('None'),0)
+    if valid(slot)then
+     component:SetMaterial(index,slot)
+     slot:SetScalarParameterValue(parameter,1)
+    end
+   end
+  end
+  return count
+ end
+ local function paint_arms(r)
+  local source=r.target:GetMesh3P()
+  local midClass=StaticFindObject('/Script/Engine.MaterialInstanceDynamic')
+  if not valid(source)or source:GetNumMaterials()<1 then return end
+  local material=source:GetMaterial(0)
+  if not valid(material)or not material:IsA(midClass)then return end
+  -- These body and arm materials use the same primary suit-dye lookup.
+  -- Keep the arm material's own UVs, textures and secondary dye defaults.
+  local primary=FName('Primary_Curve')
+  local value=material:K2_GetScalarParameterValue(primary)
+  if type(value)~='number'or value~=value or r.armDye==value then return end
+  local arms=r.viewArms
+  for index=0,r.armMaterials-1 do
+   local slot=arms:GetMaterial(index)
+   if valid(slot)and slot:IsA(midClass)then slot:SetScalarParameterValue(primary,value)end
+  end
+  r.armDye=value
+ end
+ local function update_viewmodel(r)
+  local target=r.target
+  local av=target:GetActiveEquipSlotAV()
+  if not valid(av)then return false end
+  if av.bHideSkeletalMesh then return false end
+  local descriptor=identity(av)
+  if r.viewDescriptor~=descriptor then
+   hide_viewmodel(r)
+   r.viewDescriptor=descriptor
+   r.viewReady=false
+   local path=asset_path(av.Mesh1P)
+   if not path then return false end
+   local weapon=load_view_asset(path)
+   local arms=not valid(r.viewArms)and load_view_asset(armsMesh)or nil
+   if not valid(weapon)or (not valid(r.viewArms)and not valid(arms))then return false end
+   if not valid(r.viewArms)then
+    local component=attach_viewmodel(r,'viewArms',2)
+    component:SetSkeletalMeshAsset(arms)
+    r.armMaterials=foreground_materials(component)
+   end
+   local gun=valid(r.viewGun)and r.viewGun or attach_viewmodel(r,'viewGun',6)
+   for index=0,(r.gunMaterials or 0)-1 do gun:SetMaterial(index,nil)end
+   gun:SetSkeletalMeshAsset(weapon)
+   local animation=load_view_asset(asset_path(av.ABP1P))
+   gun:SetAnimClass(animation)
+   r.gunMaterials=foreground_materials(gun)
+   r.viewArms:SetLeaderPoseComponent(gun,true,false)
+   r.viewReady=r.armMaterials>0 and r.gunMaterials>0 and same(gun:GetSkeletalMeshAsset(),weapon)
+   report('SPECTATOR_LOCAL_VIEWMODEL|weapon='..path..'|ready='..tostring(r.viewReady))
+  end
+  if not r.viewReady then return false end
+  local stamp=now()
+  if r.armDyeSample~=stamp then
+   r.armDyeSample=stamp
+   paint_arms(r)
+  end
+  -- Only hide the remote world components after the local viewmodel exists.
+  -- Never change the remote pawn's native first-person or possession fields.
+  hide_world_part(r,target:GetMesh3P())
+  hide_world_part(r,target:GetGunMesh3P())
+  hide_world_part(r,target:GetJetpackMesh())
+  if not r.viewArms:IsVisible()then r.viewArms:SetVisibility(true,false)end
+  if not r.viewGun:IsVisible()then r.viewGun:SetVisibility(true,false)end
+  return true
+ end
  local function release_rig()
   if not rig then
    if materials then materials.retire()end
@@ -166,6 +310,7 @@ return function(env)
     if not same(pc:GetViewTarget(),spectator) then return false end
    end
   end
+  if components and #components>=1 then hide_viewmodel(r)end
   if materials then materials.retire()end
   if components and #components>=1 then
    -- A stored Lua wrapper is not a native lifetime guarantee. Never put an
@@ -176,7 +321,10 @@ return function(env)
    if r.first and same(target.FirstPersonCameraComponent,r.first) then
     target.FirstPersonCameraComponent=valid(r.nativeEye) and r.nativeEye or nil
    end
-   for _,entry in ipairs({{r.first,r.firstIdentity},{r.camera,r.cameraIdentity},{r.arm,r.armIdentity}})do
+   for _,lens in pairs(r.disabledCameras) do
+    if valid(lens) and same(lens:GetOwner(),target) and not lens:IsActive() then lens:SetActive(true,false) end
+   end
+   for _,entry in ipairs({{r.viewArms,r.viewArmsIdentity},{r.viewGun,r.viewGunIdentity},{r.first,r.firstIdentity},{r.camera,r.cameraIdentity},{r.arm,r.armIdentity}})do
     local component,wanted=entry[1],entry[2]
     local present=false
     for _,current in ipairs(components)do if valid(current)and identity(current)==wanted then present=true end end
@@ -214,7 +362,7 @@ return function(env)
  end
  local function sweep_retired()
   for i=#retired,1,-1 do local r=retired[i]
-   if not valid(r.target)and not valid(r.first)and not valid(r.camera)and not valid(r.arm)then table.remove(retired,i)end
+   if not valid(r.target)and not valid(r.first)and not valid(r.camera)and not valid(r.arm)and not valid(r.viewArms)and not valid(r.viewGun)then table.remove(retired,i)end
   end
  end
  local function allow_first_person(r)
@@ -227,7 +375,7 @@ return function(env)
   if rig and same(rig.target,target)then return true end
   if not release_rig() then return false end
   assert(not target:HasAuthority()and same(target:GetWorld(),world),'spectator_camera_remote_replica_required')
-  local r={target=target,identity=identity(target),originalCamera=target.ThirdPersonCameraComponent,originalArm=target.ThirdPersonCameraBoom,originalForce=target.bForceOnlySpectatorToThirdPerson}
+  local r={target=target,identity=identity(target),originalCamera=target.ThirdPersonCameraComponent,originalArm=target.ThirdPersonCameraBoom,originalForce=target.bForceOnlySpectatorToThirdPerson,disabledCameras={}}
   assert(type(r.originalForce)=='boolean','spectator_original_camera_policy_required')
   rig=r -- Retain every component immediately, even if later setup fails.
   allow_first_person(r)
@@ -278,6 +426,30 @@ return function(env)
   r.first:K2_SetWorldRotation({Pitch=aim.Pitch,Yaw=aim.Yaw,Roll=aim.Roll},false,{},true)
   return true
  end
+ local function select_lens(r,third)
+  local selected=third and r.camera or r.first
+  local alternate=r.camera
+  if third then alternate=r.first end
+  -- Native CalcCamera may pick the first active component on the pawn.
+  -- Activate the selected lens before re-entering the remote view target.
+  local eye=r.nativeEye or r.target.FirstPersonCameraComponent
+  for _,original in pairs({r.originalCamera,eye}) do
+   if valid(original) and not same(original,selected) and not same(original,alternate)
+      and same(original:GetOwner(),r.target) and original:IsActive() then
+    r.disabledCameras[identity(original)]=original
+    original:SetActive(false,false)
+   end
+  end
+  if valid(alternate) and alternate:IsActive() then alternate:SetActive(false,false) end
+  if not selected:IsActive() then selected:SetActive(true,false) end
+ end
+ local function first_person_aligned(r)
+  local manager=pc.PlayerCameraManager
+  if not valid(manager) then return false end
+  local actual,eye=manager:GetCameraLocation(),r.first:K2_GetComponentLocation()
+  local dx,dy,dz=actual.X-eye.X,actual.Y-eye.Y,actual.Z-eye.Z
+  return dx*dx+dy*dy+dz*dz<=64*64
+ end
  local function chase_endpoint(pivot,pitch,yaw,length)
   local p,y=math.rad(pitch),math.rad(yaw)
   local horizontal=length*math.cos(p)
@@ -294,12 +466,31 @@ return function(env)
   assert(type(time)=='number'and time>=0 and time<=1,'spectator_chase_trace_time_invalid')
   return math.max(0,chaseDistance*time-surfaceMargin)
  end
+ local function chase_pivot(r)
+  local root=r.target.RootComponent
+  local mesh=r.chaseMesh
+  local anchor=valid(mesh) and same(mesh:GetOwner(),r.target) and mesh or root
+  local position=anchor:K2_GetComponentLocation()
+  if not same(r.chaseAnchor,anchor) then
+   -- Unreal smooths correction on the rendered character mesh. Follow that
+   -- transform between camera updates instead of following capsule snaps.
+   local rootPosition=root:K2_GetComponentLocation()
+   r.chaseHeight=chaseHeight+rootPosition.Z-position.Z
+   assert(r.camera:K2_AttachToComponent(anchor,FName('None'),1,1,1,false),'spectator_chase_anchor_attach_failed')
+   r.chaseAnchor=anchor
+  end
+  return {X=position.X,Y=position.Y,Z=position.Z+r.chaseHeight}
+ end
  local function update_chase(r)
   local sys=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
   assert(valid(sys),'spectator_chase_system_library_required')
-  local yaw=r.target:GetBaseAimRotation().Yaw
-  local origin=r.target.RootComponent:K2_GetComponentLocation()
-  local pivot={X=origin.X,Y=origin.Y,Z=origin.Z+chaseHeight}
+  local aim=r.target:GetBaseAimRotation().Yaw
+  local yaw=r.chaseYaw or aim
+  -- Interpolate on the shortest arc so replicated heading steps and the
+  -- wrap at north don't snap the chase camera from one side to the other.
+  yaw=yaw+((aim-yaw+180)%360-180)*.25
+  r.chaseYaw=yaw
+  local pivot=chase_pivot(r)
   local bestDistance,bestPitch,bestYaw=-1,cameraAngles[1][1],yaw
   for _,angle in ipairs(cameraAngles)do
    local pitch,heading=angle[1],yaw+angle[2]
@@ -376,10 +567,7 @@ return function(env)
   end
   return third
  end
- local function update_presentation(target)
-  -- In spectator mode the selected view owns the body mask. Spring-arm
-  -- collision can otherwise make chase view apply the first-person cutout.
-  local third=preferredThird
+ local function update_presentation(target,third)
   if passive then third=native_third_person(target)end
   if third~=renderedThird then
    materials.apply(target,third)
@@ -392,14 +580,31 @@ return function(env)
   if allow_first_person(rig) then cameraRefresh=true end
   if not select_perspective() then return false end
   if preferredThird then
+   rig.chaseMesh=target:GetMesh3P()
    update_chase(rig)
   elseif not update_first_person(rig) then
+   update_presentation(target,true)
    return false
   end
+  select_lens(rig,preferredThird)
   if cameraRefresh and not refresh_camera(target) then return false end
   cameraRefresh=false
-  update_presentation(target)
-  return true
+  local aligned=preferredThird or first_person_aligned(rig)
+  local useEye=aligned and not preferredThird
+  -- Keep the full native presentation while waiting for the first-person lens.
+  -- The native first-person cutout is appropriate only with native arms present.
+  local nativeView=useEye and valid(target:GetMesh1P())and valid(target:GetGunMesh1P())
+  update_presentation(target,not nativeView)
+  if useEye and not nativeView and not rig.viewModelDisabled then
+   local ok,visible=pcall(update_viewmodel,rig)
+   if ok and visible then return aligned end
+   if not ok then
+    rig.viewModelDisabled=true
+    report('SPECTATOR_VIEWMODEL_UNAVAILABLE|'..tostring(visible))
+   end
+  end
+  hide_viewmodel(rig)
+  return aligned
  end
  function service.action(action)
   scope()

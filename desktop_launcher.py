@@ -15,7 +15,8 @@ from community_game import CommunityGame
 from startup_paths import installation_options
 from community_transport import (
     CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES,
-    DEFAULT_MATCH_LIMITS, MAX_LOBBY_BOTS, MAX_MATCH_MINUTES, MAX_SCORE_LIMIT, validated_match_result,
+    DEFAULT_MATCH_LIMITS, LOBBY_LOCK_RULES_ENABLED, MAX_LOBBY_BOTS, MAX_MATCH_MINUTES,
+    MAX_SCORE_LIMIT, validated_match_result,
 )
 from community_maps import BY_ID, options, read_options, LEGACY_MAPS
 from map_sync_contract import CATALOG_VERSION, SESSION_VERSION, valid_sha
@@ -291,6 +292,11 @@ class Desktop:
         self.capture_toggle = tk.Checkbutton(self.rules_row,text='Retail capture point',variable=self.retail_capture_point,
             command=lambda:self.call_action('rules',retailCapturePoint=self.retail_capture_point.get()),**check_style)
         self.capture_toggle.grid(row=1, column=1, columnspan=2, sticky='w')
+        self.room_locked = tk.BooleanVar(value=False)
+        self.room_lock_toggle = tk.Checkbutton(self.rules_row, text='Lock lobby after start', variable=self.room_locked,
+            command=lambda: self.call_action('rules', locked=self.room_locked.get()), **check_style)
+        self.room_lock_toggle.grid(row=2, column=0, columnspan=3, sticky='w')
+        self.room_lock_toggle.grid_remove()
         self.limits_row = tk.Frame(fields, bg=PANEL)
         self.limits_row.grid(row=0, column=2, sticky='ew')
         self.limits_row.columnconfigure((0, 1), weight=1, uniform='limits')
@@ -454,8 +460,8 @@ class Desktop:
         self.show_advanced_rules()
 
     def show_advanced_rules(self):
-        available = self.lobby_layout and (
-            self.caps.get('matchRulesEnabled') is True or self.caps.get('spectateEnabled') is True)
+        available = self.lobby_layout and any(
+            self.caps.get(key) is True for key in ('matchRulesEnabled', 'spectateEnabled', LOBBY_LOCK_RULES_ENABLED))
         if available:
             self.advanced_button.grid()
         else:
@@ -772,8 +778,8 @@ class Desktop:
                 self.browser_lock.pack(anchor='w', before=self.live_card)
         else:
             self.lobby_lock.grid_remove()
-            self.browser_lock.pack_forget()
-        self.room_heading.set(('Lobby  '+room['code']+('  ·  Locked' if room.get('locked') else ''))
+        lock_active = phase in ('starting', 'ready') and room.get('locked') is True
+        self.room_heading.set(('Lobby  '+room['code']+('  ·  Locked' if lock_active else ''))
                               if in_room else 'Not in a lobby')
         self.browser_name.configure(state=('disabled' if in_room or self.controls_busy else
                                            'readonly' if self.steam_name_loader else 'normal'),
@@ -1028,6 +1034,13 @@ class Desktop:
             self.call_action('spectators',allow=self.allow_spectators.get())
 
     def render_match_rules(self, room, editable):
+        locked = room.get('locked') if room else None
+        if self.caps.get(LOBBY_LOCK_RULES_ENABLED) is True and type(locked) is bool:
+            self.room_locked.set(locked)
+            self.room_lock_toggle.grid()
+            self.room_lock_toggle.configure(state='normal' if editable else 'disabled')
+        else:
+            self.room_lock_toggle.grid_remove()
         if self.caps.get('matchRulesEnabled') is not True:
             self.limits_row.grid_remove()
             self.flag_toggle.grid_remove()
