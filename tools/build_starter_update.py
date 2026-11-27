@@ -26,6 +26,17 @@ def client_entry_payload(raw, root):
     return raw.replace(marker, b'_SIGNED_PROJECTILE_INHERITANCE_MODULE = ' + literal)
 
 
+def soundtrack_entry(raw, root):
+    source = root/'map_soundtracks.py'
+    if source.resolve(strict=True) != source:
+        raise ValueError('Linked soundtrack source is not permitted.')
+    marker = b'_SIGNED_SOUNDTRACK_PLAYER = None'
+    if raw.count(marker) != 1:
+        raise ValueError('Missing canonical soundtrack player marker.')
+    module = source.read_bytes()
+    return raw.replace(marker, module + b'\n_SIGNED_SOUNDTRACK_PLAYER = soundtrack_player', 1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -56,6 +67,8 @@ def main():
         projectile_dependencies.add('direct_client.py')
     if paths & projectile_dependencies:
         paths.update(projectile_dependencies)
+    if paths & {'client.py', 'lua/client.lua'}:
+        paths.update(('client.py', 'lua/client.lua'))
     if not paths or not paths <= UPDATE_CHANNELS[args.channel][1]:
         raise ValueError('Select existing supported Starter package files.')
     files, payloads = {}, {}
@@ -69,6 +82,8 @@ def main():
         raw = source.read_bytes()
         if name == 'client.py':
             raw = client_entry_payload(raw, ROOT)
+        if name == "client.py":
+            raw = soundtrack_entry(raw, ROOT)
         if not 0 < len(raw) <= MAX_FILE:
             raise ValueError('Unsupported Starter update file size: ' + name)
         if name.endswith('.py'):

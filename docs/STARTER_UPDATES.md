@@ -16,6 +16,15 @@ Build Direct updates with `--channel windows-direct-r12-v1`. When supplying `--p
 
 Publish the signed artifacts to `operator/direct-local/starter-updates` on the friend host. Upload and verify the content files first, then replace `starter-update.json` atomically using a temporary file in that directory. Keep the previous index and its content files available during the change. The running host serves the new index on the next request. Keep the private signing key on the release operator's machine.
 
+For the public Direct feed, qualify the candidate update on a copy of the
+current installer with a fresh device profile before publishing. Use a host
+that advertises per-session map sync and has a catalog with more than 10,000
+cooked files. Confirm Starter opens, the Maps list loads, and entering a match
+verifies and prepares the selected map through per-session sync. A valid
+signature and a higher revision alone do not test this. Follow
+[issue #89](https://github.com/Tribes3-Modded/T3FrontEndClient/issues/89) for
+the per-session runtime reconciliation with `main`.
+
 ## Full Windows Clan Wars ZIP
 
 Use the full Windows Direct Starter ZIP as the base when reissuing the download
@@ -40,3 +49,32 @@ check that the client reads the catalog and prepares the selected map through
 that path. Include the archive name, hash, revision, and qualification result
 in the release notes. Use the verified archive as the download players see
 when they install for the first time.
+
+## Map-declared music
+
+A map can set `music = {track = "t2-desert"}` in its verified `objectives.lua`.
+Use `music = {playlist = "t1", first = 8}` to play the existing T1 playlist
+starting at track 8. The client selects a track when gameplay starts and
+releases it at match end or travel.
+
+For cooked tracks, use the shared sound pack format in
+[backend PR #99](https://github.com/Tribes3-Modded/T3BackEndServer/pull/99).
+In a full client package, keep the Map Tool's directory layout under
+`Client Files/sound-packs/`. Put the metadata files in the verified client
+inventory.
+
+- Game pack files live at `sound-packs/<SET>/pack.json`.
+- Per-map overrides live at `sound-packs/maps/<MapId>/override.json`.
+
+Use `music = {track = "music.match"}` in `objectives.lua` to select the
+match binding. The client resolves the map override, the selected `sound_set`
+pack, and the T3 fallback pack in that order. A map may also declare a music
+event ID exported by the Map Tool. A single-wave event and its loop wrapper
+can play directly. Cook more elaborate graphs into a Sound Cue and link the
+cue with an `asset` binding. The cooked Sound Cue or Sound Wave must route its
+base output to `MUS_Game_Submix`. Set looping on the cooked asset for continuous
+music.
+
+The signed Windows Direct feed can also resolve the legacy MP3 tracks by
+their existing SHA-256 addresses. The signed builder embeds their addresses
+and the player code, and updates the Python entry and Lua template together.

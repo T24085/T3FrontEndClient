@@ -5,6 +5,7 @@ SHA256 3baeb559c717aaad2316cdd2298e9c8e521cf373f87c358a398064dbaf8ce190.
 Source manifest SHA256 740081ed79694c486fcff871b4e5ff3329100e5f7407eaf01985d3ed4c44a009.
 """
 import argparse
+from contextlib import ExitStack
 import json
 import os
 import re
@@ -46,6 +47,7 @@ def install_projectile_runtime(template, run, settings):
     return (template.replace(definition, projectile_runtime_lua(runtime, file=path.as_posix()) + definition)
             .replace(tick, tick + '    applyProjectileInheritance(gs:GetWorld(),pc)\n'))
 
+_SIGNED_SOUNDTRACK_PLAYER = None
 
 def weather_runtime_path(root, run, package):
     if _SIGNED_WEATHER_MODULE is not None:
@@ -56,6 +58,127 @@ def weather_runtime_path(root, run, package):
     if any(row['path'] == 'lua/weather.lua' for row in package['files']):
         return root / 'lua/weather.lua'
     return root / 'lua/snowblind_weather.lua'
+
+SOUND_SETS = ('T1', 'T2', 'TV', 'TA', 'T3', 'CW')
+MUSIC_BINDINGS = frozenset(f'music.{event}' for event in ('menu', 'match', 'win', 'lose', 'flag'))
+MUSIC_ASSET = re.compile(r'/Game/Community(?:/[A-Za-z0-9_-]+)+/([A-Za-z0-9_]+)(?:[.]([A-Za-z0-9_]+))?')
+MUSIC_EVENT_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,255}')
+MAX_SOUND_PACK = 32 * 1024**2
+
+
+def music_asset_path(asset):
+    if not isinstance(asset, str) or len(asset) > 416 or not (name := MUSIC_ASSET.fullmatch(asset)):
+        return None
+    package, obj = name.groups()
+    if obj is not None and obj != package:
+        return None
+    return asset if obj else f'{asset}.{package}'
+
+
+def music_controls(binding):
+    volume, pitch = binding.get('volume', 1), binding.get('pitch', 1)
+    if (type(volume) in (int, float) and 0 <= volume <= 4
+            and type(pitch) in (int, float) and 0.25 <= pitch <= 4):
+        return {'volume': volume, 'pitch': pitch}
+
+
+def music_event_asset(graph):
+    # A match track is one persistent component. More involved graphs can be
+    # cooked into a SoundCue and linked with a direct asset binding.
+    for _ in range(17):
+        if not isinstance(graph, dict):
+            return None
+        if graph.get('kind') == 'wave':
+            return graph.get('asset')
+        children = graph.get('children')
+        if graph.get('kind') != 'looping' or not isinstance(children, list) or len(children) != 1:
+            return None
+        graph = children[0]
+    return None
+
+
+def packaged_music(root, files, path, kind, *, sound_set=None, map_id=None):
+    from hashlib import sha256
+
+    row = files.get(path)
+    if row is None:
+        return None
+    target = root / path
+    size = row['bytes']
+    if type(size) is not int or not 0 < size <= MAX_SOUND_PACK or target.resolve(strict=True) != target:
+        raise ValueError(f'Invalid packaged music descriptor: {path}')
+    with target.open('rb') as stream:
+        raw = stream.read(size + 1)
+    if len(raw) != size or sha256(raw).hexdigest() != row['sha256']:
+        raise ValueError(f'Music descriptor failed package verification: {path}')
+    document = json.loads(raw)
+    if (not isinstance(document, dict) or type(document.get('format')) is not int
+            or document['format'] != 1 or document.get('kind') != kind or document.get('set') not in SOUND_SETS
+            or (sound_set is not None and sound_set != document['set'])
+            or (map_id is not None and document.get('map_id') != map_id)):
+        raise ValueError(f'Invalid music descriptor identity: {path}')
+    event_rows, binding_rows = document.get('events', []), document.get('bindings', {})
+    if not isinstance(event_rows, list) or not isinstance(binding_rows, dict):
+        raise ValueError(f'Invalid packaged music rows: {path}')
+    events, bindings = {}, {}
+    for event in event_rows:
+        if not isinstance(event, dict) or event.get('category') not in ('mus', 'music'):
+            continue
+        event_id = event.get('id')
+        asset = music_asset_path(music_event_asset(event.get('graph')))
+        if isinstance(event_id, str) and MUSIC_EVENT_ID.fullmatch(event_id) and asset:
+            events[event_id] = asset
+    for event_id in sorted(MUSIC_BINDINGS & binding_rows.keys()):
+        binding = binding_rows[event_id]
+        if not isinstance(binding, dict) or len(binding.keys() & {'asset', 'assets', 'event'}) != 1:
+            continue
+        controls = music_controls(binding)
+        if controls is None:
+            continue
+        if asset := music_asset_path(binding.get('asset')):
+            bindings[event_id] = {**controls, 'asset': asset}
+        elif isinstance(binding.get('event'), str) and MUSIC_EVENT_ID.fullmatch(binding['event']):
+            bindings[event_id] = {**controls, 'event': binding['event']}
+        elif isinstance(binding.get('assets'), list) and 1 <= len(binding['assets']) <= 32:
+            options = [music_asset_path(asset) for asset in binding['assets']]
+            weights = binding.get('weights', [1] * len(options))
+            if (isinstance(weights, list) and len(weights) == len(options)
+                    and all(type(w) in (int, float) and 0 <= w <= 1e9 for w in weights)
+                    and all(options)):
+                bindings[event_id] = {**controls, 'choices': [{'asset': asset, 'weight': weight}
+                                      for asset, weight in zip(options, weights) if weight > 0]}
+    return {'events': events, 'bindings': bindings}
+
+
+def music_lua(value):
+    if isinstance(value, dict):
+        return '{'+','.join(f'[{music_lua(key)}]={music_lua(item)}' for key, item in value.items())+'}'
+    if isinstance(value, list):
+        return '{'+','.join(map(music_lua, value))+'}'
+    return json.dumps(value, ensure_ascii=False, allow_nan=False)
+
+
+def verified_music_packs(root, files, definitions):
+    def optional(path, kind, **identity):
+        try:
+            return packaged_music(root, files, path, kind, **identity)
+        except (OSError, ValueError, RecursionError) as exc:
+            print(f'Optional map music descriptor unavailable. {exc}')
+            return None
+
+    packs, overrides = {}, {}
+    for name in SOUND_SETS:
+        if pack := optional(f'sound-packs/{name}/pack.json', 'pack', sound_set=name):
+            packs[name] = pack
+    for definition in definitions:
+        key = definition.id
+        fallback = re.search(r'[(](T[123V]|TA|CW)(?: [0-9]{4})?[)]$', definition.label)
+        row = {'sound_set': fallback[1] if fallback else 'T1'}
+        if override := optional(f'sound-packs/maps/{key}/override.json', 'map-override', map_id=key):
+            row['override'] = override
+        overrides[key] = row
+    return music_lua({'packs': packs, 'maps': overrides})
+
 
 def write_map_definitions(root, run, definitions, selected, package, *, public=False, objectives=None):
     """Extend the map catalog with descriptors verified during map preparation."""
@@ -81,6 +204,7 @@ def write_map_definitions(root, run, definitions, selected, package, *, public=F
     files = {row['path']: row for row in package['files']}
     downloaded = map_objective_rows(objectives, definitions) if objectives is not None else {}
     adapters = []
+    authored_maps = []
     for definition in selected_maps:
         name = f'lua/{definition.id}/objectives.lua'
         if definition.native:
@@ -104,23 +228,83 @@ def write_map_definitions(root, run, definitions, selected, package, *, public=F
         with source.open('xb') as output:
             output.write(raw)
         adapters.append((definition.id, source))
+        authored_maps.append(definition)
 
     if not adapters:
         return generated
     calls = [f'load_weather({json.dumps(map_id)}, {json.dumps(source.as_posix(), ensure_ascii=False)})'
              for map_id, source in adapters]
+    music_packs = verified_music_packs(root, files, authored_maps)
     result = run / 'catalog-weather.lua'
     result.write_text(f'local maps=assert(loadfile({json.dumps(generated.as_posix(), ensure_ascii=False)}))()\n'
+                      + 'local sound_catalog='+music_packs+'\n'
                       + _MAP_WEATHER_LUA + '\n'.join([*calls, 'return maps', '']), encoding='utf-8')
     return result
 
 
 _MAP_WEATHER_LUA = """
+local function music_route(music)
+ if music==nil then return end
+ assert(type(music)=='table','map_music_contract')
+ for key in pairs(music) do
+  assert(key=='track' or key=='playlist' or key=='first','map_music_contract')
+ end
+ if music.track~=nil then
+  assert(type(music.track)=='string' and music.playlist==nil and music.first==nil,'map_music_contract')
+  assert(#music.track<=256 and music.track:match('^[A-Za-z0-9][A-Za-z0-9_.-]*$'),'map_music_contract')
+  local legacy=music.track:match('^[a-z0-9][a-z0-9-]*$') and (music.track:gsub('-','_')) or nil
+  return legacy, music.track
+ end
+ local first=music.first
+ assert(music.playlist=='t1' and type(first)=='number' and first%1==0 and first>=1 and first<=10,
+        'map_music_contract')
+ return 'playlist_t1_'..string.format('%d',first)
+end
+
+local function music_candidates(id, authored, track)
+ if not track then return end
+ local candidates, seen={}, {}
+ local function add(asset, volume, pitch)
+  if not asset then return end
+  if not seen[asset] then
+   candidates[#candidates+1]={asset=asset,volume=volume or 1,pitch=pitch or 1}
+   seen[asset]=true
+  end
+ end
+ local function add_layer(layer, fallback)
+  if not layer then return end
+  local binding=layer.bindings[track]
+  if not binding then add(layer.events[track]);return end
+  if binding.choices then
+   local total=0
+   for _,choice in ipairs(binding.choices) do total=total+choice.weight end
+   local pick=math.random()*total
+   for _,choice in ipairs(binding.choices) do
+    pick=pick-choice.weight
+    if pick<=0 then add(choice.asset,binding.volume,binding.pitch);break end
+   end
+   for _,choice in ipairs(binding.choices) do add(choice.asset,binding.volume,binding.pitch) end
+  else
+   local asset=binding.asset or layer.events[binding.event] or (fallback and fallback.events[binding.event])
+   add(asset,binding.volume,binding.pitch)
+  end
+ end
+ local map=sound_catalog.maps[id]
+ local packs=sound_catalog.packs
+ local name=authored.sound_set or map.sound_set
+ local selected=packs[name] or packs.T2
+ add_layer(map.override,selected)
+ add_layer(selected)
+ if packs.T3~=selected then add_layer(packs.T3) end
+ if #candidates>0 then return candidates end
+end
+
 local function apply_weather(id,path)
  local row=assert(maps[id],'weather_catalog_map_missing')
  local env={assert=assert,type=type,ipairs=ipairs,pairs=pairs,setmetatable=setmetatable,
             string={format=string.format}}
- local adapter=assert(loadfile(path,'t',env))()
+ local adapter, metadata=assert(loadfile(path,'t',env))()
+ if type(adapter)=='function' and type(metadata)=='table' then adapter=metadata end
  if type(adapter)~='table' then return end
  local authored,layout=adapter.descriptor
  if type(authored)=='function' then
@@ -128,7 +312,7 @@ local function apply_weather(id,path)
   assert(type(authored)=='table' and authored.name==id and authored.package==row.package
          and authored.world==row.world,'weather_catalog_map_identity')
   layout=authored.base_layout
- elseif adapter.format==1 and (adapter.weather~=nil or adapter.emergency_lighting~=nil or adapter.hide_minimap~=nil
+ elseif adapter.format==1 and (adapter.music~=nil or adapter.weather~=nil or adapter.emergency_lighting~=nil or adapter.hide_minimap~=nil
      or (type(adapter.layout)=='table' and adapter.layout.radars_per_team~=nil)) then
   assert(adapter.map_id==id and adapter.package==row.package and adapter.world==row.world,
          'weather_catalog_map_identity')
@@ -151,6 +335,9 @@ local function apply_weather(id,path)
   assert(type(authored.emergency_lighting)=='boolean','emergency_lighting_setting_required')
   row.emergency_lighting=authored.emergency_lighting
  end
+ local route, track=music_route(authored.music)
+ local candidates=music_candidates(id,authored,track)
+ row.music_route,row.music_candidates=route,candidates
 end
 local function load_weather(id,path)
  local ok,err=pcall(apply_weather,id,path)
@@ -294,7 +481,7 @@ def main():
     diagnostic_profile = bool(args.headless or args.test_source or args.seconds is not None)
     with ProfileSession(mode=MODE, workspaces=(workspace, source.parent / 'TRIBES3 Client Sessions'),
                         diagnostic=diagnostic_profile, source_game=source, package_root=ROOT,
-                        bootstrap_map=selected_bootstrap) as player_profile:
+                        bootstrap_map=selected_bootstrap) as player_profile, ExitStack() as audio:
         print('Joining TRIBES 3 Community Server at ' + destination, flush=True)
         print('Session: ' + str(run), flush=True)
         print('CLIENT_PREPARATION_CONSUMED|fileCopyBytes=0|bulkHashBytes=0', flush=True)
@@ -323,6 +510,20 @@ def main():
         template = template.replace('@@STOCK_CLOUD_MAP@@', json.dumps(cloud_map))
         settings_path = profile / 'Saved/Config/Windows/GameUserSettings.ini'
         template = template.replace('@@MUSIC_SETTINGS@@', json.dumps(settings_path.as_posix(), ensure_ascii=False))
+        if '@@MAP_SOUNDTRACK@@' in template:
+            enabled = not args.headless and not args.spectate
+            soundtrack = '{routes={}}' if enabled else 'nil'
+            soundtrack_player = _SIGNED_SOUNDTRACK_PLAYER
+            if soundtrack_player is None and any(row['path']=='map_soundtracks.py' for row in package['files']):
+                from map_soundtracks import soundtrack_player
+            if soundtrack_player is not None:
+                routes = audio.enter_context(soundtrack_player(
+                    ROOT, run, package, enabled=enabled, workspace=workspace))
+                if routes:
+                    keys = ','.join(f'[{json.dumps(name)}]=true' for name in routes)
+                    session = json.dumps(run.as_posix(), ensure_ascii=False)
+                    soundtrack = f'{{directory={session},routes={{{keys}}}}}'
+            template = template.replace('@@MAP_SOUNDTRACK@@', soundtrack)
         weather_module = weather_runtime_path(ROOT, run, package)
         for key, value in dict(EXPECTED=engine_command_line(argv[2:]), OUTPUT=(run / 'events.txt').as_posix(), DESTINATION=destination, FLAG_MARKERS=(ROOT / 'lua/flag_markers.lua').as_posix(), FLAG_PROJECTION=(ROOT / 'lua/flag_projection.lua').as_posix(), JETPACK_INPUT=(ROOT / 'lua/jetpack_input.lua').as_posix(), GEOMETRY=(ROOT/'lua/geometry_runtime.lua').as_posix(), LEVEL_SETTINGS=(ROOT/'lua/level_settings.lua').as_posix(), MAP_DEFINITIONS=map_definitions.as_posix(), SNOWBLIND_WEATHER=weather_module.as_posix(), SPECTATOR_ROLE='spectator' if args.spectate else 'player', SPECTATOR_RUNTIME=(ROOT/'lua/spectator_client.lua').as_posix(), SPECTATOR_MATERIAL_RUNTIME=(ROOT/'lua/spectator_materials.lua').as_posix(), MATCH_LEASE=args.match_id or '', WATCH_ID=args.watch_id or '').items():
             template = template.replace('@@' + key + '@@', json.dumps(value, ensure_ascii=False))

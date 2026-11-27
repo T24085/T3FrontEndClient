@@ -18,6 +18,7 @@ SOURCE_MEMBERS={name:name for name in (
 SOURCE_MEMBERS['client.py']='client_entry.py'
 NEW_SOURCE_MEMBERS={'map_sync.py','map_sync_contract.py','starter_update.py','starter_update_signing.py',
                     'runtime-fixes/projectile_inheritance.lua'}
+NEW_SOURCE_MEMBERS={'map_sync.py','map_sync_contract.py','starter_update.py','starter_update_signing.py','map_soundtracks.py'}
 SOURCE_MEMBERS.update({name:name for name in NEW_SOURCE_MEMBERS})
 
 def encoded(value):return (json.dumps(value,indent=2)+'\n').encode()

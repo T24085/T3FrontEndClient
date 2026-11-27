@@ -97,6 +97,7 @@ def build_candidate(source, output):
     projectile_runtime = output/'runtime-fixes/projectile_inheritance.lua'
     projectile_runtime.parent.mkdir(exist_ok=True)
     shutil.copyfile(ROOT/'runtime-fixes/projectile_inheritance.lua', projectile_runtime)
+    shutil.copyfile(ROOT/'map_soundtracks.py', output/'map_soundtracks.py')
     copy_spectator_runtime(manifest, output)
     shutil.copyfile(ROOT / 'dynamic_destination.py', output / 'lib/dynamic_destination.py')
     for name in CANONICAL_HELPERS:

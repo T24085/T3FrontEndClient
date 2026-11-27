@@ -162,6 +162,7 @@ def main():
     projectile_runtime = OUTPUT/'runtime-fixes/projectile_inheritance.lua'
     projectile_runtime.parent.mkdir(exist_ok=True)
     shutil.copyfile(ROOT/'runtime-fixes/projectile_inheritance.lua', projectile_runtime)
+    shutil.copyfile(ROOT/'map_soundtracks.py', OUTPUT/'map_soundtracks.py')
     copy_spectator_runtime(manifest, OUTPUT)
     shutil.copyfile(ROOT/'player_profile.py', OUTPUT/'player_profile.py')
     shutil.copyfile(PYTHON/'pythonw.exe',OUTPUT/'python/pythonw.exe')
