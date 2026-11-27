@@ -38,6 +38,10 @@ jobs:
         run: |
           if [ "$EVENT" = pull_request ]; then
             python tools/check_commit_message.py --range "$PR_BASE..$PR_HEAD"
+          elif [ "$BRANCH" != main ]; then
+            # A working branch: check only its own commits, not ones main already has (for example
+            # after the branch is fast-forwarded to main for its next review scope).
+            python tools/check_commit_message.py --range "origin/main..$AFTER"
           elif [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
             # A new branch: check only commits that no other branch on GitHub already has.
             python tools/check_commit_message.py --new-branch "$AFTER" "$BRANCH"
