@@ -50,13 +50,13 @@ class DesktopTest(unittest.TestCase):
         gc.collect()  # Tcl variables retain thread affinity after root.destroy().
 
     def test_maps_browser_manages_downloads_and_lobby_changes_prefetch_only_the_selection(self):
-        sync = Mock(session_enabled=True, cancelled=Event(), status='', progress=None)
+        sync = Mock(session_enabled=True, cancelled=Event(), status='', progress=None, local_version=0)
         metadata = {'id':'Stonehenge', 'label':'Stonehenge', 'gameTag':'Community', 'bytes':1048576,
                     'contentHash':'a'*64, 'manifestHash':'b'*64}
         download = dict(metadata, state='Update available', removable=True)
-        sync.map_index.return_value = [metadata]
+        sync.refresh_map_index.return_value = [metadata]
         sync.local_maps.side_effect = lambda _: [dict(download)]
-        sync.sync_map.side_effect = lambda *_: download.update(state='Downloaded')
+        sync.sync_map.side_effect = lambda *_, **__: download.update(state='Downloaded')
         sync.remove_map.side_effect = lambda *_: download.update(state='Not downloaded', removable=False)
         root = tk.Tk(); root.withdraw()
         lobby = FakeLobby()
@@ -81,10 +81,11 @@ class DesktopTest(unittest.TestCase):
             wait(lambda: not app.busy and 'Stonehenge' in app.map_rows)
             app.maps_table.selection_set('Stonehenge')
             root.update()
-            self.assertEqual(app.map_download.cget('text'), 'Update')
+            self.assertEqual(str(app.map_download.cget('state')), 'normal')
             app.map_download.invoke()
             wait(lambda: not app.busy and app.map_rows['Stonehenge']['state'] == 'Downloaded')
-            sync.sync_map.assert_called_once_with('Stonehenge', 'a'*64, 'b'*64)
+            self.assertEqual(sync.sync_map.call_args.args, ('Stonehenge', 'a'*64, 'b'*64))
+            self.assertEqual(sync.sync_map.call_args.kwargs['notice_target'], 'Stonehenge')
             app.map_remove.invoke()
             wait(lambda: not app.busy and app.map_rows['Stonehenge']['state'] == 'Not downloaded')
             sync.remove_map.assert_called_once_with('Stonehenge')
@@ -95,6 +96,32 @@ class DesktopTest(unittest.TestCase):
             app.render(changed)
             self.assertEqual([call.args[0] for call in sync.prefetch.call_args_list], [
                 ('Stonehenge', 'a'*64, 'b'*64), ('Snowblind', 'c'*64, 'd'*64)])
+        finally:
+            app.close()
+            app.close_worker.join(2)
+
+
+    def test_released_lobby_code_paste_and_skin_selection(self):
+        profile = self.enterContext(TemporaryDirectory())
+        root = tk.Tk()
+        root.withdraw()
+        lobby = FakeLobby()
+        app = Desktop(root, lobby, lambda _: FakeGame(), name_settings_dir=profile)
+        try:
+            deadline = time.monotonic() + 3
+            while app.busy and time.monotonic() < deadline:
+                root.update()
+                time.sleep(.01)
+            self.assertFalse(app.busy)
+            with patch.object(root, 'clipboard_get', return_value='t3://join/abc234'):
+                self.assertEqual(app.paste_lobby_code(), 'break')
+            self.assertEqual(app.code.get(), 'ABC234')
+            original = app.backdrop.source
+            app.change_skin('diamond-sword')
+            root.update_idletasks()
+            self.assertEqual(app.skin, 'diamond-sword')
+            self.assertTrue(app.skin_path.is_file())
+            self.assertNotEqual(app.backdrop.source, original)
         finally:
             app.close()
             app.close_worker.join(2)
@@ -583,7 +610,8 @@ class DesktopTest(unittest.TestCase):
         root=tk.Tk();root.withdraw()
         lobby,game=FakeLobby(),FakeGame()
         names=iter(('Initial Steam','Current Steam','Newest Steam'))
-        app=Desktop(root,lobby,lambda _:game,steam_name_loader=lambda:next(names))
+        profile = self.enterContext(TemporaryDirectory())
+        app=Desktop(root,lobby,lambda _:game,steam_name_loader=lambda:next(names), name_settings_dir=profile)
         def wait(predicate):
             end=time.monotonic()+5
             while time.monotonic()<end:

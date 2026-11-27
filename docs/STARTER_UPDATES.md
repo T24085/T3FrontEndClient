@@ -36,6 +36,15 @@ signature and a higher revision alone do not test this. Follow
 [issue #89](https://github.com/Tribes3-Modded/T3FrontEndClient/issues/89) for
 the per-session runtime reconciliation with `main`.
 
+Before replacing the live Direct index, exercise the candidate launcher
+against the previous signed build. Check skin selection and the Phoenix
+backdrop, queueing and cancelling map downloads, pasting a lobby code,
+Steam name lookup, first-launch retail import and opening a textured
+armor model. Also exercise the current Local Play and lobby rules controls.
+Record the results on the release issue and preserve the current feed if
+a released control disappears. See
+[issue #121](https://github.com/Tribes3-Modded/T3FrontEndClient/issues/121).
+
 ## Ubuntu Direct Starter updates
 
 Build the Windows Direct index first. Build the Linux update from the same

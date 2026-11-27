@@ -155,6 +155,8 @@ class MapSync:
         self.lock = threading.Lock()
         self.cancelled = threading.Event()
         self.status = ''
+        self.notice_target = None
+        self.notice_active = False
         self.progress = None
         self.current = (None, {})
         self.bundled = None
@@ -162,6 +164,7 @@ class MapSync:
         self.version = None
         self.session_enabled = False
         self.map_index_cache = (None, None)
+        self.local_version = 0
         self.core_hash = None
         self.prefetch_lock = threading.Lock()
         self.prefetch_target = None
@@ -304,6 +307,8 @@ class MapSync:
         return session_index(self._document(SESSION_INDEX))
 
     def refresh_map_index(self):
+        # Only the Maps catalog worker writes this cache. Downloads use their
+        # own manifest requests and can continue while the index is refreshed.
         etag, previous = self.map_index_cache
         document = self._document(SESSION_INDEX, etag=etag)
         if document is NOT_MODIFIED:
@@ -373,13 +378,17 @@ class MapSync:
                 'objectives': doc['objectives'], 'runtime':doc['runtime'],
                 **({'minimap': minimap_payload(map_id, doc['minimap'])} if 'minimap' in doc else {})}
 
-    def sync_map(self, map_id, fingerprint, manifest_hash=None, *, obsolete=None):
+    def sync_map(self, map_id, fingerprint, manifest_hash=None, *, obsolete=None, notice_target=None):
         if not valid_id(map_id) or not valid_sha(fingerprint):
             raise CommunityError('The server did not provide a valid map version.')
         with self.lock:
             try:
+                self.notice_target = notice_target
+                self.notice_active = True
                 self.status = 'Checking selected map…'
                 self._check_cancelled()
+                if obsolete and obsolete():
+                    raise CommunityError('The lobby selected another map.')
                 if manifest_hash is None:
                     metadata = next((row for row in self.map_index() if row['id'] == map_id), None)
                     if metadata is None or metadata['contentHash'] != fingerprint:
@@ -409,6 +418,7 @@ class MapSync:
                                      optional_path=image['path'] if image is not None else None)
                 self._store(self.session_path(f'map-{map_id}.json'),
                             encode({'revision': revision, 'manifestHash': manifest_hash}))
+                self.local_version += 1
                 self.status = 'Map ready.'
                 return revision
             except (OSError, ValueError, TypeError, KeyError, EOFError, http.client.HTTPException, zlib.error) as exc:
@@ -418,6 +428,7 @@ class MapSync:
                 self.status = 'Map check paused. ' + str(exc)
                 raise
             finally:
+                self.notice_active = False
                 self.progress = None
 
     def prefetch(self, target):
@@ -436,7 +447,7 @@ class MapSync:
                     self.prefetch_thread = None
                     return
             try:
-                self.sync_map(*target, obsolete=lambda: self.prefetch_target != target)
+                self.sync_map(*target, obsolete=lambda: self.prefetch_target != target, notice_target=target)
             except CommunityError:
                 pass  # Joining rechecks this exact map and surfaces an actionable failure.
             with self.prefetch_lock:
@@ -444,38 +455,39 @@ class MapSync:
                     self.prefetch_target = None
 
     def local_maps(self, index):
-        with self.lock:
-            package = json.loads((self.package / 'package-manifest.json').read_bytes())
-            bundled_groups = None
-            result = []
-            for row in index:
-                receipt = self._receipt(row['id'])
-                state, removable = 'Not downloaded', False
-                if receipt:
-                    removable = True
-                    try:
-                        raw, (rows, sources, _, _) = self._cached_session(receipt['revision'], package)
-                        image = json.loads(raw).get('minimap', {}).get('image')
-                        for name, item in rows.items():
-                            if item == image:
-                                continue
-                            path = (self.session_path(item['sha256'] + '.asset') if sources[name] is None
-                                    else self.package / sources[name])
-                            if not self._matches(path, item['bytes'], item['sha256']):
-                                raise ValueError('Missing cached map file.')
-                        state = ('Downloaded' if receipt['manifestHash'] == row['manifestHash']
-                                 else 'Update available')
-                    except (OSError, ValueError, TypeError, KeyError):
-                        pass
-                elif not row['hasObjectives'] and not row.get('hasMinimap') and self.bundled_catalog().get(row['id']) == row['contentHash']:
-                    if bundled_groups is None:
-                        _, bundled_groups = map_groups(package)
-                    if all(self._matches(self.package / path, size, sha)
-                           for path, (size, sha) in bundled_groups[row['id']].items()
-                           if path.startswith('content/')):
-                        state = 'Downloaded'
-                result.append(dict(row, state=state, removable=removable))
-            return result
+        # Receipts and assets are written atomically. Concurrent removal is
+        # treated as a cache miss until the next local status refresh.
+        package = json.loads((self.package / 'package-manifest.json').read_bytes())
+        bundled_groups = None
+        result = []
+        for row in index:
+            receipt = self._receipt(row['id'])
+            state, removable = 'Not downloaded', False
+            if receipt:
+                removable = True
+                try:
+                    raw, (rows, sources, _, _) = self._cached_session(receipt['revision'], package)
+                    image = json.loads(raw).get('minimap', {}).get('image')
+                    for name, item in rows.items():
+                        if item == image:
+                            continue
+                        path = (self.session_path(item['sha256'] + '.asset') if sources[name] is None
+                                else self.package / sources[name])
+                        if not self._matches(path, item['bytes'], item['sha256']):
+                            raise ValueError('Missing cached map file.')
+                    state = ('Downloaded' if receipt['manifestHash'] == row['manifestHash']
+                             else 'Update available')
+                except (OSError, ValueError, TypeError, KeyError):
+                    pass
+            elif not row['hasObjectives'] and not row.get('hasMinimap') and self.bundled_catalog().get(row['id']) == row['contentHash']:
+                if bundled_groups is None:
+                    _, bundled_groups = map_groups(package)
+                if all(self._matches(self.package / path, size, sha)
+                       for path, (size, sha) in bundled_groups[row['id']].items()
+                       if path.startswith('content/')):
+                    state = 'Downloaded'
+            result.append(dict(row, state=state, removable=removable))
+        return result
 
     @staticmethod
     def _matches(path, length, sha):
@@ -516,12 +528,15 @@ class MapSync:
                 path.unlink(missing_ok=True)
             for sha in removed - retained:
                 self.session_path(sha + '.asset').unlink(missing_ok=True)
+            self.local_version += 1
 
     def refresh(self, *, required=None, recheck=False):
         with self.lock:
             if required and not recheck and self.current[1].get(required[0]) == required[1]:
                 return self.current
             self._check_cancelled()
+            self.notice_target = None
+            self.notice_active = True
             self.status = 'Checking for map updates...'
             try:
                 return self._refresh(required)
@@ -532,6 +547,7 @@ class MapSync:
                 self.status = 'Map check paused. ' + str(exc)
                 raise
             finally:
+                self.notice_active = False
                 self.progress = None
 
     def _refresh(self, required):

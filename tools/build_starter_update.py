@@ -1,12 +1,13 @@
 """Build a signed, cumulative Community Starter index and its content-addressed files."""
 import argparse
-from base64 import b64decode, b64encode
+from base64 import b64decode, b64encode, b85encode
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +59,47 @@ def bundled_boundary_launcher(raw, root):
     return raw.replace(marker, source.read_bytes() + b'\nboundary_summary = summary', 1)
 
 
+def replace_slot(raw, name, value):
+    marker = name.encode('ascii')
+    if raw.count(marker) != 1:
+        raise ValueError('Missing canonical Starter payload slot: ' + name)
+    return raw.replace(marker, marker.split(b' = ', 1)[0] + b' = ' + repr(value).encode('ascii'), 1)
+
+
+def skin_art(root, names):
+    artwork = {}
+    for name in names:
+        source = root / 'branding' / name
+        if source.resolve(strict=True) != source:
+            raise ValueError('Linked Starter artwork is not permitted: ' + name)
+        artwork[name] = b85encode(source.read_bytes())
+    return artwork
+
+
+def bundled_launcher_art(raw, root):
+    names = ('phoenix-world.png', 'phoenix-icon.png', 'phoenix-emblem.png',
+             'blood-eagle-world.png', 'blood-eagle-emblem.png')
+    icon = root / 'branding' / 'phoenix.ico'
+    if icon.resolve(strict=True) != icon:
+        raise ValueError('Linked Starter icon is not permitted.')
+    raw = replace_slot(raw, 'PHOENIX_ART = {}', skin_art(root, names))
+    return replace_slot(raw, "PHOENIX_ICON_DEFLATE = b''", b85encode(zlib.compress(icon.read_bytes(), 9)))
+
+
+def bundled_armor_viewport(raw, root):
+    direct = root / 'experimental' / 'direct-hosting'
+    viewport = direct / 'src' / 'armor_viewport.py'
+    models = direct / 'armor-model-blobs.json'
+    if any(path.resolve(strict=True) != path for path in (viewport, models)):
+        raise ValueError('Linked Starter armor sources are not permitted.')
+    marker = b'from armor_viewport import ArmorViewport, decode_model, read_model'
+    if raw.count(marker) != 1:
+        raise ValueError('Missing canonical Starter armor viewport import.')
+    raw = raw.replace(marker, viewport.read_bytes().rstrip(b'\n'), 1)
+    catalog = {tuple(key.split('/', 1)): value for key, value in json.loads(models.read_bytes()).items()}
+    return replace_slot(raw, 'ARMOR_MODEL_BLOBS = {}', catalog)
+
+
 def source_payload(root, name, *, windows_revision=None):
     if name in ('direct_client.py', 'direct_network.py'):
         source = root / 'experimental/direct-hosting/src' / name
@@ -74,7 +116,13 @@ def source_payload(root, name, *, windows_revision=None):
         raw = bundled_client_entry(raw, weather.read_bytes())
         raw = soundtrack_entry(raw, root)
     if name == 'desktop_launcher.py':
-        raw = bundled_boundary_launcher(raw, root)
+        raw = bundled_launcher_art(bundled_boundary_launcher(raw, root), root)
+    if name == 'player_profile.py':
+        names = ('blood-eagle-2-world.png', 'blood-eagle-2-emblem.png',
+                 'diamond-sword-world.png', 'diamond-sword-emblem.png')
+        raw = replace_slot(raw, 'STARTER_SKIN_ART = {}', skin_art(root, names))
+    if name == 'direct_client.py':
+        raw = bundled_armor_viewport(raw, root)
     if name == 'ubuntu_starter.py':
         marker = b'SOURCE_STARTER_REVISION = None'
         if raw.count(marker) != 1:

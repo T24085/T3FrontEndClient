@@ -33,6 +33,10 @@ BOOTSTRAP_SECTION = '/Script/EngineSettings.GameMapsSettings'
 CONFIG_DIRECTORY = 'Saved/Config/Windows'
 RETAIL_INPUT_SECTION = '/Script/Valhalla.ValPlayerInput'
 RETAIL_INPUT_KEYS = {'customactionkeymappings', 'savedsettingsconfig'}
+RETAIL_PROMPT_FILE = 'retail-import-prompt.json'
+
+# The signed builder embeds the remaining Starter skin artwork here.
+STARTER_SKIN_ART = {}
 RETAIL_GAME_SECTIONS = ('/Script/Valhalla.ValGameUserSettings', 'ScalabilityGroups')
 
 

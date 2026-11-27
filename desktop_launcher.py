@@ -1,20 +1,28 @@
 """Development-only Community Starter lobby and owned game launcher."""
+from array import array
+from collections import deque
+from operator import itemgetter
+import base64
+import zlib
+import tempfile
 import argparse
 import json
-import re
 import os
 import webbrowser
+import logging
 from pathlib import Path
 import queue
+import re
 import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
+from urllib.parse import parse_qs, urlsplit
 
 from client_support import save as save_json
 from community_game import CommunityGame
-from startup_paths import installation_options
+from startup_paths import installation_options, local_directory
 from player_names import display_name
 from community_transport import (
     CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES,
@@ -24,10 +32,38 @@ from community_transport import (
 from community_maps import BY_ID, options, read_options, LEGACY_MAPS
 from boundary_controls import BoundaryDialog, mode_selection, mode_values, summary as boundary_summary, with_mode
 from map_sync_contract import CATALOG_VERSION, SESSION_VERSION, valid_sha
+from steam_identity import SteamIdentityError, read_local_name, save_local_name
+
+def normalize_lobby_code(value):
+    value = re.sub(r'^lobby\s+code\s*:\s*', '', value.strip(), flags=re.IGNORECASE)
+    if '://' in value:
+        try:
+            invite = urlsplit(value)
+            codes = parse_qs(invite.query, max_num_fields=20).get('code')
+        except ValueError:
+            return None
+        segments = invite.path.strip('/').split('/')
+        if invite.scheme.lower() == 't3' and invite.netloc.lower() == 'join' and len(segments) == 1:
+            value = segments[0]
+        elif invite.scheme.lower() in ('http', 'https') and invite.hostname:
+            if codes and len(codes) == 1:
+                value = codes[0]
+            elif len(segments) >= 2 and segments[-2].lower() == 'join':
+                value = segments[-1]
+            else:
+                return None
+        else:
+            return None
+    value = value.upper()
+    return value if re.fullmatch(r'[A-Z2-9]{6}', value) else None
+
 
 LOBBY_LOCK_RULES_ENABLED = 'lobbyLockRulesEnabled'
 ROOT = Path(__file__).resolve().parent
 CLIENT_PACKAGE = ROOT if (ROOT / 'connection-policy.json').is_file() else ROOT / 'dynamic-client-development'
+APP_TITLE = 'Tribes 3 Mod Community Edition: Phoenix Rising'
+NOTICE_MS = 10000
+TEAM_NAMES = {'blue': 'Children of The Phoenix', 'red': 'Diamond Sword'}
 BG, PANEL, TEXT, MUTED, ACCENT = '#0a111b', '#132335', '#eff7ff', '#9fb3c6', '#4be4c1'
 SCOREBOARD_COLUMNS = (
     ('name', 'Player', 165),
@@ -41,6 +77,209 @@ SCOREBOARD_COLUMNS = (
     ('flagHeldSeconds', 'Flag time', 78),
 )
 
+SKIN_NAMES = {'phoenix': 'Phoenix Rising', 'blood-eagle': 'Blood Eagle',
+              'diamond-sword': 'Diamond Sword', 'blood-eagle-2': 'Blood Eagle 2'}
+BASE_COLORS = (BG, PANEL, MUTED, ACCENT, '#0d1927', '#20374a', '#263e52', '#0b1a29',
+               '#31566c', '#192c3d', '#a9c1d4', '#182c3d', '#6ff0d4', '#237939', '#19632d')
+SKIN_COLORS = {
+    'phoenix': {},
+    'blood-eagle': dict(zip(BASE_COLORS, (
+        '#181115', '#291a20', '#d4b5ab', '#ffb46f', '#23161b', '#42282e', '#513039', '#21151a',
+        '#773b3b', '#342228', '#d9bab2', '#35232b', '#ffd49c', '#993b29', '#7d2c21',
+    ))),
+    'diamond-sword': dict(zip(BASE_COLORS, (
+        '#08131f', '#102a40', '#aec8dd', '#85ddff', '#101d2c', '#1c3c57', '#234966', '#0c2031',
+        '#2d597a', '#17334b', '#bed5e6', '#192e44', '#abebff', '#215887', '#19496f',
+    ))),
+}
+SKIN_COLORS['blood-eagle-2'] = SKIN_COLORS['blood-eagle']
+SKIN_COLOR_OPTIONS = ('background', 'foreground', 'activebackground', 'activeforeground',
+                      'disabledforeground', 'readonlybackground', 'insertbackground',
+                      'selectbackground', 'selectforeground', 'selectcolor', 'highlightbackground',
+                      'highlightcolor')
+
+
+# The signed updater distributes inventoried modules. Its build embeds the artwork here.
+PHOENIX_ART = {}
+
+
+# Lossless storage keeps the shipped Windows icon within the signed file limit.
+PHOENIX_ICON_DEFLATE = b''
+
+def art_bytes(name):
+    if name == "phoenix.ico" and PHOENIX_ICON_DEFLATE:
+        return zlib.decompress(base64.b85decode(PHOENIX_ICON_DEFLATE))
+    if name in PHOENIX_ART:
+        return base64.b85decode(PHOENIX_ART[name])
+    import player_profile
+
+    embedded = getattr(player_profile, 'STARTER_SKIN_ART', {}).get(name)
+    if embedded is not None:
+        return base64.b85decode(embedded)
+    return (ROOT / 'branding' / name).read_bytes()
+
+
+def art_photo(root, name):
+    return tk.PhotoImage(master=root, data=art_bytes(name), format='png')
+
+
+def set_phoenix_icon(root, icon):
+    root.iconphoto(True, icon)
+    if sys.platform == 'win32':
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'phoenix.ico'
+            path.write_bytes(art_bytes('phoenix.ico'))
+            root.iconbitmap(str(path))
+
+
+def saved_skin(path):
+    try:
+        with path.open('rb') as stream:
+            value = json.loads(stream.read(129))
+        if isinstance(value, str) and value in SKIN_NAMES:
+            return value
+    except (OSError, ValueError, RecursionError):
+        pass
+    return 'phoenix'
+
+
+def maximize_window(root):
+    if root.state() == 'withdrawn':
+        return
+    window_system = root.tk.call('tk', 'windowingsystem')
+    if window_system == 'win32':
+        root.state('zoomed')
+    elif window_system == 'x11':
+        root.attributes('-zoomed', True)
+
+
+class PhoenixBackdrop:
+    """Paint matching portions of one cover-scaled image into Tk's opaque frames."""
+    def __init__(self, root):
+        self.root = root
+        self.layers = {}
+        self.regions = {}
+        self.rows = []
+        self.size = None
+        self.pending = None
+        self.closed = False
+        self.set_skin('phoenix')
+        self.attach(root)
+        root.bind('<Configure>', self.changed, add='+')
+        root.bind('<Map>', self.changed, add='+')
+        root.bind('<Destroy>', self.destroyed, add='+')
+
+    def set_skin(self, skin):
+        image = art_photo(self.root, skin + '-world.png')
+        width = image.width()
+        rgb = self.root.tk.call(str(image), 'data', '-format', 'ppm').split(b'\n', 3)[3]
+        packed = bytearray(width * image.height() * 4)
+        for channel in range(3):
+            packed[channel::4] = rgb[channel::3]
+        pixels = array('I')
+        pixels.frombytes(packed)
+        self.source = [pixels[i:i+width] for i in range(0, len(pixels), width)]
+        self.align_right = skin != 'phoenix'
+        self.size = None
+        self.schedule()
+
+    def schedule(self):
+        if self.pending is None:
+            self.pending = self.root.after_idle(self.paint)
+
+    def attach(self, frame, tint=0):
+        image = tk.Label(frame, bd=0, highlightthickness=0, anchor='nw', takefocus=False, bg=BG)
+        image.place(x=0, y=0, relwidth=1, relheight=1, bordermode='outside')
+        image.lower()
+        self.layers[frame] = (image, tint, None)
+
+    def logo(self, label, emblem):
+        self.layers[label] = (label, .80, emblem)
+
+    def canvas(self, widget, item):
+        self.layers[widget] = (widget, 0, item)
+
+    def changed(self, event):
+        if self.closed:
+            return
+        widget = event.widget
+        # Public CTF and Armor are supplied by the Direct client after Desktop starts.
+        if isinstance(widget, tk.Frame) and widget.master is self.root and widget not in self.layers:
+            self.attach(widget, .60)
+        if widget in self.layers:
+            self.schedule()
+
+    def scale(self, width, height):
+        sw, sh = len(self.source[0]), len(self.source)
+        scale = max(width / sw, height / sh)
+        top = (sh - height / scale) / 2
+        left = max(0, sw - width / scale) if self.align_right else 0
+        columns = [min(sw-1, int(left + (x+.5)/scale)) for x in range(width)]
+        select = itemgetter(*columns)
+        self.rows = []
+        last_y = -1
+        for y in range(height):
+            source_y = min(sh-1, int(top + (y+.5)/scale))
+            if source_y != last_y:
+                rgba = array('I', select(self.source[source_y])).tobytes()
+                row = bytearray(width * 3)
+                for channel in range(3):
+                    row[channel::3] = rgba[channel::4]
+                last_y = source_y
+            # Fade the foot of the image to keep the lobby status legible.
+            shade = max(0, (y / height - .57) / .43) * .58
+            self.rows.append(row.translate(self.table(shade)) if shade else row)
+
+    @staticmethod
+    def table(shade):
+        return bytes(round(v * (1 - shade) + 16 * shade) for v in range(256))
+
+    def paint(self):
+        self.pending = None
+        width, height = self.root.winfo_width(), self.root.winfo_height()
+        if width < 2 or height < 2 or not self.root.winfo_viewable():
+            return
+        if self.size != (width, height):
+            self.scale(width, height)
+            self.size = (width, height)
+            self.regions.clear()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        for widget, (target, tint, overlay) in self.layers.items():
+            if not widget.winfo_viewable():
+                continue
+            x, y = widget.winfo_rootx() - rx, widget.winfo_rooty() - ry
+            w, h = widget.winfo_width(), widget.winfo_height()
+            if self.regions.get(widget) == (x,y,w,h):
+                continue
+            if x < 0 or y < 0 or x+w > width or y+h > height:
+                continue
+            raw = b''.join(row[3*x:3*(x+w)] for row in self.rows[y:y+h])
+            if tint:
+                raw = raw.translate(self.table(tint))
+            photo = tk.PhotoImage(master=self.root, data=f'P6\n{w} {h}\n255\n'.encode() + raw, format='ppm')
+            if isinstance(target, tk.Canvas):
+                target.itemconfigure(overlay, image=photo)
+            else:
+                if overlay is not None:
+                    self.root.tk.call(str(photo), 'copy', str(overlay), '-to', (w-overlay.width())//2,
+                                      (h-overlay.height())//2, '-compositingrule', 'overlay')
+                target.configure(image=photo)
+            target._phoenix_photo = photo
+            self.regions[widget] = (x,y,w,h)
+
+    def destroyed(self, event):
+        if event.widget is self.root:
+            self.close()
+        else:
+            self.layers.pop(event.widget, None)
+            self.regions.pop(event.widget, None)
+
+    def close(self):
+        self.closed = True
+        if self.pending is not None:
+            self.root.after_cancel(self.pending)
+            self.pending = None
+
 
 def starter_version(package=ROOT):
     try:
@@ -48,13 +287,13 @@ def starter_version(package=ROOT):
         if isinstance(manifest, dict):
             revision = manifest.get('starter_update_revision')
             if type(revision) is int and revision > 0:
-                return f'Starter r{revision}'
+                return f'Build r{revision}'
             release = manifest.get('release_id')
             if isinstance(release, str) and release.strip():
-                return f'Starter {release}'
+                return f'Build {release}'
     except (OSError, ValueError):
         pass
-    return 'Starter r0 · base build'
+    return 'Base build'
 
 
 def match_phase_text(room):
@@ -98,9 +337,22 @@ def match_result_for(state):
 
 
 class Desktop:
-    def __init__(self, root, lobby, game_factory, *, steam_name_loader=None, server_access=None, map_sync=None):
+    def __init__(self, root, lobby, game_factory, *, steam_name_loader=None, server_access=None, map_sync=None,
+                 name_settings_dir=None):
         self.root, self.lobby, self.game_factory = root, lobby, game_factory
         self.steam_name_loader = steam_name_loader
+        name_settings = Path(name_settings_dir) if name_settings_dir is not None else local_directory()
+        self.skin_path = name_settings / 'starter-skin.json'
+        self.skin = 'phoenix'
+        self.warrior_name_path = name_settings / 'warrior-name.json'
+        self.steam_name_path = name_settings / 'steam-persona.json'
+        self.warrior_name = read_local_name(self.warrior_name_path) if steam_name_loader else ''
+        self.steam_name = read_local_name(self.steam_name_path) if steam_name_loader else ''
+        self.steam_messages = queue.Queue()
+        self.steam_lookup_running = False
+        self.steam_lookup_error = None
+        self.steam_lookup_at = 0
+        self.steam_retry_handle = None
         self.map_sync = map_sync
         self.maps_panel = None
         self.lobby_map_target = None
@@ -113,6 +365,9 @@ class Desktop:
         self.map_retry_at = 0
         self.watch_id = None
         self.game_status = 'idle'
+        self.last_game_error = None
+        self.last_preparation_error = None
+        self.shown_game_error = None
         self.join_attempted_match = None
         self.current_panel = 'lobbies'
         self.live_targets = {}
@@ -128,25 +383,29 @@ class Desktop:
         self.players = []
         self.closing = False
         self.copy_reset_handle = None
-        root.title('TRIBES 3 • Community Starter')
+        self.notice_timers = {}
+        self.ignore_departed_game_notices = False
+        self.last_map_notice = None
+        root.title(APP_TITLE)
+        # Previously distributed BAT wrappers set a legacy title after Desktop returns.
+        self.brand_title_handle = root.after_idle(root.title, APP_TITLE)
         root.geometry('1030x800')
         root.minsize(850, 570)
+        maximize_window(root)
         root.configure(bg=BG)
         root.protocol('WM_DELETE_WINDOW', self.close)
-        style = ttk.Style(root)
-        style.theme_use('clam')
-        style.configure('TCombobox', fieldbackground='#20374a', background='#20374a', foreground=TEXT, arrowcolor=ACCENT, padding=8)
-        style.configure('Live.Treeview',background='#0b1a29',fieldbackground='#0b1a29',foreground=TEXT,
-                        rowheight=28,font=('Segoe UI',10))
-        style.configure('Live.Treeview.Heading',background='#20374a',foreground=TEXT,font=('Segoe UI',9,'bold'))
-        style.map('Live.Treeview',background=[('selected','#31566c')])
-        self.name = tk.StringVar()
+        self.skin_style = ttk.Style(root)
+        self.skin_style.theme_use('clam')
+        self.configure_skin_styles()
+        self.name = tk.StringVar(value=self.warrior_name or self.steam_name)
         self.code = tk.StringVar()
         self.map_name = tk.StringVar(value='Stonehenge')
         self.status = tk.StringVar(value='Checking community service…')
         self.room_heading = tk.StringVar(value='Not in a lobby')
         self.phase = tk.StringVar(value='Create a lobby or enter a code.')
         self.preparation = tk.StringVar(value='')
+        self.watch_notice(self.status)
+        self.watch_notice(self.preparation)
         self.allow_spectators = tk.BooleanVar(value=True)
         self.flag_indicators = tk.BooleanVar(value=False)
         self.fall_damage = tk.BooleanVar(value=False)
@@ -158,22 +417,32 @@ class Desktop:
         self.sidebar = side
         side.pack(side='left', fill='y')
         side.pack_propagate(False)
-        icon_path = ROOT / 'branding/clan-wars.png'
-        if icon_path.is_file():
-            root.title('Tribes Rivals: Clan Wars (community mod)')
-            self.clan_wars_icon = tk.PhotoImage(master=root, file=str(icon_path))
-            root.iconphoto(True, self.clan_wars_icon)
-            self.clan_wars_logo = self.clan_wars_icon.subsample(8)
-            title = self.label(side, 'Clan Wars', 18, True, bg='#0d1927')
-            title.configure(image=self.clan_wars_logo, compound='left')
-            title.pack(anchor='w', padx=24, pady=(36, 0))
-            caption = self.label(side, 'TRIBES RIVALS  \u00b7  COMMUNITY MOD', 9, color=ACCENT, bg='#0d1927')
-            caption.configure(wraplength=165, justify='left')
-            caption.pack(anchor='w', padx=26, pady=(4, 32))
-        else:
-            self.label(side, 'TRIBES 3', 25, True, bg='#0d1927').pack(anchor='w', padx=24, pady=(36, 0))
-            self.label(side, 'COMMUNITY STARTER', 9, color=ACCENT, bg='#0d1927').pack(anchor='w', padx=26, pady=(4, 32))
-        self.lobbies_nav=self.button(side,'Create Lobby',lambda:self.show_panel('lobbies'),False)
+        self.backdrop = PhoenixBackdrop(root)
+        self.backdrop.attach(side, .80)
+        self.app_icon = art_photo(root, 'phoenix-icon.png')
+        self.brand_icon_handle = root.after_idle(set_phoenix_icon, root, self.app_icon)
+        self.emblem = art_photo(root, 'phoenix-emblem.png')
+        self.compact_sidebar = True
+        self.lobby_emblem = self.emblem.subsample(2)
+        self.logo = tk.Label(side, image=self.lobby_emblem, width=self.lobby_emblem.width(),
+                             height=self.lobby_emblem.height(),
+                             borderwidth=0, highlightthickness=0, bg='#0d1927')
+        self.logo.pack(pady=(12, 6))
+        self.backdrop.logo(self.logo, self.lobby_emblem)
+        self.skin_choice = tk.StringVar(root, value=self.skin)
+        self.skin_selector = ttk.Menubutton(side, text='Skin · Phoenix Rising', style='Skin.TMenubutton',
+                                            takefocus=True)
+        self.skin_menu = tk.Menu(self.skin_selector, tearoff=False, bg='#20374a', fg=TEXT,
+                                 activebackground='#31566c', activeforeground=TEXT,
+                                 selectcolor=ACCENT, font=('Segoe UI', 10))
+        for skin, label in SKIN_NAMES.items():
+            self.skin_menu.add_radiobutton(label=label, variable=self.skin_choice, value=skin,
+                                           command=lambda selected=skin: self.change_skin(selected))
+        self.skin_selector.configure(menu=self.skin_menu)
+        self.skin_selector.pack(fill='x', padx=14, pady=(0, 10))
+        self.lobbies_nav = self.button(side, 'PLAY', lambda: self.show_panel('lobbies'), False)
+        self.lobbies_nav.configure(anchor='center', bg='#237939', fg=TEXT, activebackground='#19632d',
+                                   activeforeground=TEXT, font=('Segoe UI', 11, 'bold'))
         self.lobbies_nav.pack(fill='x',padx=18,pady=(0,6))
         self.live_nav=self.button(side,'Server Browser',lambda:self.show_panel('live'),False)
         self.live_nav.pack(fill='x',padx=18)
@@ -190,6 +459,7 @@ class Desktop:
                  anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
         if self.map_sync is not None:
             self.map_status = tk.StringVar(value='')
+            self.watch_notice(self.map_status)
             tk.Label(side,textvariable=self.map_status,bg='#0d1927',fg=MUTED,font=('Segoe UI',10),
                      anchor='w',justify='left',wraplength=175).pack(side='bottom',anchor='w',padx=26,pady=(0,12))
             self.map_progress = ttk.Progressbar(side, mode='determinate')
@@ -200,6 +470,11 @@ class Desktop:
         main = tk.Frame(root, bg=BG)
         self.lobby_panel=main
         main.pack(side='left', fill='both', expand=True, padx=20, pady=14)
+        self.backdrop.attach(main)
+        self.hero = tk.Canvas(main, bg=BG, height=64, highlightthickness=0, borderwidth=0)
+        self.hero.pack(fill='both', expand=True, pady=(0, 10))
+        self.hero_scene = self.hero.create_image(0, 0, anchor='nw')
+        self.backdrop.canvas(self.hero, self.hero_scene)
         self.lobby_layout = None
         self.entry_open = True
         self.advanced_open = False
@@ -215,20 +490,41 @@ class Desktop:
         self.play_actions.pack(side='right')
         entry = self.entry_panel = tk.Frame(main, bg=PANEL, padx=12, pady=8)
         entry.pack(fill='x')
-        self.label(entry, 'STEAM PLAYER NAME' if steam_name_loader else 'YOUR PLAYER NAME', 9, color=ACCENT, bg=PANEL).grid(row=0,column=0,sticky='w')
-        self.label(entry, 'LOBBY CODE', 9, color=ACCENT, bg=PANEL).grid(row=0,column=1,sticky='w',padx=(12,0))
-        self.name_entry = tk.Entry(entry,textvariable=self.name,font=('Segoe UI',12),bg='#20374a',fg=TEXT,insertbackground=TEXT,relief='flat')
-        self.name_entry.grid(row=1,column=0,sticky='ew',ipady=7,pady=(4,8))
-        self.code_entry = tk.Entry(entry,textvariable=self.code,font=('Segoe UI',12),bg='#20374a',fg=TEXT,insertbackground=TEXT,relief='flat')
-        self.code_entry.grid(row=1,column=1,sticky='ew',ipady=7,padx=(12,0),pady=(4,8))
-        entry.columnconfigure(0,weight=1);entry.columnconfigure(1,weight=1)
-        self.create_button = self.button(entry,'Create lobby',self.create)
-        self.create_button.grid(row=2,column=0,sticky='w')
+        self.label(entry, 'LOBBY CODE', 9, color=ACCENT, bg=PANEL).grid(row=0, column=0, sticky='w')
+        code_field = tk.Frame(entry, bg=PANEL)
+        code_field.grid(row=1, column=0, sticky='ew', pady=(4, 8))
+        self.code_entry = tk.Entry(code_field, textvariable=self.code, font=('Segoe UI',12), bg='#20374a',
+                                   fg=TEXT, insertbackground=TEXT, relief='flat', width=8)
+        self.code_entry.pack(side='left', fill='both', expand=True, ipady=7)
+        self.paste_code_button = self.button(code_field, 'Paste', self.paste_lobby_code, False)
+        self.paste_code_button.pack(side='right', padx=(6,0))
+        self.code_entry.bind('<<Paste>>', self.paste_lobby_code)
+        self.code_entry.bind('<Button-3>', self.open_lobby_code_menu)
+        self.code_menu = tk.Menu(self.code_entry, tearoff=False)
+        self.code_menu.add_command(label='Paste', command=self.paste_lobby_code)
+        self.code_menu.add_command(label='Cut', command=lambda: self.code_entry.event_generate('<<Cut>>'))
+        self.code_menu.add_command(label='Copy', command=lambda: self.code_entry.event_generate('<<Copy>>'))
+        self.code_menu.add_command(label='Select All', command=lambda: self.code_entry.selection_range(0, tk.END))
+        self.code_menu.add_command(label='Clear', command=lambda: self.code.set(''))
+        self.label(entry, 'PLAYER NAME' if steam_name_loader else 'YOUR PLAYER NAME', 9,
+                   color=ACCENT, bg=PANEL).grid(row=0, column=1, sticky='w', padx=(12, 0))
+        self.name_entry = tk.Entry(entry, textvariable=self.name, width=23, font=('Segoe UI', 12),
+                                   bg='#20374a', fg=TEXT, insertbackground=TEXT, relief='flat')
+        self.name_entry.grid(row=1, column=1, sticky='ew', padx=(12, 0), ipady=7, pady=(4, 8))
+        self.join_button = self.button(entry, 'Join lobby', self.join, False)
+        self.join_button.grid(row=2, column=0, sticky='w')
+        self.lobby_create_button = self.button(entry, 'Create lobby', self.create)
+        self.lobby_create_button.grid(row=2, column=1, sticky='w', padx=(12, 0))
+        entry.columnconfigure(1, weight=2)
         self.lock_lobby = tk.BooleanVar(value=False)
         self.lobby_lock = tk.Checkbutton(entry, text='Lock lobby after start', variable=self.lock_lobby,
             bg=PANEL, fg=TEXT, selectcolor='#20374a', activebackground=PANEL, activeforeground=TEXT)
-        self.join_button = self.button(entry,'Join lobby',self.join,False)
-        self.join_button.grid(row=2,column=1,sticky='w',padx=(12,0))
+        self.backdrop.attach(entry, .83)
+        self.retail_import_row = None
+        self.retail_import_complete = None
+        self.entry_map_label = self.label(entry, 'STARTING MAP', 9, color=ACCENT, bg=PANEL)
+        self.entry_map = ttk.Combobox(entry, width=18, state='disabled')
+        entry.columnconfigure(2, weight=1)
         card = self.room_card = tk.Frame(main, bg=PANEL, padx=14, pady=9)
         heading = tk.Frame(card,bg=PANEL)
         heading.pack(fill='x')
@@ -244,7 +540,7 @@ class Desktop:
         self.map_field = maprow = tk.Frame(fields, bg=PANEL)
         maprow.grid(row=0, column=0, sticky='ew', padx=(0, 10))
         self.label(maprow, 'MAP', 9, color=ACCENT, bg=PANEL).pack(anchor='w', pady=(0, 3))
-        self.map_options=options(LEGACY_MAPS)
+        self.map_options=sorted(options(LEGACY_MAPS), key=lambda item: item['label'].casefold())
         self.map_combo = ttk.Combobox(maprow,textvariable=self.map_name,values=tuple(item['label'] for item in self.map_options), width=15, state='disabled')
         self.map_combo.pack(fill='x')
         self.map_combo.bind('<<ComboboxSelected>>',lambda e:self.choose_map())
@@ -265,13 +561,13 @@ class Desktop:
         self.spectator_toggle.grid_remove()
         self.side_row = tk.Frame(fields, bg=PANEL)
         self.side_row.grid(row=0, column=1, sticky='ew', padx=(0, 10))
-        self.label(self.side_row, 'BLUE STARTING SIDE', 9, color=ACCENT, bg=PANEL).pack(anchor='w', pady=(0, 3))
+        self.label(self.side_row, 'PHOENIX STARTING SIDE', 9, color=ACCENT, bg=PANEL).pack(anchor='w', pady=(0, 3))
         self.blue_side = tk.StringVar(value='Side A')
         self.side_combo = ttk.Combobox(self.side_row, textvariable=self.blue_side,
                                        values=('Side A', 'Side B'), width=8, state='disabled')
         self.side_combo.pack(fill='x')
         self.side_combo.bind('<<ComboboxSelected>>', self.choose_side)
-        self.red_side = tk.StringVar(value='Red starts on Side B')
+        self.red_side = tk.StringVar(value='Diamond Sword starts on Side B')
         self.side_summary = tk.Label(self.rule_heading, textvariable=self.red_side, bg=PANEL, fg=MUTED,
                                      anchor='e', justify='right', wraplength=360)
         self.side_summary.grid(row=0, column=1, sticky='e')
@@ -345,19 +641,22 @@ class Desktop:
         for control in (self.score_limit, self.match_minutes):
             control.bind('<<ComboboxSelected>>', self.change_match_limits)
         self.rosters = {}
+        self.roster_labels = {}
         self.roster_players = {}
         team_frames = {}
         roster_frame.columnconfigure((0, 1), weight=1, uniform='teams')
         roster_frame.rowconfigure(0, weight=1)
-        for team, label, color, col in (('blue', 'Team Blue', '#78b8ff', 0),
-                                         ('red', 'Team Red', '#ff9393', 1),
+        for team, label, color, col in (('blue', TEAM_NAMES['blue'], '#78b8ff', 0),
+                                         ('red', TEAM_NAMES['red'], '#ff9393', 1),
                                          (None, 'Unassigned', MUTED, 0)):
             frame = team_frames[team] = tk.Frame(roster_frame, bg=PANEL)
             frame.columnconfigure(0, weight=1)
             frame.rowconfigure(1, weight=1)
             frame.grid(row=1 if team is None else 0, column=col, columnspan=2 if team is None else 1,
                        sticky='nsew', padx=(0, 3) if team == 'blue' else (3, 0) if team == 'red' else 0)
-            self.label(frame, label, 10, True, color=color, bg=PANEL).grid(row=0, column=0, columnspan=2, sticky='w')
+            heading = self.label(frame, label, 10, True, color=color, bg=PANEL)
+            heading.grid(row=0, column=0, columnspan=2, sticky='w')
+            self.roster_labels[team] = heading
             roster = tk.Listbox(frame, bg='#0b1a29', fg=TEXT, selectbackground='#31566c',
                                 font=('Segoe UI', 11), relief='flat', width=1,
                                 height=1 if team is None else 2, exportselection=False)
@@ -369,7 +668,7 @@ class Desktop:
             self.rosters[team] = roster
             self.roster_players[team] = []
         for team, join_label, move_label in (
-            ('blue', 'Join blue', 'Move to blue'), ('red', 'Join red', 'Move to red'),
+            ('blue', 'Join Phoenix', 'Move to Phoenix'), ('red', 'Join Diamond Sword', 'Move to Diamond Sword'),
         ):
             team_actions = tk.Frame(team_frames[team], bg=PANEL)
             team_actions.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(5, 0))
@@ -393,7 +692,7 @@ class Desktop:
         self.stop_button = self.button(actions,'Stop match',lambda:self.call_action('stop'),False)
         self.restart_button = self.button(actions, 'Restart match', self.restart_match, False)
         self.reset_button = self.button(actions,'New setup',lambda:self.call_action('reset'),False)
-        self.leave_button = self.button(actions,'Leave',lambda:self.call_action('leave'),False)
+        self.leave_button = self.button(actions,'Exit lobby',self.exit_lobby,False)
         self.result_button = self.button(actions, 'Match results',
                                          lambda: self.show_match_result(match_result_for(self.room)), False)
         self.room_status = tk.Label(main, textvariable=self.status, bg=BG, fg=MUTED, font=('Segoe UI', 10),
@@ -408,31 +707,58 @@ class Desktop:
         create_card = tk.Frame(self.live_panel, bg=PANEL, padx=14, pady=12)
         create_card.pack(fill='x', pady=(0, 12))
         self.create_map_name = tk.StringVar()
+        self.entry_map.configure(textvariable=self.create_map_name)
         self.browser_name = tk.Entry(create_card, textvariable=self.name, width=16, bg='#20374a',
                                      fg=TEXT, insertbackground=TEXT, relief='flat')
         self.browser_name.pack(side='left', ipady=6, padx=(0, 8))
         self.create_map = ttk.Combobox(create_card, textvariable=self.create_map_name, state='disabled')
         self.create_map.pack(side='left', fill='x', expand=True, padx=(0, 8))
-        self.browser_create_button = self.button(create_card, 'Create lobby', self.create)
-        self.browser_create_button.pack(side='right')
+        self.create_button = self.button(create_card, 'Create lobby', self.create)
+        self.create_button.pack(side='right')
         self.browser_lock = tk.Checkbutton(self.live_panel, text='Lock lobby after start', variable=self.lock_lobby,
             bg=BG, fg=TEXT, selectcolor='#20374a', activebackground=BG, activeforeground=TEXT)
-        live_card = self.live_card = tk.Frame(self.live_panel, bg=PANEL, padx=18, pady=18)
-        live_card.pack(fill='both',expand=True)
-        self.live_list=ttk.Treeview(live_card,columns=('match','map','players','spectators','limits'),show='headings',height=10,selectmode='browse',style='Live.Treeview')
+        self.browser_lock.pack(anchor='w')
+        live_actions = tk.Frame(self.live_panel, bg=BG)
+        live_actions.pack(fill='x')
+        self.spectate_button = self.button(live_actions, 'Spectate', self.spectate_selected)
+        self.spectate_button.pack(side='left', padx=(0, 8))
+        self.stop_watch_button = self.button(live_actions, 'Stop watching', self.stop_watching, False)
+        self.stop_watch_button.pack(side='left', padx=(0, 8))
+        self.live_refresh_button = self.button(live_actions, 'Refresh', self.refresh_live_matches, False)
+        self.live_refresh_button.pack(side='left')
+        self.live_status_label = tk.Label(self.live_panel, textvariable=self.live_status, bg=BG, fg=MUTED,
+                                         font=('Segoe UI',10), anchor='w', justify='left', wraplength=500)
+        self.live_status_label.pack(fill='x', pady=(6, 12))
+        tables = tk.Frame(self.live_panel, bg=BG)
+        tables.pack(fill='both', expand=True)
+        tables.columnconfigure(0, weight=1)
+        tables.rowconfigure(0, weight=2)
+        tables.rowconfigure(1, weight=1)
+        live_card = self.live_card = tk.Frame(tables, bg=PANEL, padx=18, pady=12)
+        live_card.grid(row=0, column=0, sticky='nsew')
+        self.live_list=ttk.Treeview(live_card,columns=('match','map','players','spectators','limits'),show='headings',height=4,selectmode='browse',style='Live.Treeview')
         for key,title,width in (('match','Match',90),('map','Map',180),('players','Assigned players',115),('spectators','Spectator seats',115),('limits','Score / time',135)):
             self.live_list.heading(key,text=title);self.live_list.column(key,width=width,minwidth=70,stretch=True)
         live_scroll=ttk.Scrollbar(live_card,orient='vertical',command=self.live_list.yview)
         self.live_list.configure(yscrollcommand=live_scroll.set)
         live_scroll.pack(side='right',fill='y');self.live_list.pack(side='left',fill='both',expand=True)
-        self.live_list.bind('<<TreeviewSelect>>',lambda event:self.render_live_controls())
-        live_actions=tk.Frame(self.live_panel,bg=BG);live_actions.pack(fill='x',pady=(14,0))
-        self.spectate_button=self.button(live_actions,'Spectate',self.spectate_selected)
-        self.spectate_button.pack(side='left',padx=(0,8))
-        self.stop_watch_button=self.button(live_actions,'Stop watching',self.stop_watching,False)
-        self.stop_watch_button.pack(side='left',padx=(0,8))
-        self.live_refresh_button=self.button(live_actions,'Refresh',self.refresh_live_matches,False)
-        self.live_refresh_button.pack(side='left')
+        self.live_selection = None
+        self.live_list.bind('<<TreeviewSelect>>',self.select_live_match)
+        roster_panel = tk.Frame(tables,bg=PANEL,padx=18,pady=9)
+        roster_panel.grid(row=1, column=0, sticky='nsew', pady=(8, 0))
+        self.live_roster_status = tk.StringVar(value='Select a match to see its assigned players.')
+        tk.Label(roster_panel,textvariable=self.live_roster_status,bg=PANEL,fg=MUTED,anchor='w').pack(fill='x')
+        self.live_roster_table = ttk.Treeview(roster_panel,columns=('blue','red'),show='headings',
+                                             height=2,style='Live.Treeview')
+        for team in ('blue','red'):
+            self.live_roster_table.heading(team,text=TEAM_NAMES[team])
+            self.live_roster_table.column(team,width=160,minwidth=80)
+        roster_scroll=ttk.Scrollbar(roster_panel,orient='vertical',command=self.live_roster_table.yview)
+        self.live_roster_table.configure(yscrollcommand=roster_scroll.set)
+        roster_scroll.pack(side='right',fill='y')
+        self.live_roster_table.pack(side='left',fill='x',expand=True)
+        if self.map_sync is not None:
+            self.build_maps_panel()
         self.live_join_row = tk.Frame(self.live_panel, bg=BG)
         self.live_join_button = self.button(self.live_join_row, 'Join match', self.join_live_selected)
         self.live_join_button.pack(side='left', padx=(0, 8))
@@ -445,20 +771,93 @@ class Desktop:
         self.live_join_reason = tk.StringVar()
         tk.Label(self.live_join_row, textvariable=self.live_join_reason, bg=BG, fg=MUTED,
                  anchor='w', justify='left', wraplength=260).pack(side='left', padx=8)
-        self.live_status_label = tk.Label(self.live_panel, textvariable=self.live_status, bg=BG, fg=MUTED,
-                                         font=('Segoe UI',10), anchor='w', justify='left', wraplength=650)
-        self.live_status_label.pack(fill='x', pady=(12,0))
-        if self.map_sync is not None:
-            self.build_maps_panel()
         self.render_live_controls()
         self.render(None)
-        if steam_name_loader:
-            self.run_async(steam_name_loader, self.set_steam_name)
-        else:
-            self.run_async(self.lobby.capabilities, self.set_capabilities)
+        root.bind_all('<Map>', self.skin_widget_mapped, add='+')
+        self.change_skin(saved_skin(self.skin_path), persist=False)
+        self.run_async(self.lobby.capabilities, self.set_capabilities)
+        self.refresh_steam_name()
         self.poll_handle=root.after(150,self.poll)
         self.refresh_handle=root.after(2000,self.refresh)
         self.live_refresh_handle=root.after(3000,self.live_tick)
+
+    def skin_color(self, color):
+        return SKIN_COLORS[self.skin].get(color, color)
+
+    def configure_skin_styles(self):
+        color = self.skin_color
+        style = self.skin_style
+        field, selected = color('#20374a'), color('#31566c')
+        style.configure('TCombobox', fieldbackground=field, background=field, foreground=TEXT,
+                        arrowcolor=color(ACCENT), padding=8)
+        style.map('TCombobox', fieldbackground=[('disabled', color('#192c3d')), ('readonly', field)],
+                  foreground=[('disabled', color('#a9c1d4')), ('readonly', TEXT)],
+                  selectbackground=[('readonly', selected)], selectforeground=[('readonly', TEXT)])
+        prefix = '*TCombobox*Listbox.'
+        for key, value in (('background', color('#182c3d')), ('foreground', TEXT),
+                           ('selectBackground', selected), ('selectForeground', TEXT),
+                           ('font', '{Segoe UI} 11')):
+            self.root.option_add(prefix + key, value, 'widgetDefault')
+        self.root.option_add('*TCombobox.font', '{Segoe UI} 11', 'widgetDefault')
+        surface = color('#0b1a29')
+        style.configure('Live.Treeview', background=surface, fieldbackground=surface, foreground=TEXT,
+                        rowheight=28, font=('Segoe UI', 10))
+        style.configure('Live.Treeview.Heading', background=field, foreground=TEXT,
+                        font=('Segoe UI', 9, 'bold'))
+        style.map('Live.Treeview', background=[('selected', selected)])
+        style.configure('Skin.TMenubutton', background=surface, foreground=TEXT,
+                        bordercolor=field, arrowcolor=color(ACCENT), padding=(10, 5),
+                        font=('Segoe UI', 9, 'bold'))
+        style.map('Skin.TMenubutton', background=[('active', field)], bordercolor=[('focus', color(ACCENT))])
+
+    def recolor_widget(self, widget, colors):
+        keys = widget.keys()
+        changes = {}
+        for option in SKIN_COLOR_OPTIONS:
+            if option in keys:
+                value = str(widget.cget(option)).lower()
+                if value in colors and colors[value] != value:
+                    changes[option] = colors[value]
+        if changes:
+            widget.configure(**changes)
+
+    def skin_widget_mapped(self, event):
+        colors = SKIN_COLORS[self.skin]
+        if colors and isinstance(event.widget, tk.Misc):
+            self.recolor_widget(event.widget, colors)
+
+    def change_skin(self, skin, *, persist=True):
+        if skin not in SKIN_NAMES or skin == self.skin:
+            return
+        try:
+            emblem = art_photo(self.root, skin + '-emblem.png')
+            self.backdrop.set_skin(skin)
+        except (OSError, tk.TclError):
+            self.skin_choice.set(self.skin)
+            if persist:
+                self.status.set('This skin could not be loaded.')
+            return
+        previous, selected = SKIN_COLORS[self.skin], SKIN_COLORS[skin]
+        colors = dict(selected)
+        colors.update({value: selected.get(base, base) for base, value in previous.items()})
+        self.skin = skin
+        self.skin_choice.set(skin)
+        self.skin_selector.configure(text='Skin · ' + SKIN_NAMES[skin])
+        self.emblem = emblem
+        self.update_lobby_emblem()
+        self.configure_skin_styles()
+        widgets = [self.root]
+        while widgets:
+            widget = widgets.pop()
+            self.recolor_widget(widget, colors)
+            widgets.extend(widget.winfo_children())
+        if persist:
+            from client_support import save
+            try:
+                self.skin_path.parent.mkdir(parents=True, exist_ok=True)
+                save(self.skin_path, skin)
+            except OSError:
+                self.status.set('Skin changed. The preference could not be saved.')
 
 
     def show_lobby_controls(self, in_room):
@@ -478,6 +877,7 @@ class Desktop:
             self.room_actions.pack_forget()
             self.room_status.pack(side='bottom', fill='x', pady=(5, 0))
             self.set_entry_open(True)
+        self.update_entry_controls(in_room)
 
     def set_entry_open(self, open_form):
         self.entry_open = open_form
@@ -492,8 +892,8 @@ class Desktop:
         self.show_advanced_rules()
 
     def show_advanced_rules(self):
-        available = self.lobby_layout and any(
-            self.caps.get(key) is True for key in ('matchRulesEnabled', 'spectateEnabled', LOBBY_LOCK_RULES_ENABLED))
+        available = self.lobby_layout and any(self.caps.get(key) is True for key in
+            ('matchRulesEnabled', 'spectateEnabled', LOBBY_LOCK_RULES_ENABLED))
         if available:
             self.advanced_button.grid()
         else:
@@ -556,18 +956,43 @@ class Desktop:
         self.room_actions.columnconfigure(spacer, weight=1)
         self.leave_button.grid(row=0, column=spacer+1, sticky='e')
 
-    def resize_lobby_sidebar(self, compact):
-        width = 198 if compact else 225
-        if int(self.sidebar.cget('width')) != width:
-            self.sidebar.configure(width=width)
 
+    def update_entry_controls(self, in_room):
+        if self.retail_import_row is not None:
+            if in_room:
+                self.retail_import_row.grid_remove()
+            else:
+                self.retail_import_row.grid()
+        if in_room:
+            self.hero.pack_forget()
+            self.entry_map.grid_remove()
+            self.entry_map_label.grid_remove()
+        else:
+            self.hero.pack(fill='both', expand=True, before=self.play_strip, pady=(0, 8))
+            self.entry_map_label.grid(row=0, column=2, sticky='w', padx=(12, 0))
+            self.entry_map.grid(row=1, column=2, sticky='ew', padx=(12, 0), pady=(4, 8))
+
+    def resize_lobby_sidebar(self, compact):
+        if compact == self.compact_sidebar:
+            return
+        self.compact_sidebar = compact
+        self.sidebar.configure(width=198 if compact else 225)
+        self.update_lobby_emblem()
+
+    def update_lobby_emblem(self):
+        emblem = self.emblem.subsample(2) if self.compact_sidebar else self.emblem
+        self.lobby_emblem = emblem
+        self.logo.configure(image=emblem, width=emblem.width(), height=emblem.height())
+        self.backdrop.logo(self.logo, emblem)
 
     def label(self,parent,text,size=11,bold=False,color=TEXT,bg=BG):
         return tk.Label(parent,text=text,bg=bg,fg=color,font=('Segoe UI',size,'bold' if bold else 'normal'),anchor='w')
 
     def button(self,parent,text,command,primary=True):
+        sidebar = parent is getattr(self, 'sidebar', None)
         return tk.Button(parent,text=text,command=command,bg=ACCENT if primary else '#263e52',fg=BG if primary else TEXT,
-                         activebackground='#6ff0d4',relief='flat',padx=10,pady=7,font=('Segoe UI',10,'bold'))
+                         activebackground='#6ff0d4',relief='flat',padx=14 if sidebar else 10,
+                         anchor='w' if sidebar else 'center',pady=7,font=('Segoe UI',10,'bold'))
 
     @property
     def controls_busy(self):
@@ -611,12 +1036,46 @@ class Desktop:
         self.copy_code_button.configure(text='Copied!')
         self.copy_reset_handle = self.root.after(2500,self.reset_copy_feedback)
 
+    def watch_notice(self, value):
+        key = str(value)
+
+        def changed(*_args):
+            handle = self.notice_timers.pop(key, None)
+            if handle is not None:
+                self.root.after_cancel(handle)
+            if value.get() and not self.closing:
+                self.notice_timers[key] = self.root.after(NOTICE_MS, expire)
+
+        def expire():
+            self.notice_timers.pop(key, None)
+            busy = self.controls_busy and value is self.status
+            if (value is getattr(self, 'map_status', None)
+                    and getattr(self.map_sync, 'notice_active', False) is True):
+                busy = True
+            if busy:
+                self.notice_timers[key] = self.root.after(1000, expire)
+            else:
+                value.set('')
+
+        value.trace_add('write', changed)
+
     def poll(self):
         self.poll_handle=None
         if self.closing: return
+        try:
+            name, error, retry = self.steam_messages.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            self.finish_steam_lookup(name, error, retry=retry)
         if self.map_sync is not None:
-            self.map_status.set(self.map_sync.status)
-            progress = self.map_sync.progress
+            target = getattr(self.map_sync, 'notice_target', None)
+            current = not isinstance(target, tuple) or target == self.lobby_map_target
+            notice = self.map_sync.status if current else ''
+            progress = self.map_sync.progress if current else None
+            if (target, notice) != self.last_map_notice or progress is not None:
+                self.last_map_notice = (target, notice)
+                self.map_status.set(notice)
             if progress is None:
                 self.map_progress.pack_forget()
             else:
@@ -678,21 +1137,34 @@ class Desktop:
                         and self.game.stop_replaced_match(restart['matchId'])):
                     self.game_status = 'stopping'
                     state = dict(state, status='stopping', progress='Closing the previous match…')
-                if state['status'] in ('starting','playing','stopping'):
+                show_notice = not self.ignore_departed_game_notices or state.get('role') in ('spectator', 'public')
+                if show_notice and state['status'] in ('starting','playing','stopping'):
                     self.status.set(state.get('progress') or {'starting':'Opening game…','playing':'Game connected.','stopping':'Closing game…'}[state['status']])
                     if self.watch_id is not None:
                         self.live_status.set(state.get('progress') or {'starting':'Opening spectator view…','playing':'Watching match.','stopping':'Closing spectator view…'}[state['status']])
-                elif state['error']:
-                    self.status.set(state['error'])
-                elif previous_status != self.game_status and state.get('progress'):
+                elif show_notice and state['error'] and state['error'] != self.last_game_error:
+                    message = state['error']
+                    if '[WinError 4551]' in message:
+                        message = ('Windows App Control blocked a file (4551). '
+                                   'Check Event Viewer for CodeIntegrity event 3077.')
+                    elif self.room and self.room.get('phase') == 'ready' and state.get('role', 'player') == 'player':
+                        message += ' Select Join game to retry.'
+                    self.shown_game_error = message
+                    self.status.set(message)
+                elif show_notice and previous_status != self.game_status and state.get('progress'):
                     self.status.set(state['progress'])
+                self.last_game_error = state['error']
                 preparation=state.get('preparation')
-                if isinstance(preparation,dict):
-                    self.preparation.set(preparation.get('error') or preparation.get('progress') or '')
+                if show_notice and isinstance(preparation,dict):
+                    error = preparation.get('error')
+                    if not error or error != self.last_preparation_error:
+                        self.preparation.set(error or preparation.get('progress') or '')
+                    self.last_preparation_error = error
             except Exception as exc: self.status.set(str(exc))
         self.maybe_auto_join()
         self.render_live_controls()
         if self.current_panel == 'maps':
+            self.refresh_map_states()
             self.render_map_controls()
         if not self.closing: self.poll_handle=self.root.after(150,self.poll)
 
@@ -701,6 +1173,12 @@ class Desktop:
         self.capabilities_loaded = True
         if self.map_sync is not None:
             self.map_sync.start(caps.get('mapFileSync'), session_version=caps.get('mapSessionSync'))
+            if self.map_sync.session_enabled and self.maps_panel is not None:
+                if self.map_index_rows is None and caps.get('maps'):
+                    self.render_map_rows([
+                        dict(row, state='Checking…', removable=False) for row in caps['maps']
+                    ])
+                self.refresh_maps()
         self.status.set('Community service connected.')
         self.render(self.room)
         self.render_live_controls()
@@ -716,6 +1194,8 @@ class Desktop:
             self.refresh_maps()
 
     def choose_map(self):
+        if self.room is None:
+            return
         selected=self.map_name.get()
         matches=[item['id'] for item in self.map_options if item['label']==selected]
         if len(matches)!=1:
@@ -725,6 +1205,7 @@ class Desktop:
         self.pending_map = (self.room['code'], matches[0])
         self.map_retry_count = 0
         self.map_retry_at = 0
+        self.clear_match_messages()
         self.status.set('Applying map selection…')
         self.render(self.room)
         self.flush_map_selection()
@@ -757,19 +1238,108 @@ class Desktop:
             self.render(room)
         self.run_async(apply, applied)
 
-    def player_name_for_action(self):
-        return display_name(self.name.get().strip())
+    def refresh_steam_name(self, *, retry=False):
+        loader = self.steam_name_loader
+        if not loader or self.closing or self.warrior_name or self.steam_lookup_running:
+            return
+        if not retry and time.monotonic() < self.steam_lookup_at:
+            return
+        self.steam_lookup_running = True
+        self.steam_lookup_at = time.monotonic() + 60
+        results = self.steam_messages
 
-    def set_steam_name(self, name):
-        self.name.set(name)
-        self.run_async(self.lobby.capabilities, self.set_capabilities)
+        def worker():
+            try:
+                name = display_name(loader())
+            except Exception as exc:
+                reason = getattr(exc, 'reason', type(exc).__name__)
+                logging.getLogger(__name__).warning('Steam name lookup failed (%s): %s', reason, exc)
+                results.put((None, str(exc), retry))
+            else:
+                results.put((name, None, retry))
+
+        # Keep the short-lived worker alive through close so subprocess.run can reap the probe.
+        threading.Thread(target=worker, name='steam-persona', daemon=False).start()
+
+    def finish_steam_lookup(self, name, error, *, retry):
+        previous_notice = self.steam_name_notice()
+        self.steam_lookup_running = False
+        self.steam_lookup_error = error
+        if error is None:
+            if name != self.steam_name:
+                self.steam_name = name
+                try:
+                    save_local_name(self.steam_name_path, name)
+                except OSError as exc:
+                    logging.getLogger(__name__).warning('Could not save the Steam name cache: %s', exc)
+            if not self.warrior_name:
+                self.name.set(name)
+                if self.status.get() == previous_notice:
+                    self.status.set('Steam name ready.')
+            return
+        if self.warrior_name:
+            return
+        if not self.steam_name:
+            self.status.set(self.steam_name_notice())
+        if not retry:
+            self.steam_retry_handle = self.root.after(2500, self.retry_steam_lookup)
+
+    def retry_steam_lookup(self):
+        self.steam_retry_handle = None
+        self.refresh_steam_name(retry=True)
+
+    def steam_name_notice(self):
+        message = self.steam_lookup_error or 'Looking up your Steam name.'
+        return message + ' You can set a Warrior Name in Settings.'
+
+    def player_name_for_action(self):
+        if not self.steam_name_loader:
+            return display_name(self.name.get().strip())
+        if self.warrior_name:
+            return self.warrior_name
+        self.refresh_steam_name()
+        if self.steam_name:
+            return self.steam_name
+        raise SteamIdentityError(self.steam_name_notice())
+
+    def save_warrior_name(self, value):
+        name = display_name(value).strip() if value.strip() else ''
+        save_local_name(self.warrior_name_path, name)
+        self.warrior_name = name
+        self.name.set(name or self.steam_name)
+        if name and self.status.get() == self.steam_name_notice():
+            self.status.set('Warrior Name saved.')
+        if self.steam_retry_handle is not None:
+            self.root.after_cancel(self.steam_retry_handle)
+            self.steam_retry_handle = None
+        if not name:
+            self.steam_lookup_at = 0
+            self.refresh_steam_name()
+
+    def clear_match_messages(self):
+        if self.status.get() == self.shown_game_error:
+            self.status.set('')
+        if self.preparation.get() == self.last_preparation_error:
+            self.preparation.set('')
 
     def render(self, room):
-        if (self.room or {}).get('code') != (room or {}).get('code'):
+        previous, current = self.room or {}, room or {}
+        if ((previous.get('code'), previous.get('map'), previous.get('phase'))
+                != (current.get('code'), current.get('map'), current.get('phase'))):
+            self.clear_match_messages()
+        if previous.get('code') != current.get('code'):
+            self.status.set('')
+            self.preparation.set('')
+            if self.map_sync is not None:
+                self.last_map_notice = (getattr(self.map_sync, 'notice_target', None), self.map_sync.status)
+                self.map_status.set('')
+                self.map_progress.pack_forget()
+            if previous.get('code'):
+                self.ignore_departed_game_notices = True
             self.reset_copy_feedback()
         self.room = room
-        result = match_result_for(room)
-        self.show_result_action = result is not None
+        if previous.get('code') and room is None and self.current_panel != 'lobbies':
+            self.show_panel('lobbies')
         if self.map_sync is not None and self.caps.get('mapSessionSync') == SESSION_VERSION:
             target = None
             if (room and room.get('phase') in ('setup', 'starting', 'ready')
@@ -778,6 +1348,8 @@ class Desktop:
             if target != self.lobby_map_target:
                 self.lobby_map_target = target
                 self.map_sync.prefetch(target)
+        result = match_result_for(room)
+        self.show_result_action = result is not None
         in_room = room is not None
         self.show_lobby_controls(in_room)
         self.copy_code_button.configure(state='normal' if in_room else 'disabled')
@@ -800,25 +1372,26 @@ class Desktop:
         else:
             self.spectator_toggle.grid_remove()
         self.show_advanced_rules()
-        for widget in (self.name_entry, self.code_entry, self.create_button, self.join_button,
-                       self.browser_create_button): widget.configure(state='disabled' if in_room or self.controls_busy else 'normal')
+        for widget in (self.name_entry, self.code_entry, self.paste_code_button, self.create_button,
+                       self.lobby_create_button, self.join_button):
+            widget.configure(state='disabled' if in_room or self.controls_busy else 'normal')
         if self.steam_name_loader and not in_room and not self.controls_busy:
-            self.name_entry.configure(state='readonly', readonlybackground='#20374a')
+            self.name_entry.configure(state='readonly', readonlybackground=self.skin_color('#20374a'))
+        self.browser_name.configure(state=('disabled' if in_room or self.controls_busy else
+                                           'readonly' if self.steam_name_loader else 'normal'),
+                                    readonlybackground=self.skin_color('#20374a'))
         if self.caps.get('privateLobbyAdmission') is True:
-            self.lobby_lock.grid(row=3, column=0, sticky='w', pady=(4, 0))
-            state = 'disabled' if in_room or self.controls_busy else 'normal'
-            self.lobby_lock.configure(state=state)
-            self.browser_lock.configure(state=state)
+            self.browser_lock.configure(state='disabled' if in_room or self.controls_busy else 'normal')
             if not self.browser_lock.winfo_manager():
-                self.browser_lock.pack(anchor='w', before=self.live_card)
+                self.browser_lock.pack(anchor='w', before=self.live_card.master)
+            self.lobby_lock.grid(row=3, column=0, sticky='w', pady=(4, 0))
+            self.lobby_lock.configure(state='disabled' if in_room or self.controls_busy else 'normal')
         else:
             self.lobby_lock.grid_remove()
+            self.browser_lock.pack_forget()
         lock_active = phase in ('starting', 'ready') and room.get('locked') is True
         self.room_heading.set(('Lobby  '+room['code']+('  ·  Locked' if lock_active else ''))
                               if in_room else 'Not in a lobby')
-        self.browser_name.configure(state=('disabled' if in_room or self.controls_busy else
-                                           'readonly' if self.steam_name_loader else 'normal'),
-                                    readonlybackground='#20374a')
         self.phase.set(match_phase_text(room))
         available=room.get('availableMaps') if in_room else self.caps.get('maps')
         if available is None: available=options(LEGACY_MAPS)
@@ -838,13 +1411,17 @@ class Desktop:
             self.leave_button.configure(state='normal' if in_room and not self.controls_busy else 'disabled')
             self.status.set('Unsupported server map catalog. Update the community client.')
             return
-        self.map_options=available
+        self.map_options=sorted(available, key=lambda item: item['label'].casefold())
         self.create_map.configure(values=tuple(sorted(labels.values(), key=str.casefold)), height=min(18, len(labels)),
                                   state='readonly' if not in_room and not self.controls_busy
                                   and self.caps.get('mapSessionSync') == SESSION_VERSION else 'disabled')
+        self.entry_map.configure(values=self.create_map.cget('values'), state=self.create_map.cget('state'))
         if self.create_map_name.get() not in labels.values():
             self.create_map_name.set(next(iter(labels.values()), ''))
-        self.map_combo.configure(values=tuple(item['label'] for item in available),height=min(18,len(available)),state='readonly' if setup and leader else 'disabled')
+        self.map_combo.configure(values=tuple(item['label'] for item in self.map_options),height=min(18,len(available)),state='readonly' if setup and leader else 'disabled')
+        self.map_combo.configure(textvariable=self.map_name if in_room else self.create_map_name)
+        if not in_room:
+            self.map_combo.configure(state=self.create_map.cget('state'))
         if in_room:
             if self.pending_map and self.pending_map[1] not in labels:
                 self.pending_map = None
@@ -922,44 +1499,143 @@ class Desktop:
             self.render(room)
             self.show_panel('lobbies')
         selected = next((item['id'] for item in self.map_options if item['label'] == self.create_map_name.get()), None)
-        options = {'locked': self.lock_lobby.get()} if self.caps.get('privateLobbyAdmission') is True else {}
-        if self.current_panel == 'live' and selected and self.caps.get('mapSessionSync') == SESSION_VERSION:
-            options['map_id'] = selected
-        def create(name):
-            return self.lobby.create(name, **options)
-        if self.steam_name_loader:
-            self.enter_with_steam(create, success=created)
+        options = {'map_id': selected} if selected and self.caps.get('mapSessionSync') == SESSION_VERSION else {}
+        if self.caps.get('privateLobbyAdmission') is True:
+            options['locked'] = self.lock_lobby.get()
+        self.enter_lobby(lambda name: self.lobby.create(name, **options), success=created)
+
+    def paste_lobby_code(self, _event=None):
+        if self.code_entry.cget('state') == 'disabled':
+            return 'break'
+        try:
+            value = self.root.clipboard_get()
+        except tk.TclError:
+            value = ''
+        code = normalize_lobby_code(value)
+        if code is None:
+            self.status.set('Clipboard does not contain a valid lobby code.')
         else:
-            name = self.name.get()
-            self.run_async(lambda: create(name), created)
+            self.code.set(code)
+            self.code_entry.icursor(tk.END)
+        return 'break'
+
+    def open_lobby_code_menu(self, event):
+        if self.code_entry.cget('state') != 'disabled':
+            try:
+                self.code_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self.code_menu.grab_release()
+        return 'break'
 
     def join(self):
-        code, name = self.code.get().strip().upper(), self.name.get()
-        if self.steam_name_loader:
-            self.enter_with_steam(lambda name:self.lobby.join(code,name))
-        else:
-            self.run_async(lambda:self.lobby.join(code,name),self.render)
+        code = normalize_lobby_code(self.code.get())
+        if code is None:
+            self.status.set('Enter a valid six-character lobby code.')
+            return
+        self.code.set(code)
+        self.enter_lobby(lambda name: self.lobby.join(code,name))
 
-    def enter_with_steam(self, operation, *, success=None):
-        def work():
-            name=self.steam_name_loader()
-            return name,operation(name)
-        def entered(value):
-            name,room=value
-            self.name.set(name)
-            (success or self.render)(room)
-            if not self.capabilities_loaded:
-                self.run_async(self.lobby.capabilities, self.set_capabilities)
-        self.run_async(work,entered)
+    def enter_lobby(self, operation, success=None):
+        finished = success or self.render
+        if self.steam_name_loader and not self.warrior_name and not self.steam_lookup_running:
+            cached_name = self.steam_name
+
+            def enter_with_latest_name():
+                try:
+                    name = display_name(self.steam_name_loader())
+                except (OSError, ValueError):
+                    if not cached_name:
+                        raise
+                    name = cached_name
+                return name, operation(name)
+
+            def entered(result):
+                name, room = result
+                self.finish_steam_lookup(name, None, retry=False)
+                finished(room)
+
+            self.run_async(enter_with_latest_name, entered)
+            return
+        try:
+            name = self.player_name_for_action()
+        except (ValueError, SteamIdentityError) as exc:
+            self.status.set(str(exc))
+            return
+        self.run_async(lambda: operation(name), finished)
+
     def call_action(self,operation,**data):
+        if operation == 'leave':
+            return self.exit_lobby()
         if operation == 'start' and self.pending_map is not None:
             self.status.set('Wait for the selected map to be confirmed.')
             return
         def work():
-            if operation == 'leave' and self.game and self.game.snapshot()['status'] in ('starting','playing','stopping'):
-                self.game.stop()
             return self.lobby.action(operation,**data)
-        self.run_async(work,self.render)
+        messages = {
+            'start': 'Starting match…', 'stop': 'Stopping match…',
+            'reset': 'Setting up the lobby…',
+        }
+        if operation not in messages:
+            self.run_async(work, self.render)
+            return
+
+        def completed(room):
+            self.render(room)
+            self.status.set(match_phase_text(room))
+
+        if self.run_async(work, completed):
+            self.clear_match_messages()
+            self.status.set(messages[operation])
+
+    def exit_lobby(self):
+        if self.room is None or self.controls_busy or self.closing:
+            return
+        code = self.room['code']
+        game = self.game
+
+        def leave():
+            cleanup_error = None
+            if game is not None:
+                try:
+                    state = game.snapshot()
+                    if (state.get('role', 'player') == 'player'
+                            and state['status'] in ('starting', 'playing', 'stopping')):
+                        game.stop()
+                except (OSError, CommunityError) as exc:
+                    cleanup_error = str(exc)
+            try:
+                self.lobby.action('leave')
+                confirmed = True
+            except (OSError, CommunityError) as exc:
+                confirmed = getattr(exc, 'code', None) in ('lobby_missing', 'session_invalid')
+            finally:
+                # The wire membership is best effort. Clear only this client
+                # session, under the same lock as a request that could update it.
+                with self.lobby.lock:
+                    if self.lobby.code == code:
+                        self.lobby.code = self.lobby.token = self.lobby.player_id = None
+            message = 'Left lobby.' if confirmed else 'Lobby closed on this device. Server confirmation is unavailable.'
+            return f'{message} Game cleanup: {cleanup_error}' if cleanup_error else message
+
+        if self.run_async(leave, self.status.set):
+            self.render(None)
+            self.status.set('Closing lobby on this device…')
+
+    def restart_match(self):
+        if self.room is None or self.restart_button.cget('state') != 'normal':
+            return
+        match = self.room.get('match')
+        if not isinstance(match, dict) or not match.get('id'):
+            return
+        reason = simpledialog.askstring('Restart match',
+            'Start a fresh round on the same map and teams. Enter a reason for everyone in the lobby.',
+            parent=self.root)
+        if reason is None:
+            return
+        if not reason.isprintable() or not 1 <= len(reason.strip()) <= 120:
+            self.status.set('Enter a printable restart reason of 1–120 characters.')
+            return
+        self.call_action('restart', matchId=match['id'], reason=reason.strip())
 
     def restart_match(self):
         if self.room is None or self.restart_button.cget('state') != 'normal':
@@ -1002,6 +1678,9 @@ class Desktop:
             offset = box.yview()[0]
             players = [p for p in self.players if (p['team'] or None) == team]
             self.roster_players[team] = players
+            if team in self.roster_labels:
+                name = TEAM_NAMES[team] if team is not None else 'Unassigned'
+                self.roster_labels[team].configure(text=f'{name} ({len(players)})')
             box.delete(0, tk.END)
             for index, player in enumerate(players):
                 box.insert(tk.END, player['name'] + ('  • leader' if player['leader'] else '')
@@ -1022,8 +1701,8 @@ class Desktop:
             self.side_row.grid()
         self.side_summary.grid()
         self.blue_side.set('Side ' + side)
-        self.red_side.set('Red starts on Side A · In-game colors swap' if side == 'B'
-                          else 'Red starts on Side B')
+        self.red_side.set('Diamond Sword starts on Side A · In-game colors swap' if side == 'B'
+                          else 'Diamond Sword starts on Side B')
         self.side_combo.configure(state='readonly' if editable else 'disabled')
 
     def choose_side(self, _event=None):
@@ -1052,6 +1731,7 @@ class Desktop:
             self.status.set('Wait for the selected map to be confirmed.');return
         if self.watch_id is not None:
             self.status.set('Stop watching the current match first.');return
+        self.clear_match_messages()
         self.status.set('Checking the selected match…')
         selected_map = self.room['map']
         match = self.room.get('match')
@@ -1062,6 +1742,7 @@ class Desktop:
                 return self.game.start(expected_map=selected_map, expected_match_id=match_id)
             return self.game.start(expected_map=selected_map)
         if self.run_async(begin,lambda _:self.status.set('Opening game…')):
+            self.ignore_departed_game_notices = False
             self.join_attempted_match = match_id
 
     def toggle_spectators(self):
@@ -1239,91 +1920,405 @@ class Desktop:
         table.pack(fill='both', expand=True, pady=(14, 12))
         columns = (('name', 'Map', 165), ('game', 'Game', 62), ('size', 'Size', 72),
                    ('version', 'Version', 78), ('status', 'Local status', 112))
-        self.maps_table = ttk.Treeview(table, columns=tuple(key for key, _, _ in columns),
-                                       show='headings', style='Live.Treeview', selectmode='browse')
+        self.map_sort = None
+        self.map_headings = {key:title for key,title,_ in columns}
+        self.maps_table = ttk.Treeview(table, columns=tuple(self.map_headings),
+                                       show='headings', style='Live.Treeview', selectmode='extended')
         for key, title, width in columns:
-            self.maps_table.heading(key, text=title)
+            self.maps_table.heading(key, text=title, command=lambda column=key: self.sort_maps(column))
             self.maps_table.column(key, width=width, minwidth=width-12)
         scrollbar = ttk.Scrollbar(table, orient='vertical', command=self.maps_table.yview)
         self.maps_table.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side='right', fill='y')
         self.maps_table.pack(side='left', fill='both', expand=True)
         self.maps_table.bind('<<TreeviewSelect>>', lambda _event: self.render_map_controls())
+        self.maps_table.bind('<Control-a>', self.select_all_maps)
+        self.maps_table.bind('<Control-A>', self.select_all_maps)
         self.map_rows = {}
-        buttons = tk.Frame(panel, bg=BG)
-        buttons.pack(fill='x')
-        self.map_download = self.button(buttons, 'Download', lambda: self.manage_map(False))
+        self.map_queue = deque()
+        self.map_active = None
+        self.map_queue_total = self.map_queue_done = self.map_queue_cancelled = 0
+        self.map_queue_errors = []
+        self.map_index_rows = None
+        self.map_index_busy = False
+        self.map_state_busy = False
+        self.map_state_version = None
+        footer = tk.Frame(panel, bg=PANEL, padx=12, pady=8)
+        footer.pack(fill='x')
+        footer.grid_columnconfigure(0, weight=1)
+        buttons = tk.Frame(footer, bg=PANEL)
+        buttons.grid(row=0, column=0, sticky='ew')
+        self.map_download = self.button(buttons, 'Download selected', self.queue_selected_maps)
         self.map_download.pack(side='left', padx=(0, 8))
-        self.map_remove = self.button(buttons, 'Remove download', lambda: self.manage_map(True), False)
+        self.map_remove = self.button(buttons, 'Remove download', self.remove_map_download, False)
         self.map_remove.pack(side='left', padx=(0, 8))
         self.map_refresh = self.button(buttons, 'Refresh', self.refresh_maps, False)
         self.map_refresh.pack(side='left')
-        self.maps_notice = tk.StringVar()
-        tk.Label(panel, textvariable=self.maps_notice, bg=BG, fg=MUTED, wraplength=530,
-                 anchor='w', justify='left').pack(fill='x', pady=(10, 0))
 
-    def selected_download(self):
-        selection = self.maps_table.selection()
-        return self.map_rows.get(selection[0]) if selection else None
+        self.map_selection_notice = tk.StringVar()
+        self.map_queue_notice = tk.StringVar()
+        self.maps_notice = tk.StringVar()
+        for index, notice in enumerate((self.map_selection_notice, self.map_queue_notice, self.maps_notice), 1):
+            status = tk.Frame(footer, bg=PANEL)
+            status.grid(row=index, column=0, sticky='ew', pady=(6, 0))
+            if notice is self.map_queue_notice:
+                self.map_queue_controls = tk.Frame(status, bg=PANEL)
+                self.map_cancel_selected = self.button(
+                    self.map_queue_controls, 'Cancel selected', self.cancel_selected_maps, False)
+                self.map_cancel_all = self.button(self.map_queue_controls, 'Cancel all', self.cancel_all_maps, False)
+                self.map_cancel_selected.pack(side='left', padx=(0, 8))
+                self.map_cancel_all.pack(side='left')
+            tk.Label(status, textvariable=notice, bg=PANEL, fg=MUTED, anchor='w', justify='left',
+                     wraplength=260 if notice is self.map_queue_notice else 480).pack(
+                         side='left', fill='x', expand=True)
+
+            def update_status(*_, value=notice, row=status):
+                if value.get():
+                    row.grid()
+                else:
+                    row.grid_remove()
+
+            notice.trace_add('write', update_status)
+            update_status()
+
+    def select_all_maps(self, _event=None):
+        self.maps_table.selection_set(self.maps_table.get_children())
+        return 'break'
+
+    def sort_maps(self, column):
+        previous, descending = self.map_sort or (None, False)
+        self.map_sort = column, not descending if previous == column else False
+        self.order_maps()
+
+    def order_maps(self):
+        column, descending = self.map_sort or ('name', False)
+        fields = {'name':'label', 'game':'gameTag', 'size':'bytes', 'version':'manifestHash', 'status':'state'}
+        field = fields[column]
+        def key(identity):
+            row = self.map_rows[identity]
+            return row.get(field, -1) if column == 'size' else row.get(field, '').casefold()
+        for index, identity in enumerate(sorted(self.maps_table.get_children(), key=key, reverse=descending)):
+            self.maps_table.move(identity, '', index)
+        arrow = ' \u25bc' if descending else ' \u25b2'
+        for name, label in self.map_headings.items():
+            self.maps_table.heading(name, text=label + arrow if self.map_sort and name == column else label)
+
+    def queued_map_ids(self):
+        identities = {row['id'] for row in self.map_queue}
+        if self.map_active is not None:
+            identities.add(self.map_active[0]['id'])
+        return identities
 
     def render_map_controls(self):
-        row = self.selected_download()
-        enabled = self.map_sync.session_enabled and not self.controls_busy
-        active = self.game_status not in ('idle', 'stopped', 'finished', 'failed')
-        self.map_refresh.configure(state='normal' if enabled else 'disabled')
-        self.map_download.configure(text='Update' if row and row['state'] == 'Update available' else 'Download',
-                                    state='normal' if enabled and row and row['state'] != 'Downloaded' else 'disabled')
-        self.map_remove.configure(state='normal' if enabled and row and row['removable'] and not active else 'disabled')
+        selected = self.maps_table.selection()
+        rows = [self.map_rows[identity] for identity in selected if identity in self.map_rows]
+        queued = self.queued_map_ids()
+        downloadable = [row for row in rows if row['state'] in ('Not downloaded', 'Update available')]
+        new = [row for row in downloadable if row['id'] not in queued]
+        checking = sum(row['state'] == 'Checking…' for row in rows)
+        summary = ''
+        if rows:
+            summary = f'{len(rows)} selected'
+            if new:
+                total = sum(row['bytes'] for row in new)
+                summary += f' · {len(new)} to download'
+                if total:
+                    summary += f' · up to {total/1024**2:,.1f} MiB'
+            if checking:
+                summary += f' · Checking {checking}'
+            elif queued.intersection(selected):
+                summary += ' · Already in queue'
+            elif not new:
+                summary += ' · No download needed'
+        self.map_selection_notice.set(summary)
+        enabled = self.map_sync.session_enabled
+        idle_game = self.game_status in ('idle', 'stopped', 'finished', 'failed')
+        removable = (len(rows) == 1 and rows[0]['removable'] and rows[0]['id'] not in queued)
+        self.map_refresh.configure(state='normal' if enabled and not self.map_index_busy else 'disabled')
+        self.map_download.configure(state='normal' if enabled and new else 'disabled')
+        self.map_remove.configure(state='normal' if enabled and removable and idle_game
+                                  and not self.controls_busy else 'disabled')
+        self.map_cancel_selected.configure(state='normal' if queued.intersection(selected) else 'disabled')
+        self.map_cancel_all.configure(state='normal' if queued else 'disabled')
+        if queued:
+            if not self.map_queue_controls.winfo_manager():
+                self.map_queue_controls.pack(side='right', padx=(8, 0))
+        else:
+            self.map_queue_controls.pack_forget()
+        self.render_map_queue_progress()
 
-    def load_map_rows(self, operation=None):
+    def render_map_queue_progress(self):
+        if self.map_active is not None:
+            row, cancelled = self.map_active
+            progress = self.map_sync.progress if self.map_sync.notice_target == row['id'] else None
+            detail = f' · {progress[0]:,}/{progress[1]:,} files' if progress and progress[1] else ''
+            action = 'Cancelling' if cancelled.is_set() else 'Downloading'
+            self.map_queue_notice.set(f'{action} {row["label"]}{detail} · '
+                                      f'{self.map_queue_done}/{self.map_queue_total} maps processed')
+        elif self.map_queue_total:
+            failed = len(self.map_queue_errors)
+            complete = self.map_queue_done - self.map_queue_cancelled - failed
+            summary = f'{complete} downloaded · {self.map_queue_cancelled} cancelled · {failed} failed'
+            if failed:
+                summary += '\n' + self.map_queue_errors[-1]
+            self.map_queue_notice.set(summary)
+
+    def render_map_rows(self, rows):
+        updated = {row['id']: row for row in rows}
+        if updated == self.map_rows:
+            return
+        selected = self.maps_table.selection()
+        focus = self.maps_table.focus()
+        scroll = self.maps_table.yview()[0]
+        # Retain prior row order for stable sorting and preserve selection on live refresh.
+        order = list(dict.fromkeys((*self.maps_table.get_children(), *updated)))
+        self.maps_table.delete(*self.maps_table.get_children())
+        self.map_rows = updated
+        for identity in order:
+            row = updated.get(identity)
+            if row is None:
+                continue
+            size = f"{row['bytes']/1024**2:,.1f} MiB" if 'bytes' in row else ''
+            self.maps_table.insert('', 'end', iid=identity,
+                                   values=(row['label'], row.get('gameTag', ''), size,
+                                           row.get('manifestHash', '')[:8], row['state']))
+        self.order_maps()
+        self.maps_table.selection_set(tuple(identity for identity in selected if identity in updated))
+        if focus in updated:
+            self.maps_table.focus(focus)
+        self.maps_table.yview_moveto(scroll)
+        self.render_map_controls()
+
+    def fetch_map_rows(self, work, finished):
+        results = self.access_messages
+
+        def worker():
+            try:
+                rows, error = work(), None
+            except (CommunityError, OSError, ValueError, TypeError, RecursionError) as exc:
+                rows, error = None, str(exc)
+            results.put(lambda: finished(rows, error))
+
+        threading.Thread(target=worker, name='maps-catalog', daemon=True).start()
+
+    def refresh_maps(self):
+        if not self.capabilities_loaded or self.map_index_busy:
+            return
         if not self.map_sync.session_enabled:
             self.maps_notice.set('Per-map downloads are unavailable on this server.')
             self.render_map_controls()
             return
-        self.maps_notice.set('Checking map downloads…')
+        self.map_index_busy = True
+        if not self.map_rows:
+            self.maps_notice.set('Checking map catalog…')
 
-        def work():
-            try:
-                if operation is not None:
-                    operation()
-                return self.map_sync.local_maps(self.map_sync.refresh_map_index()), None
-            except (CommunityError, ValueError, OSError) as exc:
-                return None, str(exc)
-
-        def loaded(result):
-            rows, error = result
+        def loaded(rows, error):
+            self.map_index_busy = False
             if error is not None:
-                self.maps_notice.set(error)
-                self.render_map_controls()
-                return
-            selected = self.maps_table.selection()
-            self.map_rows = {row['id']: row for row in rows}
-            self.maps_table.delete(*self.maps_table.get_children())
-            for row in rows:
-                self.maps_table.insert('', 'end', iid=row['id'],
-                                       values=(row['label'], row['gameTag'], f"{row['bytes']/1024**2:,.1f} MiB",
-                                               row['manifestHash'][:8], row['state']))
-            if selected and selected[0] in self.map_rows:
-                self.maps_table.selection_set(selected[0])
-            self.maps_notice.set('')
+                self.maps_notice.set('Map list may be out of date. ' + error if self.map_rows else error)
+            else:
+                self.maps_notice.set('')
+                if rows is not self.map_index_rows:
+                    self.map_index_rows = rows
+                    self.map_state_version = None
+                    self.render_map_rows([
+                        dict(row, state=previous['state'], removable=previous['removable'])
+                        if (previous := self.map_rows.get(row['id'])) is not None
+                        and previous.get('manifestHash') == row['manifestHash']
+                        else dict(row, state='Checking…', removable=False) for row in rows
+                    ])
+                self.refresh_map_states()
             self.render_map_controls()
 
-        self.run_async(work, loaded)
+        self.fetch_map_rows(self.map_sync.refresh_map_index, loaded)
         self.render_map_controls()
 
-    def refresh_maps(self):
-        self.load_map_rows()
-
-    def manage_map(self, remove):
-        row = self.selected_download()
-        if row is None or self.controls_busy:
+    def refresh_map_states(self):
+        index = self.map_index_rows
+        version = self.map_sync.local_version
+        if index is None or self.map_state_busy or self.map_state_version == version:
             return
-        if remove:
-            if not row['removable'] or self.game_status not in ('idle', 'stopped', 'finished', 'failed'):
+        self.map_state_busy = True
+
+        def loaded(rows, error):
+            self.map_state_busy = False
+            if index is not self.map_index_rows or version != self.map_sync.local_version:
+                self.refresh_map_states()
                 return
-            self.load_map_rows(lambda: self.map_sync.remove_map(row['id']))
-        elif row['state'] != 'Downloaded':
-            self.load_map_rows(lambda: self.map_sync.sync_map(row['id'], row['contentHash'], row['manifestHash']))
+            self.map_state_version = version
+            if error is not None:
+                if not self.maps_notice.get():
+                    self.maps_notice.set('Could not check downloaded maps. ' + error)
+                return
+            self.render_map_rows(rows)
+
+        self.fetch_map_rows(lambda: self.map_sync.local_maps(index), loaded)
+
+    def queue_selected_maps(self):
+        if not self.map_sync.session_enabled:
+            return
+        selected = set(self.maps_table.selection())
+        queued = self.queued_map_ids()
+        rows = [self.map_rows[identity] for identity in self.maps_table.get_children()
+                if identity in selected and identity not in queued
+                and self.map_rows[identity]['state'] in ('Not downloaded', 'Update available')]
+        if not rows:
+            return
+        if not queued:
+            self.map_queue_total = self.map_queue_done = self.map_queue_cancelled = 0
+            self.map_queue_errors.clear()
+        self.map_queue.extend(rows)
+        self.map_queue_total += len(rows)
+        self.download_next_map()
+        self.render_map_controls()
+
+    def download_next_map(self):
+        if self.closing or self.map_active is not None or not self.map_queue:
+            return
+        row = self.map_queue.popleft()
+        cancelled = threading.Event()
+        self.map_active = (row, cancelled)
+
+        def check():
+            if cancelled.is_set():
+                raise CommunityError('Map download cancelled.')
+            return False
+
+        def download():
+            return self.map_sync.sync_map(row['id'], row['contentHash'], row['manifestHash'],
+                                         obsolete=check, notice_target=row['id'])
+
+        def complete(_, error):
+            self.map_active = None
+            self.map_queue_done += 1
+            if error:
+                if cancelled.is_set():
+                    self.map_queue_cancelled += 1
+                else:
+                    self.map_queue_errors.append(f'{row["label"]}: {error}')
+            else:
+                displayed = self.map_rows.get(row['id'])
+                if displayed and row['manifestHash'] == displayed.get('manifestHash'):
+                    self.render_map_rows([
+                        dict(item, state='Downloaded', removable=True) if item is displayed else item
+                        for item in self.map_rows.values()
+                    ])
+            self.map_state_version = None
+            self.refresh_map_states()
+            self.download_next_map()
+            self.render_map_controls()
+
+        self.fetch_map_rows(download, complete)
+
+    def cancel_selected_maps(self):
+        self.cancel_maps(set(self.maps_table.selection()))
+
+    def cancel_all_maps(self):
+        self.cancel_maps(self.queued_map_ids())
+
+    def cancel_maps(self, identities):
+        before = len(self.map_queue)
+        self.map_queue = deque(row for row in self.map_queue if row['id'] not in identities)
+        cancelled = before - len(self.map_queue)
+        self.map_queue_done += cancelled
+        self.map_queue_cancelled += cancelled
+        if self.map_active is not None and self.map_active[0]['id'] in identities:
+            self.map_active[1].set()
+        self.render_map_controls()
+
+    def remove_map_download(self):
+        selected = self.maps_table.selection()
+        if len(selected) != 1 or self.controls_busy or self.game_status not in ('idle','stopped','finished','failed'):
+            return
+        identity = selected[0]
+        if not self.map_rows[identity]['removable'] or identity in self.queued_map_ids():
+            return
+        def work():
+            try:
+                self.map_sync.remove_map(identity)
+            except (CommunityError, OSError, ValueError) as exc:
+                return str(exc)
+            return None
+
+        def complete(error):
+            if error:
+                self.maps_notice.set(error)
+            self.map_state_version = None
+            self.refresh_map_states()
+
+        self.run_async(work, complete)
+
+    def offer_retail_import(self, settings_dir, check, apply):
+        """Offer the retail import inline without interrupting lobby setup."""
+        from player_profile import remember_retail_import_prompt, retail_import_prompt_pending
+
+        if self.retail_import_row is not None or self.closing:
+            return
+        try:
+            if not retail_import_prompt_pending(settings_dir) or check() is None:
+                return
+        except (OSError, ValueError):
+            return
+        row = self.retail_import_row = tk.Frame(self.entry_panel, bg=PANEL)
+        row.grid(row=4, column=0, columnspan=3, sticky='ew', pady=(10, 0))
+        if self.lobby_layout:
+            row.grid_remove()
+        actions = tk.Frame(row, bg=PANEL)
+        actions.pack(fill='x')
+        notice = tk.StringVar(row)
+        message = tk.Label(row, textvariable=notice, bg=PANEL, fg=MUTED, justify='left', anchor='w')
+        row.bind('<Configure>', lambda event: message.configure(wraplength=max(1, event.width)))
+        message.pack(fill='x')
+
+        def complete(result):
+            try:
+                remember_retail_import_prompt(settings_dir, 'done')
+            except (OSError, ValueError):
+                result += ' Starter could not save your import preference.'
+            actions.destroy()
+            self.retail_import_complete = None
+            notice.set(result)
+
+        self.retail_import_complete = complete
+
+        def dismiss():
+            try:
+                remember_retail_import_prompt(settings_dir, 'dismissed')
+            except (OSError, ValueError):
+                notice.set('Starter could not save your choice. Try again.')
+                return
+            self.retail_import_complete = None
+            row.destroy()
+            self.retail_import_row = None
+
+        def import_settings():
+            if self.controls_busy or self.game_status not in ('idle', 'stopped', 'finished', 'failed'):
+                notice.set('Close TRIBES 3 and wait for Starter to finish its current action.')
+                return
+            try:
+                result = apply()
+            except (OSError, ValueError) as exc:
+                notice.set(str(exc))
+                return
+            complete(result)
+
+        self.button(actions, 'Import retail settings', import_settings).pack(side='left')
+        self.button(actions, 'Dismiss', dismiss, False).pack(side='left', padx=(8, 0))
+
+    def offer_windows_retail_import(self, workspace):
+        from player_profile import import_retail_settings, user_profile_root, windows_retail_import_offer
+
+        try:
+            root = user_profile_root()
+        except (OSError, ValueError):
+            return
+
+        def apply():
+            changed = import_retail_settings(root=root, workspaces=(workspace,), first_launch=True)
+            return ('Retail settings imported. They apply the next time you open the game.'
+                    if changed else 'Your community settings already match the saved retail settings.')
+
+        self.offer_retail_import(root, lambda: windows_retail_import_offer(root, (workspace,)), apply)
 
     def show_settings(self):
         if self.settings_window is not None and self.settings_window.winfo_exists():
@@ -1336,9 +2331,32 @@ class Desktop:
         window.title('Settings')
         window.transient(self.root)
         window.resizable(False, False)
-        self.label(window, 'Game settings', 21, True).pack(anchor='w')
+        if self.steam_name_loader:
+            self.label(window, 'Warrior Name', 16, True).pack(anchor='w')
+            self.label(window, 'Leave blank to use your Steam name.', color=MUTED).pack(anchor='w', pady=(4, 8))
+            value = tk.StringVar(window, value=self.warrior_name)
+            entry = tk.Entry(window, textvariable=value, font=('Segoe UI', 11), bg='#20374a',
+                             fg=TEXT, insertbackground=TEXT, relief='flat')
+            entry.pack(fill='x', ipady=6)
+            notice = tk.StringVar(window)
+
+            def save_name():
+                try:
+                    self.save_warrior_name(value.get())
+                except (OSError, ValueError) as exc:
+                    notice.set(str(exc))
+                    return
+                value.set(self.warrior_name)
+                notice.set('Name saved for your next join.' if self.warrior_name else 'Using your Steam name.')
+
+            entry.bind('<Return>', lambda _event: save_name())
+            self.button(window, 'Save name', save_name, False).pack(anchor='w', pady=(8, 0))
+            tk.Label(window, textvariable=notice, bg=BG, fg=MUTED, font=('Segoe UI', 10),
+                     justify='left', wraplength=420, anchor='w').pack(fill='x', pady=(3, 10))
+            tk.Frame(window, bg=PANEL, height=1).pack(fill='x', pady=(0, 14))
+        self.label(window, 'Game settings', 16, True).pack(anchor='w')
         description = self.label(
-            window, 'Copy your retail key bindings, sensitivity, and game options. '
+            window, 'Copy your retail key bindings, weapon inheritance, and other game settings. '
             'Starter backs up any community settings files it replaces.', 11, color=MUTED)
         description.configure(wraplength=420, justify='left')
         description.pack(anchor='w', pady=(8, 14))
@@ -1353,14 +2371,19 @@ class Desktop:
             except (OSError, ProfileError) as exc:
                 status.set(str(exc))
                 return
-            status.set('Retail settings imported. They apply the next time you open the game.'
-                       if changed else 'Your community settings already match the saved retail settings.')
+            result = ('Retail settings imported. They apply the next time you open the game.'
+                      if changed else 'Your community settings already match the saved retail settings.')
+            status.set(result)
+            if self.retail_import_complete is not None:
+                self.retail_import_complete(result)
 
         self.button(window, 'Import settings from retail', import_settings).pack(anchor='w')
         self.button(window, 'Projectile inheritance', lambda: self.show_projectile_settings(window),
                     False).pack(anchor='w', pady=(8, 0))
         tk.Label(window, textvariable=status, bg=BG, fg=MUTED, font=('Segoe UI', 10),
                  justify='left', wraplength=420, anchor='w').pack(fill='x', pady=(12, 0))
+        self.button(window, 'About this launcher', self.show_connection_info, False).pack(
+            anchor='w', pady=(12, 0))
         window.bind('<Escape>', lambda _event: window.destroy())
 
     def show_projectile_settings(self, parent):
@@ -1475,6 +2498,31 @@ class Desktop:
             self.live_team.current(max(0, selected_team))
         self.live_team.configure(state='readonly' if ready and not returning else 'disabled')
 
+    def select_live_match(self,event):
+        self.render_live_controls()
+        self.render_live_roster()
+        selected = self.live_list.selection()
+        match_id = selected[0] if selected else None
+        if match_id != self.live_selection:
+            self.live_selection = match_id
+            if match_id:
+                self.refresh_live_matches(background=True)
+
+    def render_live_roster(self):
+        from itertools import zip_longest
+
+        selected = self.live_list.selection()
+        item = self.live_targets.get(selected[0], {}) if selected else {}
+        roster = item.get('roster')
+        self.live_roster_status.set('Assigned players' if roster else
+                                    'Roster unavailable' if selected else 'Select a match to see its assigned players.')
+        children = self.live_roster_table.get_children()
+        if children:
+            self.live_roster_table.delete(*children)
+        if roster:
+            for blue,red in zip_longest(roster['blue'],roster['red'],fillvalue=''):
+                self.live_roster_table.insert('',tk.END,values=(blue,red))
+
     def render_live_matches(self,matches):
         selected=self.live_list.selection()
         previous=selected[0]if selected else None
@@ -1497,12 +2545,15 @@ class Desktop:
         if self.watch_id is None:
             self.live_status.set('Select a match.' if matches else 'No matches are live right now.')
         self.render_live_controls()
+        self.render_live_roster()
 
     def refresh_live_matches(self, *, background=False):
         if self.controls_busy or self.closing or not self.live_browser_supported():return
         if background and self.busy:return
         if self.current_panel!='live'and self.watch_id is None:return
         watch_id=self.watch_id
+        selected = self.live_list.selection()
+        roster_match_id = selected[0] if selected else None
         def work():
             stopped=False
             if watch_id is not None:
@@ -1512,7 +2563,8 @@ class Desktop:
                     else:self.lobby.release_spectator(watch_id)
                     stopped=True
                 else:self.lobby.spectator_target(watch_id)
-            return self.lobby.live_matches(),stopped
+            options = {'roster_match_id':roster_match_id} if roster_match_id else {}
+            return self.lobby.live_matches(**options),stopped
         def refreshed(value):
             matches,stopped=value
             if stopped and self.watch_id==watch_id:self.watch_id=None
@@ -1554,11 +2606,7 @@ class Desktop:
             self.render(room)
             self.show_panel('lobbies')
 
-        if self.steam_name_loader:
-            self.enter_with_steam(lambda name: self.lobby.join_match(match_id, name, team=team), success=joined)
-        else:
-            name = self.name.get()
-            self.run_async(lambda: self.lobby.join_match(match_id, name, team=team), joined)
+        self.enter_lobby(lambda name: self.lobby.join_match(match_id, name, team=team), success=joined)
 
     def spectate_selected(self):
         if self.controls_busy or self.closing or self.watch_id is not None:return
@@ -1566,19 +2614,19 @@ class Desktop:
         item=self.live_targets.get(selected[0])if selected else None
         if item is None or item.get('canSpectate')is not True:return
         if self.game_status not in ('idle','stopped','finished','failed'):return
-        selected_name=self.name.get()
-        def admit():
-            name=self.steam_name_loader()if self.steam_name_loader else selected_name
-            return name,self.lobby.spectate(item['id'],name)
-        def admitted(value):
-            name,target=value
-            self.name.set(name);self.watch_id=target['watchId']
+        try:
+            name = self.player_name_for_action()
+        except (ValueError, SteamIdentityError) as exc:
+            self.live_status.set(str(exc))
+            return
+        def admitted(target):
+            self.watch_id=target['watchId']
             self.live_status.set('Preparing spectator view…')
             def begin():
                 if not self.game:self.game=self.game_factory(self.lobby)
                 return self.game.start_spectating(target['watchId'])
             self.run_async(begin,lambda _:self.live_status.set('Opening spectator view…'))
-        self.run_async(admit,admitted)
+        self.run_async(lambda: self.lobby.spectate(item['id'],name), admitted)
 
     def stop_watching(self):
         if self.controls_busy or self.closing or self.watch_id is None:return
@@ -1594,8 +2642,14 @@ class Desktop:
     def refresh(self):
         self.refresh_handle=None
         if self.closing: return
-        if self.room and not self.busy and not self.closing:
-            self.run_async(lambda:self.lobby.action('state'),self.render,background=True)
+        if self.room and not self.busy:
+            code = self.room['code']
+
+            def update(room):
+                if self.room is not None and self.room['code'] == code:
+                    self.render(room)
+
+            self.run_async(lambda: self.lobby.action('state'), update, background=True)
         if not self.closing: self.refresh_handle=self.root.after(2000,self.refresh)
 
     def show_connection_info(self):
@@ -1664,9 +2718,14 @@ class Desktop:
     def close(self):
         if self.closing: return
         self.closing = True
+        for handle in self.notice_timers.values():
+            self.root.after_cancel(handle)
+        self.notice_timers.clear()
+        self.backdrop.close()
         if self.map_sync is not None:
             self.map_sync.cancelled.set()
-        for name in ('poll_handle','refresh_handle','copy_reset_handle','live_refresh_handle'):
+        for name in ('poll_handle', 'refresh_handle', 'copy_reset_handle', 'live_refresh_handle',
+                     'steam_retry_handle', 'brand_title_handle', 'brand_icon_handle'):
             handle=getattr(self,name,None)
             if handle is not None:
                 self.root.after_cancel(handle)
@@ -1733,6 +2792,7 @@ def main(*, ssl_context=None, on_ready=None):
         root.update_idletasks()
         on_ready()
     root.after_idle(gui.show_connection_info_once)
+    root.after_idle(gui.offer_windows_retail_import, selected_workspace)
     root.mainloop()
 
 
