@@ -1,5 +1,5 @@
 import ast
-from base64 import b64encode
+from base64 import b64decode, b64encode
 import json
 import os
 from pathlib import Path
@@ -8,7 +8,9 @@ import time
 import unittest
 from unittest.mock import patch
 
-from starter_update import (CHANNEL, DIRECT_CHANNEL, INDEX, INVENTORY, accept, decode_index,
+from direct_update_contract import LINUX_INDEX
+from starter_update import (CHANNEL, DIRECT_CHANNEL, LINUX_CHANNEL, LINUX_CHUNK_BYTES,
+                            INDEX, INVENTORY, accept, decode_index,
                             encoded, prepare, recover, run_startup, sha)
 
 
@@ -156,6 +158,64 @@ class StarterUpdateTest(unittest.TestCase):
         self.configure_direct()
         with self.assertRaisesRegex(ValueError, 'does not match this Starter package'):
             self.stage({'lua/client.lua': raw})
+
+    def test_linux_update_uses_its_own_index_and_revision(self):
+        self.configure_direct()
+        files = {'desktop_launcher.py': b'print("Linux update")\n'}
+        direct = envelope(files, channel=DIRECT_CHANNEL)
+        with self.assertRaisesRegex(ValueError, 'update channel'):
+            decode_index(direct, channel=LINUX_CHANNEL, verifier=verify_fixture)
+
+        self.manifest.update(linux_starter_update_channel=LINUX_CHANNEL, starter_update_revision=74)
+        self.inventory.write_bytes(encoded(self.manifest))
+        linux = envelope(files, channel=LINUX_CHANNEL)
+
+        def fetch(name, limit):
+            self.requests.append(name)
+            return linux if name == LINUX_INDEX else files['desktop_launcher.py']
+
+        args = {'channel': LINUX_CHANNEL, 'fetch': fetch, 'verifier': verify_fixture}
+        self.assertTrue(prepare(self.root, self.state, **args))
+        after = json.loads(self.inventory.read_bytes())
+        self.assertEqual(after['starter_update_revision'], 74)
+        self.assertEqual(after['linux_starter_update_revision'], 1)
+        self.assertEqual(self.requests, [LINUX_INDEX, 'starter-file-' + sha(files['desktop_launcher.py']) + '.bin'])
+        self.assertTrue(recover(self.root, self.state, channel=LINUX_CHANNEL))
+        self.assertEqual(json.loads(self.inventory.read_bytes()), self.manifest)
+        self.assertFalse(prepare(self.root, self.state, **args))
+
+    def test_linux_checks_individual_chunks_then_checks_the_reassembled_file(self):
+        self.configure_direct()
+        self.manifest['linux_starter_update_channel'] = LINUX_CHANNEL
+        self.inventory.write_bytes(encoded(self.manifest))
+        name = 'desktop_launcher.py'
+        chunks = (b'#' * LINUX_CHUNK_BYTES, b'\nprint("new")\n')
+        payload = json.loads(b64decode(json.loads(envelope({name: b''.join(chunks)}))['payload']))
+        payload['channel'] = LINUX_CHANNEL
+        row = payload['files'][name]
+        row['chunks'] = [sha(part) for part in chunks]
+        blobs = {f'starter-file-{sha(part)}.bin': part for part in chunks}
+
+        def fetch(name, limit):
+            if name != LINUX_INDEX:
+                return blobs[name]
+            raw = b64encode(encoded(payload)).decode()
+            return encoded({'payload': raw, 'signature': raw})
+
+        args = {'channel': LINUX_CHANNEL, 'fetch': fetch, 'verifier': verify_fixture}
+        row['chunks'].reverse()
+        with self.assertRaisesRegex(ValueError, 'failed verification'):
+            prepare(self.root, self.state, **args)
+        self.assertEqual(json.loads(self.inventory.read_bytes()), self.manifest)
+        row['chunks'].reverse()
+        row['sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'failed verification'):
+            prepare(self.root, self.state, **args)
+        row['sha256'] = sha(b''.join(chunks))
+        self.assertTrue(prepare(self.root, self.state, **args))
+        self.assertEqual((self.root/name).read_bytes(), b''.join(chunks))
+        row = next(file for file in json.loads(self.inventory.read_bytes())['files'] if file['path'] == name)
+        self.assertNotIn('chunks', row)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows package lock required')
     def test_direct_launch_applies_before_import_and_recovers_a_failed_start(self):

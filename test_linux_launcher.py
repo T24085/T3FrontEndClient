@@ -5,6 +5,7 @@ from pathlib import Path
 import runpy
 import shlex
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
@@ -12,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 if sys.platform == 'linux':
-    from linux_launcher import main, merge_dll_overrides, prepare_launch, run_in_terminal, setup_option, steam_command, windows_path
+    from linux_launcher import main, merge_dll_overrides, parse_windows_path, prepare_launch, run_in_terminal, setup_option, steam_command
 
 
 class LinuxDirectBootstrapTest(unittest.TestCase):
@@ -65,7 +66,7 @@ class LinuxLauncherTest(unittest.TestCase):
         self.proton = self.root/'Proton Tool/proton'
         self.proton.parent.mkdir()
         self.proton.write_text('#!/usr/bin/python3\nimport json,os,sys\n'
-                               'if sys.argv[1]=="getcompatpath": print("Z:\\\\\")\n'
+                               'if sys.argv[1]=="getcompatpath": print("Z:"+sys.argv[2].replace("/",chr(92)))\n'
                                'else: open(os.environ["TRIBES_TEST_CAPTURE"],"w").write(json.dumps(sys.argv[1:]))\n')
         self.proton.chmod(0o755)
         self.command = [str(self.proton), 'waitforexitandrun', str(self.game/'TribesRivals.exe'), '-original-argument']
@@ -80,14 +81,29 @@ class LinuxLauncherTest(unittest.TestCase):
             self.assertEqual(main(), 0)
         captured = json.loads((self.root/'captured.json').read_text())
         self.assertEqual(captured[0], 'waitforexitandrun')
-        self.assertEqual(captured[1], windows_path('Z:\\', self.package/'python/pythonw.exe'))
-        self.assertIn(windows_path('Z:\\', self.game), captured)
+        self.assertEqual(captured[1], 'Z:' + str(self.package/'python/pythonw.exe').replace('/', '\\'))
+        self.assertIn('Z:' + str(self.game).replace('/', '\\'), captured)
         self.assertNotIn('-original-argument', captured)
         sessions = list((self.root/'User Data/Tribes3CommunityStarter/linux-launches').iterdir())
         self.assertEqual(len(sessions), 1)
         self.assertTrue((sessions[0]/'ca-bundle.pem').is_file())
+        self.assertIn('exited with code 0', (sessions[0]/'proton-preflight.log').read_text())
         self.assertEqual((sessions[0]/'ca-bundle.pem').stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads((sessions[0]/'launch.json').read_text())['game_source'], str(self.game))
+
+    def test_wrapper_probe_logs_before_proton_and_does_not_launch_it(self):
+        for name in ('Start Community Starter.sh', 'linux_launcher.py'):
+            shutil.copyfile(Path(__file__).with_name(name), self.package/name)
+        script = str(self.package/'Start Community Starter.sh')
+        command = ['/bin/sh', script, '--steam-probe', '--', *self.command]
+        result = subprocess.run(command, env=self.env, timeout=10)
+        self.assertEqual(result.returncode, 0)
+        data = self.root/'User Data/Tribes3CommunityStarter'
+        log = (data/'launcher-start.log').read_text()
+        self.assertIn('Clan Wars wrapper entered (--steam-probe)', log)
+        self.assertIn('No game or Proton process was started', log)
+        self.assertFalse((data/'linux-launches').exists())
+        self.assertFalse((self.root/'captured.json').exists())
 
     def test_steam_outer_separator_keeps_nested_separators(self):
         command = ['/Steam/reaper', 'SteamLaunch', 'AppId=2687970', '--',
@@ -104,11 +120,36 @@ class LinuxLauncherTest(unittest.TestCase):
         calls = []
         def translator(argv, **kwargs):
             calls.append(argv)
-            return subprocess.CompletedProcess(argv, 0, stdout=b'Z:\\\r\n', stderr=b'')
-        argv, env, _ = prepare_launch(self.package, command, self.env, run=translator)
-        self.assertEqual(calls[0], command[:4]+['getcompatpath', '/'])
+            stdout = ('Runtime notice\n' + 'Z:' + argv[-1].replace('/', '\\') + '\n').encode()
+            return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr=b'')
+        argv, env, session = prepare_launch(self.package, command, self.env, run=translator)
+        self.assertEqual(calls[0], command[:4]+['getcompatpath', str(session)])
+        self.assertTrue(all(call[-1] != '/' for call in calls))
         self.assertEqual(argv[:5], command[:5])
         self.assertEqual(env['WINEDLLOVERRIDES'], 'dwmapi=n,b')
+
+    def test_empty_snap_probe_uses_the_prefix_drives_for_each_launch_path(self):
+        devices = Path(self.env['STEAM_COMPAT_DATA_PATH'])/'pfx/dosdevices'
+        devices.mkdir(parents=True)
+        (devices/'p:').symlink_to(self.package, target_is_directory=True)
+        (devices/'g:').symlink_to(self.game, target_is_directory=True)
+        (devices/'s:').symlink_to(self.root/'User Data', target_is_directory=True)
+        (devices/'z:').symlink_to(devices/'z:')
+        join = self.root/'User Data'/'joins'/'fixture'
+        join.mkdir(parents=True)
+        calls = []
+        def translator(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=b'Runtime notice\r\n\r\n', stderr=b'')
+        argv, _, session = prepare_launch(self.package, self.command, self.env, run=translator, join_directory=join)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][-1], str(session))
+        self.assertEqual(argv[2], r'P:\python\pythonw.exe')
+        self.assertEqual(argv[argv.index('--game-dir')+1], 'G:\\')
+        self.assertEqual(argv[argv.index('--workspace')+1], r'S:\Tribes3CommunityStarter\sessions')
+        self.assertEqual(argv[argv.index('--ubuntu-join')+1], r'S:\joins\fixture')
+        log = (join/'proton-preflight.log').read_bytes()
+        self.assertIn(b'Runtime notice', log)
 
     def test_rejects_wrong_app_ambiguous_proton_and_foreign_install(self):
         for env, command in ((dict(self.env, SteamAppId='1'), self.command),
@@ -132,8 +173,9 @@ class LinuxLauncherTest(unittest.TestCase):
         self.assertEqual(parsed, [str(path/'Start Community Starter.sh'), '--steam-launch', '%command%'])
         self.assertEqual(merge_dll_overrides('dxgi=b;dwmapi.dll,other=b;dinput8=n'),
                          'dxgi=b;other=b;dinput8=n;dwmapi=n,b')
-        for root in ('relative', 'Z:\\folder', '\\\\server\\share\\'):
-            with self.assertRaises(ValueError): windows_path(root, self.package)
+        self.assertEqual(parse_windows_path(b'notice\n\\\\?\\D:\\Games\\Clan Wars\r\n'), r'D:\Games\Clan Wars')
+        for output in (b'relative', b'Z:folder', b'\\\\server\\share\\', b'C:\\one\nD:\\other', b'Z:\\up\\..\\game'):
+            self.assertIsNone(parse_windows_path(output))
 
     def test_failed_log_does_not_discard_the_running_child_owner(self):
         marker = self.root/'child-terminal.txt'

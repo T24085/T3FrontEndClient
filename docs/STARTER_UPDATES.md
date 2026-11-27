@@ -36,6 +36,22 @@ signature and a higher revision alone do not test this. Follow
 [issue #89](https://github.com/Tribes3-Modded/T3FrontEndClient/issues/89) for
 the per-session runtime reconciliation with `main`.
 
+## Ubuntu Direct Starter updates
+
+Build the Windows Direct index first. Build the Linux update from the same
+clean Starter commit. The Linux revision increments its own signed index.
+The Linux launcher also records the paired Windows source revision.
+
+\`\`\`powershell
+python tools/build_starter_update.py --channel linux-direct-v1 --previous <last-linux-index> --windows-index <paired-windows-index> --output <outside-checkout> --certificate <thumbprint>
+\`\`\`
+
+The Linux feed retains its cumulative managed inventory and splits larger
+files into verified chunks accepted by the installed updater. Verify each
+changed file against the existing Linux installer and run the Ubuntu launch
+and signed-update tests before publishing. Publish the content blobs before
+replacing \`starter-linux-update.json\`.
+
 ## Full Windows Clan Wars ZIP
 
 Use the full Windows Direct Starter ZIP as the base when reissuing the download

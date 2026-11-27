@@ -11,7 +11,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from starter_update import CHANNEL, DIRECT_CHANNEL, INDEX, MAX_FILE, UPDATE_CHANNELS, decode_index, encoded, sha
+from direct_update_contract import LINUX_INDEX
+from starter_update import (CHANNEL, DIRECT_CHANNEL, INDEX, LINUX_CHANNEL, LINUX_CHUNK_BYTES,
+                            MAX_FILE, UPDATE_CHANNELS, decode_index, encoded, sha)
 
 
 def client_entry_payload(raw, root):
@@ -56,12 +58,53 @@ def bundled_boundary_launcher(raw, root):
     return raw.replace(marker, source.read_bytes() + b'\nboundary_summary = summary', 1)
 
 
+def source_payload(root, name, *, windows_revision=None):
+    if name in ('direct_client.py', 'direct_network.py'):
+        source = root / 'experimental/direct-hosting/src' / name
+    else:
+        source = root / ('client_entry.py' if name == 'client.py' else name)
+    if source.resolve(strict=True) != source:
+        raise ValueError('Linked source is not permitted: ' + name)
+    raw = source.read_bytes()
+    if name == 'client.py':
+        raw = client_entry_payload(raw, root)
+        weather = root / 'lua/weather.lua'
+        if weather.resolve(strict=True) != weather:
+            raise ValueError('Linked weather runtime source is not permitted.')
+        raw = bundled_client_entry(raw, weather.read_bytes())
+        raw = soundtrack_entry(raw, root)
+    if name == 'desktop_launcher.py':
+        raw = bundled_boundary_launcher(raw, root)
+    if name == 'ubuntu_starter.py':
+        marker = b'SOURCE_STARTER_REVISION = None'
+        if raw.count(marker) != 1:
+            raise ValueError('Missing Ubuntu launcher source revision marker.')
+        raw = raw.replace(marker, f'SOURCE_STARTER_REVISION = {windows_revision}'.encode('ascii'), 1)
+    return raw
+
+
+def add_payload(name, raw, files, payloads, *, channel):
+    if not 0 < len(raw) <= MAX_FILE:
+        raise ValueError('Unsupported Starter update file size: ' + name)
+    if name.endswith(('.py', '.pyw')):
+        compile(raw, name, 'exec')
+    digest = sha(raw)
+    files[name] = {'bytes': len(raw), 'sha256': digest}
+    pieces = [raw]
+    if channel == LINUX_CHANNEL and len(raw) > LINUX_CHUNK_BYTES:
+        pieces = [raw[start:start + LINUX_CHUNK_BYTES] for start in range(0, len(raw), LINUX_CHUNK_BYTES)]
+        files[name]['chunks'] = [sha(part) for part in pieces]
+    for part in pieces:
+        payloads['starter-file-' + sha(part) + '.bin'] = part
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--certificate', required=True, help='Current user signing certificate thumbprint')
     parser.add_argument('--channel', choices=UPDATE_CHANNELS, default=CHANNEL)
     parser.add_argument('--previous', type=Path, help='Last published signed index')
+    parser.add_argument('--windows-index', type=Path, help='Paired signed Windows Direct index for a Linux update')
     parser.add_argument('files', nargs='*', help='Client package paths to add to the managed inventory')
     args = parser.parse_args()
     output = args.output.resolve()
@@ -70,6 +113,13 @@ def main():
     if subprocess.check_output(['git', '-c', 'safe.directory=' + ROOT.as_posix(), '-C', str(ROOT),
                                 'status', '--porcelain']).strip():
         raise ValueError('Commit the client source before building a signed update.')
+    linux = args.channel == LINUX_CHANNEL
+    if linux and (args.previous is None or args.windows_index is None):
+        parser.error('Linux updates require the previous Linux index and the paired Windows Direct index.')
+    if not linux and args.windows_index is not None:
+        parser.error('The paired Windows index is used only with the Linux channel.')
+    windows_revision = (decode_index(args.windows_index.read_bytes(), channel=DIRECT_CHANNEL)['revision']
+                        if linux else None)
     paths = set(args.files)
     revision = 1
     if args.previous:
@@ -82,7 +132,7 @@ def main():
         revision = previous['revision'] + 1
     projectile_dependencies = {'client.py', 'community_game.py', 'community_transport.py',
                                'desktop_launcher.py', 'player_profile.py', 'runtime_health.py', 'lua/client.lua'}
-    if args.channel == DIRECT_CHANNEL:
+    if args.channel in (DIRECT_CHANNEL, LINUX_CHANNEL):
         projectile_dependencies.add('direct_client.py')
     if paths & projectile_dependencies:
         paths.update(projectile_dependencies)
@@ -92,29 +142,8 @@ def main():
         raise ValueError('Select existing supported Starter package files.')
     files, payloads = {}, {}
     for name in sorted(paths):
-        if name in ('direct_client.py', 'direct_network.py'):
-            source = ROOT / 'experimental/direct-hosting/src' / name
-        else:
-            source = ROOT / ('client_entry.py' if name == 'client.py' else name)
-        if source.resolve(strict=True) != source:
-            raise ValueError('Linked source is not permitted: ' + name)
-        raw = source.read_bytes()
-        if name == 'client.py':
-            raw = client_entry_payload(raw, ROOT)
-            weather = ROOT / 'lua/weather.lua'
-            if weather.resolve(strict=True) != weather:
-                raise ValueError('Linked weather runtime source is not permitted.')
-            raw = bundled_client_entry(raw, weather.read_bytes())
-            raw = soundtrack_entry(raw, ROOT)
-        if name == 'desktop_launcher.py':
-            raw = bundled_boundary_launcher(raw, ROOT)
-        if not 0 < len(raw) <= MAX_FILE:
-            raise ValueError('Unsupported Starter update file size: ' + name)
-        if name.endswith('.py'):
-            compile(raw, name, 'exec')
-        digest = sha(raw)
-        files[name] = {'bytes': len(raw), 'sha256': digest}
-        payloads['starter-file-' + digest + '.bin'] = raw
+        raw = source_payload(ROOT, name, windows_revision=windows_revision)
+        add_payload(name, raw, files, payloads, channel=args.channel)
     now = int(time.time())
     payload = encoded({'channel': args.channel, 'revision': revision, 'issued': now, 'expires': now + 90 * 86400,
                        'files': files})
@@ -130,7 +159,7 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     for name, raw in payloads.items():
         (output / name).write_bytes(raw)
-    (output / INDEX).write_bytes(index)
+    (output / (LINUX_INDEX if linux else INDEX)).write_bytes(index)
     print(f'Signed Starter revision {revision} with {len(files)} managed file(s).', flush=True)
 
 
