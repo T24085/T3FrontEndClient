@@ -2,5 +2,6 @@
 
 ROUTE = '/api/direct-starter-updates/'
 INDEX = 'starter-update.json'
+LINUX_INDEX = 'starter-linux-update.json'
 MAX_INDEX = 32 * 1024
 MAX_FILE = 1024 * 1024
