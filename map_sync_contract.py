@@ -3,18 +3,27 @@ import hashlib
 import json
 import re
 
-from community_maps import declared_definitions, declared_shared_content
+from community_maps import MAX_MAPS, declared_definitions, declared_shared_content, valid_id, valid_label
+from verified_file_cache import MAX_PACKAGE_FILES, MAX_PACKAGE_MANIFEST_BYTES
 
 VERSION = 1
+MAP_ARCHIVE_NAME = 'Clan Wars Maps.zip'
+MAP_ARCHIVE_ASSETS = 'map-downloads/'
 MANIFEST_ROUTE = '/api/map-files-v1'
 FILE_ROUTE = MANIFEST_ROUTE + '/'
 CATALOG_VERSION = 2
 CATALOG_HEADER = 'X-T3-Map-Catalog'
 OBJECTIVES_HEADER = 'X-T3-Map-Objectives'
 CATALOG_ROUTE = '/api/map-files-v2'
-MAX_MANIFEST = 2 * 1024**2
+SESSION_VERSION = 3
+SESSION_HEADER = 'X-T3-Map-Sessions'
+SESSION_INDEX = '/api/maps-v3'
+SESSION_MAP = SESSION_INDEX + '/map/'
+SESSION_SHARED = SESSION_INDEX + '/shared/'
+SESSION_CORE = SESSION_INDEX + '/core'
+MAX_MANIFEST = MAX_PACKAGE_MANIFEST_BYTES
 MAX_FILE = 256 * 1024**2
-MAX_TOTAL = 8 * 1024**3
+MAX_TOTAL = 16 * 1024**3
 CHUNK = 128 * 1024
 SHA = re.compile('[0-9a-f]{64}')
 COOKED_PATH = re.compile(
@@ -26,8 +35,36 @@ def encode(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
 
 
+def sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def valid_sha(value):
+    return isinstance(value, str) and SHA.fullmatch(value) is not None
+
+
+def session_index(value):
+    if (not isinstance(value, dict) or value.keys() != {'format', 'maps', 'coreHash'}
+            or value['format'] != SESSION_VERSION or not valid_sha(value['coreHash'])
+            or not isinstance(value['maps'], list) or not 1 <= len(value['maps']) <= MAX_MAPS):
+        raise ValueError('Invalid map index.')
+    result = {}
+    for row in value['maps']:
+        if (not isinstance(row, dict) or row.keys() != {'id', 'label', 'gameTag', 'bytes', 'fileCount',
+                                                       'contentHash', 'manifestHash', 'hasObjectives'}
+                or not valid_id(row['id']) or row['id'].casefold() in result
+                or not valid_label(row['label']) or row['gameTag'] not in ('T1', 'T2', 'T3', 'Community')
+                or type(row['bytes']) is not int or not 0 <= row['bytes'] <= MAX_TOTAL + 256 * 1024
+                or type(row['fileCount']) is not int or not 0 <= row['fileCount'] <= MAX_PACKAGE_FILES + 1
+                or not valid_sha(row['contentHash']) or not valid_sha(row['manifestHash'])
+                or type(row['hasObjectives']) is not bool):
+            raise ValueError('Invalid map index entry.')
+        result[row['id'].casefold()] = row
+    return sorted(result.values(), key=lambda row: (row['label'].casefold(), row['id']))
+
+
 def cooked_rows(rows):
-    if not isinstance(rows, list) or not 1 <= len(rows) <= 10000:
+    if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_PACKAGE_FILES:
         raise ValueError('Invalid cooked map file count.')
     result = {}
     seen = set()

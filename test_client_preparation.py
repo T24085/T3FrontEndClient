@@ -16,7 +16,7 @@ import client_preparation
 
 from bulk_asset_cache import BulkStageCache
 from client_preparation import EXECUTABLE,consume,digest,stage
-from verified_file_cache import identity
+from verified_file_cache import identity, verify_package
 
 class ClientPreparationTest(unittest.TestCase):
  def setUp(self):
@@ -69,6 +69,19 @@ class ClientPreparationTest(unittest.TestCase):
   record=self.claim(descriptor)
   self.assertEqual((Path(record['run'])/'game/Topaz/Content/Maps/map.uasset').read_bytes(),b'new-map')
   self.assertEqual((self.package/row['path']).read_bytes(),b'cooked-map')
+ def test_selected_map_preparation_does_not_read_unrelated_bundled_assets(self):
+  (self.package/'content/Maps/map.uasset').unlink()
+  package = verify_package(self.package, skip_cooked=True)
+  download = self.workspace/'selected.asset'
+  download.write_bytes(b'selected')
+  item = {'path':'content/Community/Selected/Tile.uasset','bytes':8,'sha256':digest(download)}
+  descriptor = stage(self.package,self.source,self.workspace,package,self.original,self.source_ids,'fixture',
+                     catalog=self.catalog,map_overlay=[(item,None,download)],emit=lambda _:None,
+                     patches=((4,'e8621439ff'),),
+                     cache_factory=lambda p:BulkStageCache(p,filesystem_loader=lambda _:None,emit=lambda _:None))
+  record = self.claim(descriptor)
+  self.assertEqual((Path(record['run'])/'game/Topaz/Content/Community/Selected/Tile.uasset').read_bytes(),b'selected')
+  self.assertNotIn('content/Maps/map.uasset', record['package_inputs'])
  def test_independent_bulk_jobs_overlap_and_publish_only_complete_outputs(self):
   barrier=threading.Barrier(2);entered=[];guard=threading.Lock()
   class ConcurrentCache(BulkStageCache):

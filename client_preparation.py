@@ -17,10 +17,11 @@ import time
 import uuid
 
 from bulk_asset_cache import BulkStageCache
-from verified_file_cache import identity
+from verified_file_cache import MAX_PACKAGE_FILES, identity
 
 CONTRACT='prepared-client-v1'
-MAX_DESCRIPTOR_BYTES=4*1024*1024
+MAX_DESCRIPTOR_BYTES=16*1024*1024
+MAX_PREPARED_IDENTITIES=2*MAX_PACKAGE_FILES+1
 MAX_AGE_SECONDS=86400
 EXECUTABLE=Path('Topaz/Binaries/Win64/TribesRivals.exe')
 REL=EXECUTABLE.parent
@@ -43,12 +44,12 @@ def _member(root,name):
  return path
 
 def _stamps(root,names):
- if not 1<=len(names)<=10000 or len(set(name.casefold()for name in names))!=len(names):
+ if not 1<=len(names)<=MAX_PREPARED_IDENTITIES or len(set(name.casefold()for name in names))!=len(names):
   raise ValueError('Prepared inventory is empty, duplicate or oversized.')
  return {name:list(identity(_member(root,name)))for name in names}
 
 def _check_stamps(root,records):
- if not isinstance(records,dict)or not 1<=len(records)<=10000:raise ValueError('Prepared identity inventory is invalid.')
+ if not isinstance(records,dict)or not 1<=len(records)<=MAX_PREPARED_IDENTITIES:raise ValueError('Prepared identity inventory is invalid.')
  for name,expected in records.items():
   if not isinstance(expected,list)or len(expected)!=5 or list(identity(_member(root,name)))!=expected:
    raise ValueError('Prepared files changed; prepare the client again: '+name)
@@ -71,7 +72,11 @@ def stage(root,source,workspace,package,original,original_identities,verificatio
  if workspace==source or source in workspace.parents:raise ValueError('Client workspace must be outside the original game.')
  package_path=root/'package-manifest.json'
  package_sha=digest(package_path)
- package_ids=_stamps(root,[entry['path']for entry in package['files']]+['package-manifest.json'])
+ selected_inputs = [entry['path'] for entry in package['files']
+                    if map_overlay is None or not entry['path'].startswith('content/')]
+ if map_overlay is not None:
+  selected_inputs.extend(bundled for _, bundled, _ in map_overlay if bundled is not None)
+ package_ids=_stamps(root,list(dict.fromkeys([*selected_inputs,'package-manifest.json'])))
  source_ids={entry['path']:list(original_identities[entry['path']])for entry in original['files']}
  _check_stamps(source,source_ids)
  run=workspace/('client-'+uuid.uuid4().hex[:12]);run.mkdir(exist_ok=False)
