@@ -37,7 +37,7 @@ PTT_KEY_NAMES = {
     0x14: 'Caps Lock', 0x20: 'Space', 0x21: 'Page Up', 0x22: 'Page Down',
     0x23: 'End', 0x24: 'Home', 0x25: 'Left', 0x26: 'Up', 0x27: 'Right',
     0x28: 'Down', 0x2d: 'Insert', 0x2e: 'Delete', 0x5d: 'Menu',
-    0x6a: 'Numpad *', 0x6b: 'Numpad +', 0x6d: 'Numpad âˆ’', 0x6e: 'Numpad .',
+    0x6a: 'Numpad *', 0x6b: 'Numpad +', 0x6d: 'Numpad −', 0x6e: 'Numpad .',
     0x6f: 'Numpad /', 0x90: 'Num Lock', 0x91: 'Scroll Lock',
     0xba: ';', 0xbb: '=', 0xbc: ',', 0xbd: '-', 0xbe: '.', 0xbf: '/',
     0xc0: '`', 0xdb: '[', 0xdc: '\\', 0xdd: ']', 0xde: "'", 0xe2: 'OEM 102',
@@ -482,7 +482,7 @@ class DirectClient(CommunityClient):
                                     lambda: not stop.is_set() and self.proximity_enabled.is_set() and ready_run() is not None,
                                     status, lambda: self.proximity_key)
                         except (OSError, ValueError, http.client.HTTPException):
-                            status('Proximity voice reconnectingâ€¦')
+                            status('Proximity voice reconnecting…')
                         if stop.wait(2):
                             return
             finally:
@@ -861,10 +861,10 @@ class ArmorPanel:
         preview = tk.Frame(self.panel, bg=PANEL, width=460, height=335)
         preview.pack(anchor='w', pady=(12, 4), fill='x')
         preview.pack_propagate(False)
-        self.model_status = tk.Label(preview, text='Loading available suitsâ€¦', bg=PANEL, fg=MUTED)
+        self.model_status = tk.Label(preview, text='Loading available suits…', bg=PANEL, fg=MUTED)
         self.model_status.pack(fill='both', expand=True)
         self.model_frame = tk.Frame(preview, bg=PANEL, takefocus=True, cursor='fleur')
-        self.orbit_help = desktop.label(self.panel, 'Drag to rotate Â· Scroll to zoom Â· Home to reset', color=MUTED)
+        self.orbit_help = desktop.label(self.panel, 'Drag to rotate · Scroll to zoom · Home to reset', color=MUTED)
         tk.Label(self.panel, textvariable=self.caption, bg=BG, fg=MUTED).pack(anchor='w')
         self.save = desktop.button(self.panel, 'Save armor choices', self.save_choices)
         self.save.pack(anchor='w', pady=(10, 0))
@@ -892,7 +892,7 @@ class ArmorPanel:
 
     def open(self):
         if not self.catalog:
-            self.status.set('Loading available suitsâ€¦')
+            self.status.set('Loading available suits…')
             self.submit('load')
         elif self.current_selection() != self.displayed_model:
             self.select_suit()
@@ -915,13 +915,13 @@ class ArmorPanel:
         suit = next(key for key, label in self.catalog[weight].items() if label == self.suit.get())
         self.selected[weight] = suit
         key = (weight, suit)
-        self.caption.set(f'{weight} armor Â· {self.suit.get()}')
+        self.caption.set(f'{weight} armor · {self.suit.get()}')
         if key != self.displayed_model and not self.show_model(key):
             self.displayed_model = None
             self.model_frame.pack_forget()
             self.orbit_help.pack_forget()
             loading = os.name=='nt' and key in ARMOR_MODEL_BLOBS and key not in self.models
-            self.model_status.configure(text='Loading 3D suitâ€¦' if loading else '3D model unavailable for this suit.')
+            self.model_status.configure(text='Loading 3D suit…' if loading else '3D model unavailable for this suit.')
             self.model_status.pack(fill='both', expand=True)
             if loading:
                 self.submit(key)
@@ -963,7 +963,7 @@ class ArmorPanel:
 
     def save_choices(self):
         self.submit('save', choices=dict(self.selected))
-        self.status.set('Saving armor choicesâ€¦')
+        self.status.set('Saving armor choices…')
         self.refresh_save()
 
     def load_choices(self, response):
@@ -1107,7 +1107,7 @@ class PublicCTFPanel:
         self.ballot = None
         self.ballot_key = None
         self.state = {}
-        self.status = tk.StringVar(value='Checking the public serverâ€¦')
+        self.status = tk.StringVar(value='Checking the public server…')
         self.format_label = tk.StringVar(value='Bots fill open slots')
         self.panel = tk.Frame(self.root, bg=BG)
         desktop.label(self.panel, 'Public CTF', 27, True).pack(anchor='w')
@@ -1148,7 +1148,7 @@ class PublicCTFPanel:
         if not ui.game:
             ui.game = ui.game_factory(self.lobby)
         name = ui.name.get().strip()
-        self.status.set('Reserving a seatâ€¦')
+        self.status.set('Reserving a seat…')
         self.submit('start', lambda: ui.game.start_public(name))
 
     def stop(self):
@@ -1214,7 +1214,7 @@ class PublicCTFPanel:
             self.ballot_message.set(f'{state["seconds"]} seconds left')
             for option in state['options']:
                 selected = state['selected'] == option['id']
-                prefix = 'âœ“ ' if selected else ''
+                prefix = '✓ ' if selected else ''
                 self.ballot_buttons[option['id']].configure(text=f'{prefix}{option["label"]} ({option["votes"]})',
                     bg=ACCENT if selected else PANEL, fg=BG if selected else TEXT)
         if opening:
@@ -1248,8 +1248,8 @@ class PublicCTFPanel:
                     team_size = state.get('teamSize', 12)
                     if type(team_size) is not int or not 1 <= team_size <= 64:
                         team_size = 12
-                    self.format_label.set(f'{team_size} vs. {team_size} Â· Bots fill open slots')
-                    self.status.set(state.get('error') or f'{summary} Â· {state["players"]}/{2 * team_size} players')
+                    self.format_label.set(f'{team_size} vs. {team_size} · Bots fill open slots')
+                    self.status.set(state.get('error') or f'{summary} · {state["players"]}/{2 * team_size} players')
         except queue.Empty:
             pass
         state = self.state
@@ -1615,7 +1615,7 @@ def main(root=ROOT, *, on_ready=None):
                     owner.render_live_controls()
 
             factory = lambda current: DirectGame(current, root, source, local_workspace,
-                                                 local_workspace/'control', map_sync=local_sync)
+                                                 local_workspace/'direct-desktop-control', map_sync=local_sync)
             self.local_desktop = LocalDesktop(window, client, factory, map_sync=local_sync)
             if self.name.get().strip():
                 self.local_desktop.name.set(self.name.get())
@@ -1724,7 +1724,7 @@ def main(root=ROOT, *, on_ready=None):
             finally:lobby.close()
 
     try:
-        window=tk.Tk();window.title('TRIBES 3 â€” Direct Host Starter')
+        window=tk.Tk();window.title('TRIBES 3 — Direct Host Starter')
         map_sync=MapSync(lobby,root,workspace)
         factory=lambda current:DirectGame(current,root,source,workspace,workspace/'direct-desktop-control',map_sync=map_sync)
         gui=DirectDesktop(window,lobby,factory,

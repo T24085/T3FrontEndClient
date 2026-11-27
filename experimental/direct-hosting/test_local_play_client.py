@@ -2,6 +2,7 @@
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -70,3 +71,16 @@ class LocalPlayClientTest(unittest.TestCase):
             with self.assertRaisesRegex(CommunityError, 'remote host is unavailable'):
                 OfflineLobby().capabilities()
             network.assert_not_called()
+
+    def test_local_join_uses_the_direct_game_control_folder(self):
+        # The client only accepts game Jobs under desktop-control or direct-desktop-control;
+        # any other folder fails the join with "Unexpected desktop Job location".
+        source = (HERE/'src'/'direct_client.py').read_text(encoding='utf-8')
+        self.assertIn("local_workspace/'direct-desktop-control', map_sync=local_sync", source)
+        self.assertNotIn("local_workspace/'control'", source)
+
+    def test_starter_text_is_not_double_encoded(self):
+        # UTF-8 text saved through a cp1252 round trip turns "…" into "â€¦" and "·" into "Â·".
+        source = (HERE/'src'/'direct_client.py').read_text(encoding='utf-8')
+        garbled = re.findall(r'[ÂÃâ][\u0080-ÿŒ-™]', source)
+        self.assertEqual(garbled, [])
