@@ -2,6 +2,7 @@ import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { clock, isDiscontinuity, positionAt, routeBounds } from "./route-playback.mjs";
 import { clipRange, recordReplayClip } from "./replay-clip.mjs";
 import { DataComponent, Icon } from "../../data-app-public.jsx";
+import { RouteReplay3D } from "./RouteReplay3D.jsx";
 
 const colors = ["#1883dc", "#df7822", "#2b9e78", "#a364d3", "#d65a73", "#afb232", "#3998ae", "#ac5a3a", "#6977df", "#cb5ba5"];
 const eventMarks = { "Flag contact": "◆", "Flag pickup": "▲", "Flag released": "□",
@@ -72,6 +73,7 @@ export function MatchRoutes({ phase, tracks, picker, note, provided, title = "Ma
   const [overview, setOverview] = useState(null);
   const [imageFailed, setImageFailed] = useState(false);
   const [view, setView] = useState("routes");
+  const [dimension, setDimension] = useState("2d");
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [panOnTouch, setPanOnTouch] = useState(false);
@@ -149,6 +151,9 @@ export function MatchRoutes({ phase, tracks, picker, note, provided, title = "Ma
   useEffect(() => { if (playing && time >= duration) setPlaying(false); }, [time, duration, playing]);
 
   const visible = focused ? routes.filter(route => route.label === focused) : routes;
+  const elevated = useMemo(() => routes.filter(route => route.samples.every(point => Number.isFinite(point.world_z))), [routes]);
+  const route3D = elevated.find(route => route.label === focused) ?? elevated[0];
+  const chase = dimension === "3d" && Boolean(route3D);
   const sourceRows = useMemo(() => visible.flatMap(route => route.samples.map(sample => ({ ...sample, bot: route.label }))), [routes, focused]);
   const landmarks = overview?.landmarks ?? [];
   const bounds = useMemo(() => view === "map" && overview?.bounds ? overview.bounds
@@ -228,12 +233,17 @@ export function MatchRoutes({ phase, tracks, picker, note, provided, title = "Ma
         view={{ routes: geometry, events, landmarks, project, terrain: imageBounds, imageUrl: hasImage ? overview.image_url : null,
           title: clipTitle ?? ((overview?.label ?? mapId ?? title) + (tracks[0]?.attempt ? " · Replay " + tracks[0].attempt : "")),
           focused, scaleMeters, scale, duration }} />}
-      {routes.length > 1 && <label className="trial-filter training-replay-bot">Bot to follow
-        <select value={focused} onChange={event => { setFocused(event.target.value); setSelectedEvent(null); }}>
-          <option value="">All bots</option>
-          {routes.map(route => <option key={route.label} value={route.label}>{route.label}</option>)}
+      <div className="training-route-toggles" role="group" aria-label="Replay perspective">
+        <button type="button" aria-pressed={!chase} onClick={() => setDimension("2d")}>Top down</button>
+        <button type="button" aria-pressed={chase} disabled={!route3D} onClick={() => setDimension("3d")}>3D chase</button>
+      </div>
+      {(chase ? elevated : routes).length > 1 && <label className="trial-filter training-replay-bot">Bot to follow
+        <select value={chase ? route3D.label : focused} onChange={event => { setFocused(event.target.value); setSelectedEvent(null); }}>
+          {!chase && <option value="">All bots</option>}
+          {(chase ? elevated : routes).map(route => <option key={route.label} value={route.label}>{route.label}</option>)}
         </select>
       </label>}
+      {chase ? <RouteReplay3D key={route3D.label} route={route3D} time={time} overview={overview} /> : <>
       <div className="training-map-controls" aria-label="Map view">
         <div className="training-route-toggles">
           <button type="button" aria-pressed={view === "routes"} onClick={() => fit("routes")}>Fit routes</button>
@@ -307,6 +317,7 @@ export function MatchRoutes({ phase, tracks, picker, note, provided, title = "Ma
         {hasImage && " Flags and small squares mark flag stands and spawns. The terrain comes from the map’s source heightfield."}
         {!hasImage && " A terrain image is unavailable for this map."}
         {note && " " + note}{routes.length < tracks.length && " Some bot traces could not be loaded."}</p>
+      </>}
       {events.length > 0 ? <details className="training-route-events">
         <summary>Route events <span>{events.length}</span></summary>
         <div className="training-event-list">

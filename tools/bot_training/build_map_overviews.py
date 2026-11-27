@@ -41,6 +41,29 @@ def terrain_image(grid, spacing, snow=False):
     return Image.fromarray(rgba), [float(low), float(high)]
 
 
+def relief_grid(grid, bounds, landmarks, limit=65):
+    """Sample measured elevations closely around the map's play area."""
+    import numpy as np
+
+    height, width = grid.shape
+    dx = (bounds['max_x'] - bounds['min_x']) / (width - 1)
+    dy = (bounds['max_y'] - bounds['min_y']) / (height - 1)
+    left, right, top, bottom = 0, width - 1, 0, height - 1
+    if landmarks:
+        xs, ys = [[point[axis] for point in landmarks] for axis in ('x', 'y')]
+        left = max(left, min(width - 2, int((min(xs) - 350 - bounds['min_x']) / dx)))
+        right = min(right, max(left + 1, int((max(xs) + 350 - bounds['min_x']) / dx) + 1))
+        top = max(top, min(height - 2, int((bounds['max_y'] - max(ys) - 350) / dy)))
+        bottom = min(bottom, max(top + 1, int((bounds['max_y'] - min(ys) + 350) / dy) + 1))
+    rows = np.rint(np.linspace(top, bottom, min(limit, bottom-top+1))).astype(int)
+    columns = np.rint(np.linspace(left, right, min(limit, right-left+1))).astype(int)
+    sampled = grid[np.ix_(rows, columns)]
+    return dict(rows=len(rows), columns=len(columns),
+                bounds=dict(min_x=bounds['min_x'] + left*dx, max_x=min(bounds['max_x'], bounds['min_x'] + right*dx),
+                            min_y=max(bounds['min_y'], bounds['max_y'] - bottom*dy), max_y=bounds['max_y'] - top*dy),
+                heights=[round(float(z), 2) if np.isfinite(z) else None for z in sampled.flat])
+
+
 def build(config, source_root, expanded_root, output):
     import numpy as np
     from lupa.lua54 import LuaRuntime
@@ -89,6 +112,7 @@ def build(config, source_root, expanded_root, output):
             image, elevation = terrain_image(full, extent/(grid.shape[0]-1), name == 'Snowblind')
             image.save(output/(map_id+'.png'), optimize=True)
             data.update(image_url='/api/map/'+map_id+'/image', elevation_m=elevation,
+                        relief=relief_grid(full, data['bounds'], landmarks),
                         source='Preserved source terrain heightfield and training host objectives',
                         terrain_sha256=expected, contour_interval_m=10)
         (output/(map_id+'.json')).write_text(json.dumps(data, indent=2)+'\n', encoding='utf-8')

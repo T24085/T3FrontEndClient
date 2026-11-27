@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import struct
 
-from build_map_overviews import terrain_image
+from build_map_overviews import relief_grid, terrain_image
 
 
 POSITION_BUFFER = re.compile(rb'\x0c\0\0\0(.{4})\x0c\0\0\0\1', re.DOTALL)
@@ -165,7 +165,7 @@ def write_overview(output, map_id, label, surface, landmarks, provenance, *, sno
     output.mkdir(parents=True, exist_ok=True)
     image.save(output / (map_id + '.png'), optimize=True)
     metadata = dict(map_id=map_id, label=label, bounds=bounds, landmarks=landmarks,
-                    image_url=f'/api/map/{map_id}/image', elevation_m=elevation,
+                    image_url=f'/api/map/{map_id}/image', elevation_m=elevation, relief=relief_grid(grid, bounds, landmarks),
                     source='World-aligned elevations from the shipped map terrain', **provenance)
     (output / (map_id + '.json')).write_text(json.dumps(metadata, indent=2)+'\n', encoding='utf-8')
 

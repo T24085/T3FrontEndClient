@@ -288,3 +288,10 @@ steady jets to long jets. The latter still needs a paired native evaluation.
 The campaign dashboard plots fast flight, jet use and unpowered glide by
 match. Historical traces can be summarized in a separate evidence file and
 displayed alongside new matches with the same definitions.
+
+## 2026-11-27 · M7 · 3D route replay
+
+Training replays can follow one bot from a chase camera using the recorded
+world coordinates and playback clock. A local High Octane preview uses the
+verified source heightfield. Maps with a legacy overview use a flat reference
+plane. Frontend issue #115 tracks private dashboard rollout.

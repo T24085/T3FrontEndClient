@@ -511,6 +511,23 @@ def map_overview(root, map_id):
             raise ValueError("Invalid map overview bounds")
     if data.get("image_url") and bounds is None:
         raise ValueError("Map image requires world bounds")
+    relief = data.get("relief")
+    if relief is not None:
+        dimensions = [relief.get(key) for key in ("rows", "columns")] if isinstance(relief, dict) else []
+        if (bounds is None or len(dimensions) != 2 or
+                any(type(n) is not int or not 2 <= n <= 65 for n in dimensions)):
+            raise ValueError("Invalid terrain relief dimensions")
+        heights = relief.get("heights")
+        surface = relief.get("bounds")
+        if (not isinstance(surface, dict)
+                or any(type(surface.get(key)) not in (int, float) or not math.isfinite(surface[key])
+                       for key in ("min_x", "max_x", "min_y", "max_y"))
+                or not bounds["min_x"] <= surface["min_x"] < surface["max_x"] <= bounds["max_x"]
+                or not bounds["min_y"] <= surface["min_y"] < surface["max_y"] <= bounds["max_y"]):
+            raise ValueError("Invalid terrain relief bounds")
+        if (not isinstance(heights, list) or len(heights) != dimensions[0] * dimensions[1] or
+                any(z is not None and (type(z) not in (int, float) or not math.isfinite(z)) for z in heights)):
+            raise ValueError("Invalid terrain relief elevations")
     landmarks = data.get("landmarks", [])
     if not isinstance(landmarks, list) or any(not isinstance(point, dict)
             or point.get("kind") not in ("flag", "spawn") or point.get("team") not in (1, 2)

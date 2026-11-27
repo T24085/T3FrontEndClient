@@ -684,3 +684,37 @@
   font-size: 1.35rem;
   font-variant-numeric: tabular-nums;
 }
+.training-replay-3d {
+  display: grid;
+  gap: .65rem;
+}
+.training-replay-3d-stage {
+  position: relative;
+  overflow: hidden;
+  border-radius: .8rem;
+  background: #101e35;
+}
+.training-replay-3d-stage canvas {
+  display: block;
+  width: 100%;
+  height: clamp(270px, 54vw, 540px);
+}
+.training-replay-3d-hud {
+  position: absolute;
+  inset: .75rem auto auto .75rem;
+  display: grid;
+  gap: .2rem;
+  padding: .6rem .85rem;
+  color: #effbff;
+  background: rgba(11, 25, 42, .89);
+  border: 1px solid rgba(149, 239, 249, .42);
+  border-radius: .6rem;
+  white-space: nowrap;
+  font-size: .82rem;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.training-replay-3d-hud b {
+  color: #83f6ff;
+  font-size: 1.45rem;
+}
