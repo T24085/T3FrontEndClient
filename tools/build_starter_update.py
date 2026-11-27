@@ -26,6 +26,14 @@ def client_entry_payload(raw, root):
     return raw.replace(marker, b'_SIGNED_PROJECTILE_INHERITANCE_MODULE = ' + literal)
 
 
+def bundled_client_entry(raw, weather):
+    # Older signed-updater bootstraps cannot add a new Lua inventory path.
+    marker = b'_SIGNED_WEATHER_MODULE = None'
+    if raw.count(marker) != 1 or not weather:
+        raise ValueError('The canonical Starter weather runtime cannot be bundled.')
+    return raw.replace(marker, b'_SIGNED_WEATHER_MODULE = ' + repr(weather).encode('ascii'), 1)
+
+
 def soundtrack_entry(raw, root):
     source = root/'map_soundtracks.py'
     if source.resolve(strict=True) != source:
@@ -83,6 +91,10 @@ def main():
         if name == 'client.py':
             raw = client_entry_payload(raw, ROOT)
         if name == "client.py":
+            weather = ROOT / 'lua/weather.lua'
+            if weather.resolve(strict=True) != weather:
+                raise ValueError('Linked weather runtime source is not permitted.')
+            raw = bundled_client_entry(raw, weather.read_bytes())
             raw = soundtrack_entry(raw, ROOT)
         if not 0 < len(raw) <= MAX_FILE:
             raise ValueError('Unsupported Starter update file size: ' + name)

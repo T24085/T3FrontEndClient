@@ -10,14 +10,15 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import simpledialog, ttk
+from tkinter import filedialog, simpledialog, ttk
 
+from client_support import save as save_json
 from community_game import CommunityGame
 from startup_paths import installation_options
 from community_transport import (
     CommunityClient, CommunityError, CommunityConnectionError, DEFAULT_LOBBY_RULES,
-    DEFAULT_MATCH_LIMITS, MAX_LOBBY_BOTS, MAX_MATCH_MINUTES,
-    MAX_SCORE_LIMIT, validated_match_result,
+    DEFAULT_MATCH_LIMITS, MAX_LOBBY_BOTS, MAX_MATCH_MINUTES, MAX_RULE_PRESET_BYTES, MAX_SCORE_LIMIT,
+    decode_match_rule_preset, validated_match_result, validated_match_rule_preset,
 )
 from community_maps import BY_ID, options, read_options, LEGACY_MAPS
 from map_sync_contract import CATALOG_VERSION
@@ -294,6 +295,19 @@ class Desktop:
             command=lambda: self.call_action('rules', locked=self.room_locked.get()), **check_style)
         self.room_lock_toggle.grid(row=2, column=0, columnspan=3, sticky='w')
         self.room_lock_toggle.grid_remove()
+        self.weather_row = tk.Frame(self.rules_row, bg=PANEL)
+        self.weather_row.grid(row=3, column=0, columnspan=3, sticky='w')
+        self.label(self.weather_row, 'Weather', 9, bg=PANEL).pack(side='left', padx=(4, 6))
+        self.weather_choice = ttk.Combobox(self.weather_row, width=16, state='disabled')
+        self.weather_choice.pack(side='left')
+        self.weather_choice.bind('<<ComboboxSelected>>', self.change_weather)
+        self.rule_presets = ttk.Menubutton(self.weather_row, text='Rule sets')
+        menu = tk.Menu(self.rule_presets, tearoff=False)
+        menu.add_command(label='Save rule set…', command=self.save_rule_preset)
+        menu.add_command(label='Load rule set…', command=self.load_rule_preset)
+        self.rule_presets.configure(menu=menu)
+        self.rule_presets.pack(side='left', padx=(8, 0))
+        self.weather_row.grid_remove()
         self.limits_row = tk.Frame(fields, bg=PANEL)
         self.limits_row.grid(row=0, column=2, sticky='ew')
         self.limits_row.columnconfigure((0, 1), weight=1, uniform='limits')
@@ -972,7 +986,63 @@ class Desktop:
         if self.room is not None and self.caps.get('spectateEnabled')is True:
             self.call_action('spectators',allow=self.allow_spectators.get())
 
+    def change_weather(self, _event=None):
+        index = self.weather_choice.current()
+        if index in (0, 1, 2):
+            self.call_action('rules', weather=(None, True, False)[index])
+
+    def save_rule_preset(self):
+        room = self.room
+        if room is None or self.rule_presets.instate(['disabled']):
+            return
+        preset = {'version': 1, 'weather': room.get('weather')}
+        if self.caps.get('matchRulesEnabled') is True:
+            settings = room.get('rules', DEFAULT_LOBBY_RULES)
+            rules = {key: settings[key] for key in ('flagIndicators', 'botCount')}
+            if self.caps.get('fallDamageEnabled') is True:
+                rules['fallDamage'] = settings.get('fallDamage', False)
+            definition = BY_ID.get(room['map'])
+            if definition and definition.native:
+                rules['retailCapturePoint'] = settings['retailCapturePoint']
+            preset['rules'] = rules
+        if self.caps.get('matchLimitsEnabled') is True:
+            preset['matchLimits'] = room.get('matchLimits', DEFAULT_MATCH_LIMITS)
+        file = filedialog.asksaveasfilename(parent=self.root, title='Save lobby rule set',
+                                           defaultextension='.json', filetypes=[('Lobby rule set', '*.json')])
+        if file:
+            try:
+                save_json(Path(file), validated_match_rule_preset(preset))
+                self.status.set('Rule set saved. Share the JSON file to let others load it.')
+            except (OSError, ValueError) as exc:
+                self.status.set(f'Could not save rule set. {exc}')
+
+    def load_rule_preset(self):
+        room = self.room
+        if room is None or self.rule_presets.instate(['disabled']):
+            return
+        file = filedialog.askopenfilename(parent=self.root, title='Load lobby rule set',
+                                          filetypes=[('Lobby rule set', '*.json')])
+        if file and self.room is not None and self.room['code'] == room['code']:
+            try:
+                with Path(file).open('rb') as stream:
+                    preset = decode_match_rule_preset(stream.read(MAX_RULE_PRESET_BYTES + 1))
+            except (OSError, ValueError) as exc:
+                self.status.set(f'Could not load rule set. {exc}')
+                return
+            self.call_action('rules', preset=preset)
+
     def render_match_rules(self, room, editable):
+        default = room.get('weatherDefault') if room else None
+        override = room.get('weather') if room else None
+        if type(default) is bool and (override is None or type(override) is bool):
+            self.weather_row.grid()
+            default_label = 'Map default (On)' if default else 'Map default (Off)'
+            self.weather_choice.configure(values=(default_label, 'On', 'Off'),
+                                          state='readonly' if editable else 'disabled')
+            self.weather_choice.set(default_label if override is None else 'On' if override else 'Off')
+            self.rule_presets.configure(state='normal' if editable else 'disabled')
+        else:
+            self.weather_row.grid_remove()
         locked = room.get('locked') if room else None
         if self.caps.get(LOBBY_LOCK_RULES_ENABLED) is True and type(locked) is bool:
             self.room_locked.set(locked)

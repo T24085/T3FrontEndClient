@@ -1,16 +1,16 @@
+local legacyBlizzardWorld='/Game/Maps/Community/Snowblind/Arena_Snowblind_Blizzard_P.Arena_Snowblind_Blizzard_P:'
 local originalFactory=(function()
 -- Local cosmetic motion for the separately cooked Blizzard level.
 -- Team objectives, pawn movement and weather lighting remain owned by the map/game.
 return function(env)
  local valid,report=env.valid,env.report
- local package='/Game/Maps/Community/Snowblind/Arena_Snowblind_Blizzard_P'
- local prefix=package..'.Arena_Snowblind_Blizzard_P:'
+ local prefix=legacyBlizzardWorld
  local states={}
  return function(context,pc)
   if not valid(context) or context:HasAuthority() or not context:GetFullName():find(prefix,1,true) then return end
   -- An authored descriptor takes precedence over the original Blizzard path.
   for _,row in pairs(env.descriptors or {})do
-   if row.world==prefix and row.weather_authored then return end
+   if row.world==prefix and (row.weather_authored or row.weather_off) then return end
   end
   if not valid(pc) or not pc:IsLocalPlayerController() or pc:HasAuthority() then return end
   local world=context:GetWorld()
@@ -174,11 +174,69 @@ local function configure_lighting(config,descriptor,world,valid)
  for _,light in ipairs(lights)do light:SetIntensity(intensity) end
 end
 
+local function suppress_weather(env)
+ local valid=env.valid
+ local selected
+ for _,row in pairs(env.descriptors or {})do
+  if row.weather_off then
+   assert(not selected,'weather_off_requires_one_map')
+   selected=row
+  end
+ end
+ if not selected then return function() end end
+
+ local names={}
+ local legacyBlizzard=selected.world==legacyBlizzardWorld
+ local prefix='StaticMeshActor '..selected.world..'PersistentLevel.'
+ local lighting=selected.weather and selected.weather.lighting
+ local legacySnow=legacyBlizzard and not selected.weather_authored
+ if legacySnow then
+  for i=0,47 do names[prefix..'Snowblind_Snowfall_'..i]=true end
+ else
+  for _,row in ipairs(selected.weather and selected.weather.actors or {})do
+   names[prefix..row.actor]=true
+  end
+ end
+
+ local configured
+ return function(context,pc)
+  if not valid(context) or not valid(pc) or not pc:IsLocalPlayerController() or context:HasAuthority()
+       or not context:GetFullName():find(selected.world,1,true) then return end
+  local world=context:GetWorld()
+  if not valid(world) or pc:GetWorld():GetAddress()~=world:GetAddress() then return end
+  local address=world:GetAddress()
+  if configured==address then return end
+  local fogs,hidden=0,0
+  for _,actor in ipairs(FindAllOf('ExponentialHeightFog') or {})do
+   if valid(actor) and actor:GetWorld():GetAddress()==address then
+    local fog=actor.Component
+    if valid(fog) then fog:SetVisibility(false,false);fogs=fogs+1 end
+   end
+  end
+  if next(names) then
+   for _,actor in ipairs(FindAllOf('StaticMeshActor') or {})do
+    if valid(actor) and names[actor:GetFullName()] and actor:GetWorld():GetAddress()==address then
+     local mesh=actor.StaticMeshComponent
+     if not actor.bReplicates and valid(mesh) and mesh:GetCollisionEnabled()==0 then
+      actor:SetActorHiddenInGame(true)
+      hidden=hidden+1
+     end
+    end
+   end
+  end
+  configure_lighting(lighting,selected,world,valid)
+  configured=address
+  env.report('WEATHER_OFF_READY|map='..selected.name..'|fog='..fogs..'|groups='..hidden)
+ end
+end
+
 return function(env)
  local valid,report=assert(env.valid),assert(env.report)
  local descriptors=assert(env.descriptors)
  local states={}
+ local clear=suppress_weather(env)
  return function(context,pc)
+  clear(context,pc)
   if not valid(context) or not valid(pc) or not pc:IsLocalPlayerController() then return end
   local world=context:GetWorld()
   if not valid(world) or pc:GetWorld():GetAddress()~=world:GetAddress() then return end
@@ -190,6 +248,7 @@ return function(env)
   end
   if not descriptor then return end
   local weather=descriptor.weather
+  if descriptor.weather_off then return end
   assert(type(weather)=='table','weather_2026_invalid_descriptor')
   local kind=weather.kind
   local sand=kind=='sand'
