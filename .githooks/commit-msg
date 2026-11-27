@@ -1,0 +1,6 @@
+#!/bin/sh
+# Reject commits whose message does not explain the change.
+# Installed by: python tools/install_git_hooks.py
+root=$(git rev-parse --show-toplevel) || exit 1
+if command -v python >/dev/null 2>&1; then py=python; else py=python3; fi
+exec "$py" "$root/tools/check_commit_message.py" "$1"
