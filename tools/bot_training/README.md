@@ -328,3 +328,8 @@ separately. TRIBES traces supply every value used to rank the bot profiles.
 Run the native summary on the machine holding the saved traces. It reads the
 checkpoint and reports per-capper medians, zero-jet traces and unavailable
 traces without writing to the run.
+
+Run `python tools/bot_training/flight_reference.py backfill-team PATH_TO_PROGRESS_JSON`
+to add flight measurements to the dashboard for older team matches. The
+command writes `flight-evidence.json` beside the checkpoint. This file holds
+derived measurements only. Newly saved match measurements take precedence.

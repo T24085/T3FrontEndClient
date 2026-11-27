@@ -5,6 +5,13 @@ from statistics import median
 
 FAST_KMH = 45
 SCORING = 'sustained-flight-v1'
+TEAM_FIELDS = ('fast_air_seconds', 'longest_fast_air_seconds', 'fast_glide_seconds',
+               'landing_count', 'landing_speed_retained', 'landing_energy')
+
+
+def match_key(match):
+    session = match.get('session')
+    return f"{session}/{match.get('session_wave', 1)}" if session else None
 
 
 def momentum(frames, max_gap):

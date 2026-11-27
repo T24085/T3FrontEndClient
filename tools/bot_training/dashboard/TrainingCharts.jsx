@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { DataComponent, DataTable, EvidenceChart } from "../../data-app-public.jsx";
-import { format, groups, outcome, percent, queryId, rolling, routeLabel } from "./training-metrics.js";
+import { format, groups, median, outcome, percent, queryId, rolling, routeLabel } from "./training-metrics.js";
 import { MatchRoutes } from "./MatchRoutes.jsx";
 
 const teal = "#129886";
@@ -89,6 +89,33 @@ export function ScreeningCharts({ rows, selected, selectTrial, selectGroup, atte
         { key: "activeSki", label: "Skiing at contact" }, number("seconds", "Attempt (s)")]} />
     </div>
   </div>;
+}
+
+export function CampaignFlight({ rows, row, selectMatch }) {
+  const cappers = row.bots.filter(bot => bot.role === "Capper" && Number.isFinite(bot.fast_air_seconds));
+  if (!cappers.length && !rows.some(match => match.bots.some(bot => Number.isFinite(bot.fast_air_seconds)))) return null;
+  const typical = (bots, key) => median(bots.map(bot => bot[key]).filter(Number.isFinite));
+  const points = rows.flatMap(match => {
+    const bots = match.bots.filter(bot => bot.role === "Capper" && Number.isFinite(bot.fast_air_seconds));
+    return bots.length ? [{ match: match.campaign_attempt, "Fast flight": typical(bots, "fast_air_seconds"),
+      "Jets active": typical(bots, "jet_seconds"), "Fast glide": typical(bots, "fast_glide_seconds"),
+      bots: bots.length }] : [];
+  });
+  return <section className="training-panel campaign-flight">
+    <h3>Capper flight</h3>
+    <div className="campaign-flight-summary">
+      <div><span>Fast airborne time</span><strong>{format(typical(cappers, "fast_air_seconds"), " s")}</strong></div>
+      <div><span>Longest fast stretch</span><strong>{format(typical(cappers, "longest_fast_air_seconds"), " s")}</strong></div>
+      <div><span>Jet energy at landing</span><strong>{format(typical(cappers, "landing_energy"))}</strong></div>
+      <div><span>Zero-jet traces</span><strong>{cappers.length ? `${cappers.filter(bot => bot.jet_seconds === 0).length} / ${cappers.length}` : "—"}</strong></div>
+    </div>
+    <Chart id="campaign-flight-trend" title="Flight and jet use by match" rows={points}
+      note="Medians across recorded cappers. Fast flight and fast glide use a 45 km/h threshold."
+      getMarkActions={({ row: point }) => [{ label: `View match ${point.match}`, onSelect: () => selectMatch(point.match) }]}
+      spec={{ type: "line", x: "match", y: "Fast flight", fields: ["Fast flight", "Jets active", "Fast glide"],
+        xLabel: "Match", yLabel: "Seconds", showLegend: true,
+        colors: { "Fast flight": teal, "Jets active": blue, "Fast glide": "#d18322" } }} />
+  </section>;
 }
 
 export function ProgressCharts({ rows, selectTrial }) {
