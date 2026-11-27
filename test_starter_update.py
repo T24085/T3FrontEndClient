@@ -1,3 +1,4 @@
+import ast
 from base64 import b64encode
 import json
 import os
@@ -9,6 +10,9 @@ from unittest.mock import patch
 
 from starter_update import (CHANNEL, DIRECT_CHANNEL, INDEX, INVENTORY, accept, decode_index,
                             encoded, prepare, recover, run_startup, sha)
+
+
+from tools.build_starter_update import bundled_client_entry
 
 
 def envelope(files, revision=1, issued=None, channel=CHANNEL):
@@ -51,6 +55,15 @@ class StarterUpdateTest(unittest.TestCase):
             return replacement if replacement is not None else blobs[name]
 
         return prepare(self.root, self.state, fetch=fetch, verifier=verify_fixture)
+
+    def test_signed_client_payload_carries_weather_without_a_new_inventory_path(self):
+        root = Path(__file__).resolve().parent
+        weather = (root / 'lua/weather.lua').read_bytes()
+        raw = bundled_client_entry((root / 'client_entry.py').read_bytes(), weather)
+        assignment, = (node for node in ast.parse(raw).body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == '_SIGNED_WEATHER_MODULE'
+                               for target in node.targets))
+        self.assertEqual(ast.literal_eval(assignment.value), weather)
 
     def test_only_changed_files_download_and_inventory_remains_consistent(self):
         new = b'-- fixed Lua\n'

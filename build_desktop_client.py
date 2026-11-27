@@ -9,6 +9,7 @@ import subprocess
 import zipfile
 from community_maps import declared_maps, options
 from build_dynamic_client import require_spectator_runtime, copy_spectator_runtime
+from tools.build_starter_update import bundled_client_entry
 
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / 'dynamic-client-development'
@@ -158,7 +159,8 @@ def main():
         shutil.copyfile(ROOT/name, OUTPUT/'lib'/name)
     # The entry has one canonical producer; desktop wrapping must not revive a
     # stale generated CLI from its otherwise verified content source.
-    shutil.copyfile(ROOT/'client_entry.py', OUTPUT/'client.py')
+    (OUTPUT/'client.py').write_bytes(bundled_client_entry((ROOT/'client_entry.py').read_bytes(),
+                                                         (ROOT/'lua/weather.lua').read_bytes()))
     shutil.copyfile(ROOT/'map_soundtracks.py', OUTPUT/'map_soundtracks.py')
     copy_spectator_runtime(manifest, OUTPUT)
     shutil.copyfile(ROOT/'player_profile.py', OUTPUT/'player_profile.py')
