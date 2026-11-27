@@ -14,6 +14,13 @@ Nobody commits or pushes directly to `main`: not agents, not people, not org own
 
 GitHub enforces this with the "Protect main" ruleset (pull request with code-owner approval from `T3-Mod-Admins`, no force-push or deletion, no bypass) and `.github/CODEOWNERS`.
 
+## PR branch lifecycle
+
+- Keep 5–10 remote branches per repository as a working target, including the default branch. Before creating an issue, bug-fix, feature or maintenance branch, check open PRs and reuse an appropriate branch. Above 10, review the backlog for branches ready to retire and record why active branches still need to exist.
+- Use a temporary branch for each change. When its PR merges, verify that GitHub removed the head branch. If the branch remains, check the latest remote tip, confirm its work reached the intended target and check for open PRs using it as a head or base. Remove the remote branch once those checks pass. A matching merged PR head plus its integration commit in the target also verifies a squash merge.
+- Keep branches with unmerged work, dependent PRs, or an ongoing release or maintenance purpose. For stacked PRs, retarget the dependents before deleting their previous base and verify the full stack reaches the intended target. Preserve local worktrees and local changes. For fork branches, the contributor handles deletion if you lack access.
+- Agents track branch cleanup on the linked issue or PR. Record open PR links, branch dependencies and blockers at handoff. After a merge, record whether the branch was deleted or why it is retained, then recheck retained branches when their blockers clear. Branch cleanup and issue closure each follow their own completion checks.
+
 ## Harness parity
 
 Every agent rule, skill, subagent or hook must work in every harness this project uses: Claude Code, Gemini CLI, Cursor, Codex, GitHub Copilot, and any harness added later. Nothing is Claude-only, Cursor-only or Gemini-only.
