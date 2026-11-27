@@ -1,3 +1,17 @@
+# Windows stable game cleanup recovery
+
+The owned Windows game wrapper joins a named, kill-on-close Job before it
+launches the game. The stable game reservation records that Job's identity
+alongside the existing owner evidence. A later launch uses the normal terminal
+receipts first. If the receipts are missing after an interruption, it can
+release the reservation once Windows confirms the recorded Job is gone. A live
+Job or an inconclusive lookup keeps the reservation. Older reservations without
+a named Job still require their original cleanup receipts.
+The desktop Job evidence can release the reservation even if the previous
+session directory has gone away.
+
+The change fits the existing signed Windows update allowlist.
+
 # Map-declared soundtrack playback
 
 The candidate restores the signed Direct release's Windows soundtrack
@@ -34,20 +48,6 @@ The owning client applies the authoritative Blink movement and presents one
 departure and one arrival. The arrival cue and first-person flash wait for
 the movement to reach the player. Nearby observers still receive the native
 host cues. The fix for duplicate cues is tracked in frontend issue #60.
-
-# Windows stable game cleanup recovery
-
-The owned Windows game wrapper joins a named, kill-on-close Job before it
-launches the game. The stable game reservation records that Job's identity
-alongside the existing owner evidence. A later launch uses the normal terminal
-receipts first. If the receipts are missing after an interruption, it can
-release the reservation once Windows confirms the recorded Job is gone. A live
-Job or an inconclusive lookup keeps the reservation. Older reservations without
-a named Job still require their original cleanup receipts.
-The desktop Job evidence can release the reservation even if the previous
-session directory has gone away.
-
-The change fits the existing signed Windows update allowlist.
 
 # Private-match fall damage
 
