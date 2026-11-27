@@ -252,7 +252,7 @@ class CommunityGameTest(unittest.TestCase):
         self.game.owner.run_owned_job=owner
         self.game.start()
         try:
-            run=self.game.workspace/'client-test';run.mkdir()
+            run=self.game.workspace/'client-000000000001';run.mkdir()
             owner_dir=self.game.current_artifacts/'owner';owner_dir.mkdir(exist_ok=True)
             (owner_dir/'stdout.log').write_text('Session: '+str(run)+'\n')
             events=run/'events.txt'
@@ -293,7 +293,8 @@ class CommunityGameTest(unittest.TestCase):
         try:
             self.assertTrue(launched.wait(2))
             self.assertIn('--show-flag-indicators', argv)
-            run = self.game.workspace/'client-test'
+            from client_preparation import stable_lobby_path
+            run = stable_lobby_path(self.game.workspace, self.game.package)
             run.mkdir()
             owner_dir = self.game.current_artifacts/'owner'
             owner_dir.mkdir(exist_ok=True)
@@ -322,7 +323,7 @@ class CommunityGameTest(unittest.TestCase):
             return {'status':'terminal','exit_code':1,'job_active_processes_after_cleanup':0}
         self.game.owner.run_owned_job=owner;self.game.start()
         try:
-            run=self.game.workspace/'client-test';run.mkdir()
+            run=self.game.workspace/'client-000000000001';run.mkdir()
             owner_dir=self.game.current_artifacts/'owner';owner_dir.mkdir(exist_ok=True)
             (owner_dir/'stdout.log').write_text('Session: '+str(run)+'\n')
             events=run/'events.txt';events.write_text('REMOTE_PAWN_READY|role=client\n')
