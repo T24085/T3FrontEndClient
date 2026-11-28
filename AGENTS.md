@@ -50,6 +50,67 @@ Verify pull request checks in `Tribes3-Modded` after opening a PR, after each pu
 
 Commit the source in the relevant repos and verify the push on GitHub first. Then send Chris the issue and commit or PR links, the target server, what would go live, the verification results, and any restart or player impact. Wait for his explicit approval for that deployment before uploading, staging, or applying changes on a live server or restarting it. Follow the approved scope and timing, and record the approval and live verification on the issue.
 
+## Explain every change before it commits
+
+Nobody, human or agent, commits to this repository without explaining the change. These rules apply to every coding tool (Claude Code, Cursor, Grok, Codex, Copilot, Gemini and others) and to people. They match T3BackEndServer's.
+
+How it is enforced:
+
+- `python tools/install_git_hooks.py`, run once per clone, enables `.githooks/commit-msg`. It rejects any commit whose message lacks a subject of 72 characters or fewer, a blank line, and an explanation of at least 15 words saying what changed and why.
+- CI applies the same check to every commit a push or pull request adds. Cloud agents that never install the hook are still checked there.
+- `tools/agent_commit_guard.py` blocks agent shell commands that would skip the hook, and blocks commits until the hook is installed. Claude Code runs it from `.claude/settings.json` and Cursor from `.cursor/hooks.json`. Gemini CLI, Codex and Copilot have no shell hook here; agents in those tools follow the same rules by instruction.
+
+Steps for any agent before committing:
+
+1. Review what will be committed with `git status` and `git diff --staged`. Stage only the files that belong to this one change; unrelated edits go in their own commit.
+2. Explain the change to the user in chat before committing:
+   - **What** changed: behaviour first, then the files touched.
+   - **Why**: the problem, request or evidence behind it.
+   - **Verification**: the exact checks run and their results, and what was not verified. Source checks never prove native gameplay; say so when gameplay is affected.
+   - **Risk**: shared contracts, the paired T3BackEndServer checkout, Starter release and deployment impact.
+   - **Milestone**: the milestone this advances and what was updated in its file (see "Keep the project and milestones current").
+
+   Commit only when the user asked for a commit. Otherwise stop after the explanation and ask.
+3. Write the commit message from that explanation, passing multi-line messages with a heredoc or `-F <file>` rather than opening an editor:
+
+   ```
+   <Imperative subject, 72 characters or fewer>
+
+   What: <the behaviour or files this changes>
+   Why: <the problem it fixes or the reason it is needed>
+   Verification: <checks run and results, or why none apply>
+
+   Milestone: <M-number from project/milestones, or none>
+   ```
+
+4. Never bypass the check: no `--no-verify`, `-n` or `-c core.hooksPath=...`. If the hook is not installed, run `python tools/install_git_hooks.py`. If the hook rejects the message, fix the message.
+5. Report the commit hash and subject to the user. A commit or push is not a deployment or a Starter release.
+
+## GitHub issues
+
+- When asked what is open, run `python tools/github_issues.py review` and summarise it in chat: urgent and security first, clusters with a likely shared cause, "(host + client)" issues that need both repositories, stale or unassigned issues, and two or three suggested next picks.
+- When working on an issue, run `python tools/github_issues.py start N` once. On a branch named `issue-N-short-name`, commits get a `Refs: #N` trailer from `.githooks/prepare-commit-msg`; on a developer branch, put `Refs #N` in the commit yourself. Post `python tools/github_issues.py update N --body "..."` at milestones (root cause, fix pushed, blocked, verification results), put `Fixes #N` or `Refs #N` in the pull request, and run `pause N` when stopping early.
+- Comments are public: no secrets, IP addresses, player details, configuration or native logs. Do not close, create or retitle issues unless the user asks.
+
+## Keep the project and milestones current
+
+`project/` is the client's project plan: `project/README.md` describes the project, and each file in `project/milestones/` is one milestone with its goal, "Done when" list, issues and a dated progress log. **Milestone IDs are shared with T3BackEndServer**: M6 here is the client side of the backend's M6, so work that spans both repositories names the same milestone in each. Milestones that only concern the client (M9 onwards) get IDs the backend does not use. This rule binds every harness and person that writes to this repository: Claude Code, Cursor, Grok, Codex, Copilot, Gemini, any other agent, and people.
+
+1. **Read first.** Before starting work, run `python tools/project_milestones.py list` and find the milestone the work belongs to (`python tools/project_milestones.py find N` for issue N).
+2. **Update the milestone in the same change.** Any branch that changes code, scripts, runtime Lua, Starter packaging or docs for a milestone also edits that milestone's file before it is pushed for review:
+   - add a dated line to its progress log (`python tools/project_milestones.py log M6 "..."`) saying what changed, on which branch or PR, and what was and was not verified;
+   - tick an issue only when it is resolved and verified (`python tools/project_milestones.py issue N --done`), and add newly found issues to the right milestone;
+   - change the status (`planned`, `in progress`, `blocked`, `done`) or the "Done when" list when they change. A milestone is `done` only when its "Done when" list is met; source checks never prove native gameplay, and a merge, push or Starter build is not a release.
+3. **Name the milestone in every commit** with a `Milestone: M6` trailer (`Milestone: M6, M8` for several, `Milestone: none` for work outside every milestone, such as a typo fix). The commit-msg hook rejects commits without it; on an `issue-N-...` branch `.githooks/prepare-commit-msg` adds it when issue N is listed in a milestone.
+4. **Update the issues too, when there are any.** The milestone file's issue line and the issue itself are updated together, and every open issue belongs to exactly one milestone. Run `python tools/project_milestones.py audit` to find open issues in no milestone and ticks that disagree with GitHub.
+5. **New work, new milestone.** When work fits no milestone, add `project/milestones/M<next>-short-name.md` in the same shape and a row to the table in `project/README.md`, and say so to the user. If the backend has the same kind of work, use its milestone ID instead.
+
+**Merging milestone files.** `python tools/install_git_hooks.py` registers a merge driver (`tools/merge_milestone_file.py`, selected in `.gitattributes`) that keeps both sides' log lines in date order, the later `Updated` date and one line per issue. A real disagreement, such as two different `Status` values, stays a conflict for a person to decide. GitHub's web conflict editor does not run the driver, so resolve milestone conflicts in a local checkout. Never pick one side's progress log.
+
+CI enforces the parts a machine can check: `python tools/project_milestones.py check` validates the files, and `python tools/check_commit_message.py --tracker` fails a branch or pull request whose commits name a milestone whose file the branch never changed. The judgement parts (an honest progress line, issues kept in step) are every agent's responsibility. Report the milestone updates to the user along with the change explanation.
+
+## Checks
+
 Run `python tools/check_source.py` and `python -m unittest discover -s . -p "test_*.py"`. Shared protocol changes must update the paired checkout and shared-contracts.json together; verify with `python tools/check_source.py --peer ../T3BackEndServer`. Never infer native gameplay success from these source checks. Keep game/editor/native qualification isolated and use native_resource_gate.py. Keep secrets, populated connection/configuration files, original game files, large cooked content and native logs outside Git. A Git push is not a deployment.
 
 The public Windows release includes Lobbies, Live matches, Public CTF, and Armor. Put `Start Clan Wars.bat` at the top level of the ZIP. Verify the exact archive with a fresh device profile against the live service before publishing. A Public CTF-only release requires an explicit request.

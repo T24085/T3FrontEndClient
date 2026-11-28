@@ -7,3 +7,8 @@
 *.json text eol=lf
 *.bat text eol=crlf
 *.sh text eol=lf
+.githooks/* text eol=lf
+
+# Milestone files merge with tools/merge_milestone_file.py (registered by tools/install_git_hooks.py):
+# progress logs and issue lists from both sides are kept; real disagreements stay conflicts.
+project/milestones/*.md merge=milestones

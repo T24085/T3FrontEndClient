@@ -1,0 +1,8 @@
+#!/bin/sh
+# On a branch named for an issue (issue-49-..., fix/49-...), add a "Refs: #49"
+# trailer so the commit shows up on that GitHub issue once pushed. Never blocks.
+# Installed by: python tools/install_git_hooks.py
+root=$(git rev-parse --show-toplevel) || exit 0
+if command -v python >/dev/null 2>&1; then py=python; else py=python3; fi
+"$py" "$root/tools/github_issues.py" link-commit "$@" || true
+exit 0

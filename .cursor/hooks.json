@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "python tools/agent_commit_guard.py --format cursor"
+      }
+    ]
+  }
+}

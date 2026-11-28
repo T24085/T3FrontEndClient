@@ -14,3 +14,56 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - run: python tools/check_source.py
       - run: python -m unittest discover -s . -p "test_*.py" -v
+  commit-messages:
+    # Every commit added by a push or pull request must explain what changed and why.
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Check commit explanations
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            python tools/check_commit_message.py --range "$PR_BASE..$PR_HEAD"
+          elif [ "$BRANCH" != main ]; then
+            # A working branch: check only its own commits, not ones main already has (for example
+            # after the branch is fast-forwarded to main for its next review scope).
+            python tools/check_commit_message.py --range "origin/main..$AFTER"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            # A new branch: check only commits that no other branch on GitHub already has.
+            python tools/check_commit_message.py --new-branch "$AFTER" "$BRANCH"
+          else
+            python tools/check_commit_message.py --range "$BEFORE..$AFTER"
+          fi
+      - name: Check the project milestones were kept current
+        # A branch whose commits name a milestone must update that milestone's file.
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          python tools/project_milestones.py check
+          if [ "$EVENT" = pull_request ]; then
+            python tools/check_commit_message.py --tracker "$PR_BASE" "$PR_HEAD"
+          elif [ "$BRANCH" != main ]; then
+            python tools/check_commit_message.py --tracker origin/main "$AFTER"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            python tools/check_commit_message.py --tracker "$BEFORE" "$AFTER"
+          fi
