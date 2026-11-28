@@ -1,3 +1,10 @@
+# Starter Server Browser roster refresh (M6)
+
+Issue #119 restores refresh when a match is selected in the Server Browser.
+Starter uses the existing match-list request and shows assigned player names
+from its current lobby when that match is selected. Other matches show counts.
+The Tk regression test uses the real client transport with a simulated host reply.
+
 # Starter prepared match launch (M6)
 
 Issue #126 fixes a client startup exception after prepared-file validation.
