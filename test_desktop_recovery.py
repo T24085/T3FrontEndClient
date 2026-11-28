@@ -1,8 +1,9 @@
 """Real Tk control state with delayed lobby replies; no native game or live server."""
 import copy,gc,threading,time,tkinter as tk,unittest
+from unittest.mock import Mock
 from desktop_launcher import Desktop
 from community_maps import BY_ID
-from community_transport import CommunityError, CommunityConnectionError
+from community_transport import CommunityClient, CommunityError, CommunityConnectionError
 from test_desktop_launcher import FakeLobby,FakeGame
 
 class DesktopRecoveryTests(unittest.TestCase):
@@ -154,5 +155,36 @@ class DesktopRecoveryTests(unittest.TestCase):
   self.assertEqual(str(self.app.live_refresh_button['state']),'normal')
   release.set();self.wait(lambda:not self.app.busy)
   self.assertEqual(str(self.app.live_refresh_button['state']),'normal')
+
+ def test_selected_match_refresh_keeps_counts_and_shows_only_current_lobby_players(self):
+  current_id, other_id = 'a'*32, 'b'*32
+  matches = [dict(id=match_id, map='Stonehenge', label=BY_ID['Stonehenge'].label,
+                  playerCount=count, playerCapacity=24, spectatorCount=0, spectatorCapacity=25,
+                  canSpectate=True) for match_id,count in ((current_id,2),(other_id,4))]
+  transport = CommunityClient('test.invalid',443,'100.64.0.1',{})
+  transport._request = Mock(return_value={'matches':matches})
+  self.lobby.live_matches = transport.live_matches
+  self.lobby.room.update(match={'id':current_id,'status':'ready'})
+  self.lobby.room['players'][0]['team'] = 'blue'
+  self.lobby.room['players'][1]['team'] = 'red'
+  self.app.room = copy.deepcopy(self.lobby.room)
+  self.app.caps['spectateEnabled'] = True
+  self.app.current_panel = 'live'
+  self.app.render_live_matches(matches)
+
+  def select_and_refresh(match_id):
+   previous_calls = transport._request.call_count
+   self.app.live_list.selection_set(match_id)
+   self.app.select_live_match(None)
+   self.wait(lambda:not self.app.busy)
+   self.assertGreater(transport._request.call_count,previous_calls)
+   transport._request.assert_called_with('matches',use_lobby_token=False)
+
+  select_and_refresh(current_id)
+  table = self.app.live_roster_table
+  self.assertEqual([table.item(row,'values') for row in table.get_children()],[('One','Two')])
+  select_and_refresh(other_id)
+  self.assertEqual(table.get_children(),())
+  self.assertEqual(self.app.live_list.set(other_id,'players'),'4 / 24')
 
 if __name__=='__main__':unittest.main()

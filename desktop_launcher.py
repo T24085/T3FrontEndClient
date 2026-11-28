@@ -2512,15 +2512,23 @@ class Desktop:
         from itertools import zip_longest
 
         selected = self.live_list.selection()
-        item = self.live_targets.get(selected[0], {}) if selected else {}
-        roster = item.get('roster')
-        self.live_roster_status.set('Assigned players' if roster else
-                                    'Roster unavailable' if selected else 'Select a match to see its assigned players.')
+        target = self.live_targets.get(selected[0]) if selected else None
+        room = self.room or {}
+        match = room.get('match') or {}
+        players = room['players'] if target and target['id'] == match.get('id') else None
+        if players is not None:
+            self.live_roster_status.set('Assigned players')
+        elif target:
+            self.live_roster_status.set('Player names are available for your current lobby.')
+        else:
+            self.live_roster_status.set('Select a match to see its assigned players.')
         children = self.live_roster_table.get_children()
         if children:
             self.live_roster_table.delete(*children)
-        if roster:
-            for blue,red in zip_longest(roster['blue'],roster['red'],fillvalue=''):
+        if players is not None:
+            blue_names = [player['name'] for player in players if player['team'] == 'blue']
+            red_names = [player['name'] for player in players if player['team'] == 'red']
+            for blue, red in zip_longest(blue_names, red_names, fillvalue=''):
                 self.live_roster_table.insert('',tk.END,values=(blue,red))
 
     def render_live_matches(self,matches):
@@ -2552,8 +2560,6 @@ class Desktop:
         if background and self.busy:return
         if self.current_panel!='live'and self.watch_id is None:return
         watch_id=self.watch_id
-        selected = self.live_list.selection()
-        roster_match_id = selected[0] if selected else None
         def work():
             stopped=False
             if watch_id is not None:
@@ -2563,8 +2569,7 @@ class Desktop:
                     else:self.lobby.release_spectator(watch_id)
                     stopped=True
                 else:self.lobby.spectator_target(watch_id)
-            options = {'roster_match_id':roster_match_id} if roster_match_id else {}
-            return self.lobby.live_matches(**options),stopped
+            return self.lobby.live_matches(),stopped
         def refreshed(value):
             matches,stopped=value
             if stopped and self.watch_id==watch_id:self.watch_id=None
