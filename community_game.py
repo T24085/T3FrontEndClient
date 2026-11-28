@@ -158,7 +158,21 @@ class CommunityGame:
                     self.preparation_status='ready'
                     unused = None
         except Exception as exc:
-            with self.lock:self.preparation_status=failure_status;self.preparation_error=str(exc)
+            if (failure_status == 'quarantined' and isinstance(exc, PermissionError)
+                    and exc.filename == str(artifacts/'stop.json') and self.preparation_stop_requested):
+                # The supervisor can raise when reading the stop file even after
+                # its exception handler has terminated and emptied the Job.
+                try:
+                    receipt = json.loads((artifacts/'owner/execution.json').read_text(encoding='utf-8'))
+                except (OSError, ValueError):
+                    receipt = {}
+                if (isinstance(receipt, dict) and receipt.get('status') == 'supervisor_error'
+                        and receipt.get('argv') == argv and receipt.get('assigned_suspended') is True
+                        and 'job_active_processes_after_cleanup' in receipt and empty_client_job(receipt)):
+                    failure_status = 'stopped'
+            with self.lock:
+                self.preparation_status = failure_status
+                self.preparation_error = None if failure_status == 'stopped' else str(exc)
         finally:
             self._retire_payload(unused)
 

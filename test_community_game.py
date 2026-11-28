@@ -1,3 +1,4 @@
+import json
 import tempfile
 import threading
 import unittest
@@ -45,6 +46,43 @@ class CommunityGameTest(unittest.TestCase):
         self.assertEqual(state['preparation']['progress'],state['progress'])
         log.write_text('CLIENT_STARTUP|phase=staging_game\nCLIENT_PREPARATION_PROGRESS|1/0\n')
         self.assertEqual(self.game.snapshot()['progress'],'Preparing your isolated game session…')
+
+    def test_preparation_permission_error_only_retries_after_confirmed_job_cleanup(self):
+        game = self.game
+        (game.package/'package-manifest.json').write_text(json.dumps({'startup_contract':'prepared-client-v1'}))
+        argv = ['client.py', '--prepare-only']
+        for status, active, receipt_argv, cancelled in (
+            ('stopped', 0, argv, True),
+            ('quarantined', 0, argv, False),
+            ('quarantined', 1, argv, True),
+            ('quarantined', None, argv, True),
+            ('quarantined', 0, ['unrelated.py'], True),
+        ):
+            with self.subTest(status=status, active=active, cancelled=cancelled, receipt_argv=receipt_argv):
+                with tempfile.TemporaryDirectory() as folder:
+                    artifacts = Path(folder)
+
+                    def fail(_argv, _cwd, _env, owner, **_options):
+                        owner.mkdir()
+                        record = dict(status='supervisor_error', assigned_suspended=True, argv=receipt_argv)
+                        if active is not None:
+                            record['job_active_processes_after_cleanup'] = active
+                        (owner/'execution.json').write_text(json.dumps(record), encoding='utf-8')
+                        raise PermissionError(13, 'Permission denied', str(artifacts/'stop.json'))
+
+                    game.preparation_stop_requested = cancelled
+                    game.owner.run_owned_job = fail
+                    game._prepare(argv, artifacts)
+                    self.assertEqual(game.preparation_status, status)
+                    if status == 'stopped':
+                        self.assertIsNone(game.preparation_error)
+                    else:
+                        self.assertIn('Permission denied', game.preparation_error)
+                    with patch.object(game, '_prepare') as retry:
+                        self.assertEqual(game.prepare(for_start=True), status != 'quarantined')
+                        if game.preparation_thread is not None:
+                            game.preparation_thread.join(5)
+                        self.assertEqual(retry.called, status != 'quarantined')
 
     def test_only_fresh_lobby_endpoint_and_owned_stop(self):
         event = threading.Event()

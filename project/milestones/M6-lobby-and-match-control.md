@@ -25,7 +25,9 @@ Players set up, browse, join and control matches from the Starter, with per-lobb
 - [ ] #97 Boundary lobby mutators: Flag boundary mode and its settings in Advanced Rules (host + client)
 - [ ] #119 Lobby browser: players in game not showing in match roster
 - [ ] #120 Lobby browser: player who left a lobby cannot spectate it
+- [ ] #129 Starter preparation stays blocked after a permission error during cleanup
 
 ## Progress log
 
 - 2026-11-27: Milestone created when the client adopted the backend's milestone structure; lists the open client issues for M6.
+- 2026-11-27: #129 adds recovery when the preparation cancellation file is denied and the owned worker is confirmed stopped. Public CTF and spectating share the recovered preparation path. An unconfirmed cleanup remains blocked.
