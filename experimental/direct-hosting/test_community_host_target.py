@@ -7,7 +7,8 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))
 from community_transport import CommunityError
-from direct_client import DirectClient, ENROLL_ROUTE, RegionalServerPicker, connect_regional, main, regional_server_rows
+from direct_client import (CLAN_WARS_COORDINATOR, CLAN_WARS_DEFAULT_SERVER, DirectClient, ENROLL_ROUTE,
+                           RegionalServerPicker, connect_regional, main, preferred_regional_lobby, regional_server_rows)
 
 
 class CommunityHostTargetTests(unittest.TestCase):
@@ -45,6 +46,41 @@ class CommunityHostTargetTests(unittest.TestCase):
                                                               {'regional_ticket':'t'*43},use_lobby_token=False)
         enroll.return_value.close.assert_called_once()
         self.assertEqual(connection,dict(endpoint,format=1,access_token='r'*43))
+
+    def test_clan_wars_uses_enrolled_atlanta_for_create_lobby(self):
+        coordinator = Mock(hostname=CLAN_WARS_COORDINATOR[0], port=CLAN_WARS_COORDINATOR[1],
+                           context=self.client.context)
+        atlanta = dict(self.client.connection, hostname=CLAN_WARS_DEFAULT_SERVER)
+        rows = {'elsewhere': ('Other', 'US West', self.client.connection, True),
+                'atlanta': ('PhoenixRises', 'US East', atlanta, True)}
+        with patch('direct_client.regional_servers', return_value=rows), \
+                patch('direct_client.connect_regional', return_value=atlanta) as connect, \
+                patch.object(DirectClient, 'capabilities', return_value={}), \
+                patch.object(DirectClient, '_request', return_value={'room': {'code': 'ABCD23', 'playerId': '1'}, 'token': 't' * 32}) as request:
+            lobby, selected = preferred_regional_lobby(coordinator)
+            self.addCleanup(lobby.close)
+            lobby.create('Player')
+        self.assertEqual(lobby.hostname, CLAN_WARS_DEFAULT_SERVER)
+        self.assertEqual(selected, ('atlanta', 'PhoenixRises (US East)'))
+        connect.assert_called_once_with(coordinator, 'atlanta', atlanta)
+        self.assertEqual(request.call_args.args[0], 'create')
+
+    def test_default_server_falls_back_only_for_the_clan_wars_group(self):
+        coordinator = Mock(hostname=CLAN_WARS_COORDINATOR[0], port=CLAN_WARS_COORDINATOR[1],
+                           context=self.client.context)
+        endpoint = {'hostname': CLAN_WARS_DEFAULT_SERVER}
+        elsewhere = Mock(hostname='my-friend.example.com', port=18443)
+        with patch('direct_client.regional_servers') as directory, patch('direct_client.connect_regional') as connect:
+            self.assertEqual(preferred_regional_lobby(elsewhere), (elsewhere, None))
+            directory.assert_not_called()
+            directory.return_value = {'atlanta': ('PhoenixRises', 'US East', endpoint, False)}
+            self.assertEqual(preferred_regional_lobby(coordinator), (coordinator, None))
+            connect.assert_not_called()
+            directory.return_value = {'atlanta': ('PhoenixRises', 'US East', endpoint, True)}
+            connect.side_effect = CommunityError('Unavailable')
+            self.assertEqual(preferred_regional_lobby(coordinator), (coordinator, None))
+            directory.side_effect = CommunityError('Directory failed')
+            self.assertEqual(preferred_regional_lobby(coordinator), (coordinator, None))
 
     def test_picker_keeps_connection_on_error_or_when_a_lobby_is_open(self):
         picker = RegionalServerPicker.__new__(RegionalServerPicker)

@@ -728,22 +728,27 @@ def main(args=None, *, owned_state=None, on_ready=None):
     if parsed.steam_option:
         print(steam_option())
         return 0
-    from direct_client import DirectClient, group_connection
+    import direct_client
     state = private_area() if owned_state is None else owned_state
     with exclusive(state/'starter.lock') if owned_state is None else nullcontext():
-        primary = group_connection(ROOT,state)
-        connection, selected, browser = primary, None, False
-        coordinator = DirectClient(primary)
+        primary = direct_client.group_connection(ROOT,state)
+        selected, browser = None, False
+        coordinator = direct_client.DirectClient(primary)
         try:
+            if parsed.check_lobby:
+                capabilities = coordinator.capabilities()
+                coordinator.live_matches()
+                print(f'Connected to Clan Wars. {len(coordinator.server_maps)} maps; '
+                      f'Public CTF: {capabilities.get("publicCTF") is True}. Proton was not started.')
+                return 0
+            lobby, selected = direct_client.preferred_regional_lobby(coordinator)
+            needs_probe = lobby is coordinator
+            if needs_probe:
+                lobby = direct_client.DirectClient(primary)
             while True:
-                lobby = DirectClient(connection)
                 try:
-                    capabilities = lobby.capabilities()
-                    if parsed.check_lobby:
-                        lobby.live_matches()
-                        print(f'Connected to Clan Wars. {len(lobby.server_maps)} maps; '
-                              f'Public CTF: {capabilities.get("publicCTF") is True}. Proton was not started.')
-                        break
+                    if needs_probe:
+                        lobby.capabilities()
                     next_server = show_starter(lobby,state,on_ready,coordinator=coordinator,
                                                selected=selected,browser=browser)
                 finally:
@@ -751,6 +756,8 @@ def main(args=None, *, owned_state=None, on_ready=None):
                 if next_server is None:
                     break
                 connection, selected = next_server
+                lobby = direct_client.DirectClient(connection)
+                needs_probe = True
                 on_ready, browser = None, True
         finally:
             coordinator.close()

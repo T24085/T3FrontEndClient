@@ -1898,6 +1898,8 @@ class OfflineLobby(CommunityClient):
 
 REGIONAL_DIRECTORY = '/v1/server-directory'
 REGIONAL_DIRECTORY_LIMIT = 3 * 1024 * 1024
+CLAN_WARS_COORDINATOR = ('deadmansevier.duckdns.org', 18443)
+CLAN_WARS_DEFAULT_SERVER = 'atl1.phoenixrises.gg'
 
 
 def regional_server_rows(feed, now):
@@ -1966,6 +1968,29 @@ def connect_regional(coordinator, ident, endpoint):
         return validate_connection(dict(endpoint, format=1, access_token=reply.get('access_token')))
     except ValueError as exc:
         raise CommunityError('The regional server returned an invalid credential.') from exc
+
+
+def preferred_regional_lobby(coordinator, *, proximity_settings=None):
+    if (coordinator.hostname, coordinator.port) != CLAN_WARS_COORDINATOR:
+        return coordinator, None
+    lobby = None
+    try:
+        matches = [(ident, f'{name} ({region})', endpoint)
+                   for ident, (name, region, endpoint, enrolled) in regional_servers(coordinator).items()
+                   if enrolled and endpoint['hostname'].lower() == CLAN_WARS_DEFAULT_SERVER]
+        if len(matches) != 1:
+            return coordinator, None
+        ident, label, endpoint = matches[0]
+        connection = connect_regional(coordinator, ident, endpoint)
+        lobby = DirectClient(connection, ssl_context=coordinator.context, proximity_settings=proximity_settings)
+        lobby.capabilities()
+        if not lobby.public_only:
+            return lobby, (ident, label)
+    except CommunityError:
+        pass
+    if lobby is not None:
+        lobby.close()
+    return coordinator, None
 
 
 class RegionalServerPicker:
@@ -2103,6 +2128,8 @@ def show_direct_starter(root, *, primary=None, selected=None, on_ready=None):
     chooser=tk.Tk();chooser.withdraw()
     lobby=None
     local_available=False
+    open_browser = primary is not None
+    use_default = not open_browser and (root/GROUP_FILE).exists()
     try:
         try:
             game,workspace=installation_options();source=discover_game(game)
@@ -2121,8 +2148,18 @@ def show_direct_starter(root, *, primary=None, selected=None, on_ready=None):
                 primary = validate_connection(read_json(saved,16384)) if saved.exists() else None
         connection = primary if selected is None else selected[0]
         if connection is not None:
-            lobby=DirectClient(connection, proximity_settings=local/'proximity-voice.json')
-            try:lobby.capabilities()
+            proximity = local/'proximity-voice.json'
+            lobby = DirectClient(connection, proximity_settings=proximity)
+            try:
+                preferred = None
+                if use_default:
+                    primary_lobby = lobby
+                    lobby, preferred = preferred_regional_lobby(primary_lobby, proximity_settings=proximity)
+                    if preferred is not None:
+                        selected = (lobby.connection, preferred)
+                        primary_lobby.close()
+                if preferred is None:
+                    lobby.capabilities()
             except CommunityError:
                 lobby.close()
                 lobby=None
@@ -2599,7 +2636,7 @@ def show_direct_starter(root, *, primary=None, selected=None, on_ready=None):
                 gui.close()
 
             RegionalServerPicker(gui, coordinator, selected[1] if selected else None, switch)
-            if selected is not None:
+            if open_browser:
                 gui.show_panel('live')
         window.protocol('WM_DELETE_WINDOW',gui.close)
         if on_ready is not None:
