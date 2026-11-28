@@ -26,3 +26,4 @@ Players can host and join locally, Starter updates stay verified, and developmen
 
 - 2026-11-27: Milestone created when the client adopted the backend's milestone structure; lists the open client issues for M8.
 - 2026-11-28: `feat/regional-server-picker` adds server selection in Windows and Linux Starter using the configured coordinator directory and host-bound enrollment (Tribes3-Modded/T3BackEndServer#23). The selected host owns the browser, lobby and match connection. Live regional gameplay remains pending.
+- 2026-11-28: Branch issue-23-atlanta-default selects the listed, enrolled Atlanta server when the Clan Wars Windows and Ubuntu Starter open, so Create Lobby starts there. GameServer01 remains available through the selector and on fallback. Direct Hosting tests covered Create Lobby routing and fallback, and the live directory returned Atlanta. Native join and signed feed rollout remain pending.
