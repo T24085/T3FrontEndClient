@@ -1896,7 +1896,201 @@ class OfflineLobby(CommunityClient):
         pass
 
 
+REGIONAL_DIRECTORY = '/v1/server-directory'
+REGIONAL_DIRECTORY_LIMIT = 3 * 1024 * 1024
+
+
+def regional_server_rows(feed, now):
+    listings = feed.get('listings') if isinstance(feed, dict) and type(feed.get('format')) is int and feed['format'] == 1 else None
+    if not isinstance(listings, list) or len(listings) > 256:
+        raise CommunityError('The coordinator returned an invalid server list.')
+    rows = {}
+    for listing in listings:
+        row = listing.get('payload') if isinstance(listing, dict) else None
+        if not isinstance(row, dict):
+            continue
+        ident, name, region = (row.get(key) for key in ('server_id', 'name', 'region'))
+        expires = row.get('expires_at')
+        if (type(row.get('protocol')) is not int or row['protocol'] != 1 or row.get('mode') != 'regional'
+                or type(expires) is not int or not now < expires <= now + 70
+                or not isinstance(ident, str) or not re.fullmatch('[0-9a-f]{64}', ident)
+                or not isinstance(name, str) or not 0 < len(name) <= 80 or not name.isprintable()
+                or not isinstance(region, str) or not 0 < len(region) <= 32 or not region.isprintable()):
+            continue
+        try:
+            ports = row.get('private_enrollment')
+            endpoint = validate_endpoint({'hostname': row['hostname'], 'https_port': row['port'],
+                                          'public_address': row['address'],
+                                          'first_udp_port': ports['first_udp_port'] if ports is not None else 1024,
+                                          'last_udp_port': ports['last_udp_port'] if ports is not None else 1024})
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows[ident] = (name, region, endpoint, ports is not None)
+    return rows
+
+
+def regional_servers(coordinator):
+    # The configured coordinator verifies announcements before serving them.
+    # Use its existing pinned HTTPS endpoint, never URLs supplied by listings.
+    try:
+        with closing(PinnedHTTPSConnection(coordinator.hostname, coordinator.port, coordinator.server_address,
+                                           context=coordinator.context, timeout=8)) as conn:
+            conn.request('GET', REGIONAL_DIRECTORY, headers={'Host': coordinator.authority})
+            reply = conn.getresponse()
+            if reply.status == 404:
+                return {}
+            if reply.status != 200 or reply.getheader('Content-Type', '').split(';', 1)[0] != 'application/json':
+                raise CommunityError('The regional server list is unavailable.')
+            raw = reply.read(REGIONAL_DIRECTORY_LIMIT + 1)
+            if len(raw) > REGIONAL_DIRECTORY_LIMIT:
+                raise CommunityError('The regional server list is too large.')
+        return regional_server_rows(json.loads(raw), time.time())
+    except (OSError, ValueError, RecursionError, http.client.HTTPException) as exc:
+        raise CommunityError('The regional server list is unavailable.') from exc
+
+
+def connect_regional(coordinator, ident, endpoint):
+    reply = coordinator._request('regional-ticket', {'server_id': ident}, use_lobby_token=False)
+    ticket = reply.get('ticket')
+    if not isinstance(ticket, str) or not TOKEN.fullmatch(ticket):
+        raise CommunityError('The coordinator returned an invalid connection ticket.')
+    # A regional host gets the one-use ticket, never the coordinator credential.
+    provisional = dict(endpoint, format=1, access_token=secrets.token_urlsafe(32))
+    with closing(DirectClient(provisional, ssl_context=coordinator.context)) as candidate:
+        reply = candidate._request(ENROLL_ROUTE.removeprefix('/api/'), {'regional_ticket': ticket},
+                                   use_lobby_token=False)
+    identity = reply.get('device_id')
+    if reply.get('registered') is not True or type(identity) is not int or not 1 <= identity <= MAX_DEVICES:
+        raise CommunityError('The regional server returned an invalid registration.')
+    try:
+        return validate_connection(dict(endpoint, format=1, access_token=reply.get('access_token')))
+    except ValueError as exc:
+        raise CommunityError('The regional server returned an invalid credential.') from exc
+
+
+class RegionalServerPicker:
+    def __init__(self, desktop, coordinator, selected, on_switch):
+        import tkinter as tk
+        from tkinter import ttk
+        from desktop_launcher import BG, MUTED
+
+        self.desktop, self.coordinator, self.on_switch = desktop, coordinator, on_switch
+        self.selected = selected  # The current regional (id, label) or None for the coordinator.
+        self.choices, self.loading = [], False
+        row = tk.Frame(desktop.live_panel, bg=BG)
+        row.pack(fill='x', pady=(8, 0), before=desktop.live_summary)
+        desktop.label(row, 'Server', 11).pack(side='left', padx=(0, 8))
+        self.menu = ttk.Combobox(row, state='readonly', width=38)
+        self.menu.pack(side='left', fill='x', expand=True, padx=(0, 8))
+        connect = desktop.button(row, 'Connect', self.connect)
+        connect.pack(side='left', padx=(0, 8))
+        desktop.button(row, 'Refresh servers', self.refresh).pack(side='left')
+        self.status = desktop.label(desktop.live_panel, '', 10, color=MUTED)
+        self.status.pack(anchor='w', before=desktop.live_summary)
+        self.render({})
+        row.bind('<Map>', lambda event: self.refresh() if event.widget is row else None)
+
+    def render(self, rows):
+        index = self.menu.current()
+        choice = self.choices[index][0] if index >= 0 else None
+        current = self.selected[0] if self.selected else None
+        primary = 'Default server'
+        endpoints = []
+        for ident, (name, region, endpoint, enrolled) in rows.items():
+            label = f'{name} ({region})'
+            if (endpoint['hostname'].lower(), endpoint['https_port']) == (self.coordinator.hostname, self.coordinator.port):
+                primary = label
+            elif enrolled:
+                endpoints.append((ident, label, endpoint))
+        choices = [(None, primary, None)] + sorted(endpoints, key=lambda item: (item[1].casefold(), item[0]))
+        if self.selected and not any(ident == self.selected[0] for ident, _, _ in choices):
+            choices.append((*self.selected, None))
+        self.choices = choices
+        labels = [label for _, label, _ in choices]
+        self.menu['values'] = [f'{label} · {endpoint["hostname"]}:{endpoint["https_port"]}'
+                               if endpoint and labels.count(label) > 1 else label
+                               for _, label, endpoint in choices]
+        indices = {ident: i for i, (ident, _, _) in enumerate(choices)}
+        self.menu.current(indices.get(choice, indices[current]) if index >= 0 else indices[current])
+
+    def refresh(self):
+        if self.loading or self.desktop.closing:
+            return
+        self.loading = True
+        def worker():
+            try:
+                rows = regional_servers(self.coordinator)
+                notice = ''
+            except CommunityError as exc:
+                rows, notice = None, str(exc)
+            def finished():
+                self.loading = False
+                if rows is not None:
+                    self.render(rows)
+                self.status.configure(text=notice)
+            self.desktop.access_messages.put(finished)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def available(self):
+        desktop = self.desktop
+        public = getattr(desktop, 'public_panel', None)
+        pug = getattr(desktop, 'pug_panel', None)
+        ranked = getattr(pug, 'state', {})
+        return (not desktop.closing and desktop.room is None and desktop.watch_id is None
+                and desktop.game_status in ('idle', 'stopped', 'finished', 'failed')
+                and getattr(desktop, 'local_host', None) is None
+                and not (ranked.get('queued') or ranked.get('room'))
+                and not any(set(getattr(panel, 'pending', ())) - {'poll'} for panel in (public, pug)))
+
+    def connect(self):
+        index = self.menu.current()
+        if index < 0:
+            return
+        ident, label, endpoint = self.choices[index]
+        if ident == (self.selected[0] if self.selected else None):
+            return
+        if not self.available():
+            self.status.configure(text='Leave your lobby, game, or ranked queue before switching servers.')
+            return
+        if self.desktop.busy:
+            self.status.configure(text='Wait for the current operation to finish.')
+            return
+        if ident is not None and endpoint is None:
+            self.status.configure(text='Refresh the server list before connecting.')
+            return
+
+        def work():
+            try:
+                connection = (self.coordinator.connection if ident is None
+                              else connect_regional(self.coordinator, ident, endpoint))
+                with closing(DirectClient(connection, ssl_context=self.coordinator.context)) as candidate:
+                    candidate.capabilities()
+                return connection, ''
+            except (OSError, ValueError, CommunityError) as exc:
+                return None, str(exc)
+
+        def ready(result):
+            connection, error = result
+            if error:
+                self.status.configure(text=error)
+            elif self.available():
+                self.on_switch(connection, (ident, label) if ident else None)
+        self.status.configure(text=f'Connecting to {label}…')
+        if not self.desktop.run_async(work, ready):
+            self.status.configure(text='Wait for the current operation to finish.')
+
+
 def main(root=ROOT, *, on_ready=None):
+    primary = selected = None
+    while True:
+        switched = show_direct_starter(root, primary=primary, selected=selected, on_ready=on_ready)
+        if switched is None:
+            return
+        primary, selected = switched
+        on_ready = None
+
+
+def show_direct_starter(root, *, primary=None, selected=None, on_ready=None):
     import tkinter as tk
     from tkinter import filedialog,messagebox
     from desktop_launcher import Desktop
@@ -1916,14 +2110,16 @@ def main(root=ROOT, *, on_ready=None):
         except RuntimeError as exc:
             # Steam discovery reports a missing or ambiguous game as RuntimeError.
             raise ValueError(str(exc)) from exc
-        if (root/GROUP_FILE).exists():
-            connection=group_connection(root,local)
-        else:
-            if not saved.exists() and not local_available:
-                filename=filedialog.askopenfilename(title='Choose the player invitation JSON sent by your host',filetypes=[('Player invitation','*.json')])
-                if filename:
-                    write_json(saved,validate_connection(read_json(filename,16384)))
-            connection=validate_connection(read_json(saved,16384)) if saved.exists() else None
+        if primary is None:
+            if (root/GROUP_FILE).exists():
+                primary = group_connection(root,local)
+            else:
+                if not saved.exists() and not local_available:
+                    filename=filedialog.askopenfilename(title='Choose the player invitation JSON sent by your host',filetypes=[('Player invitation','*.json')])
+                    if filename:
+                        write_json(saved,validate_connection(read_json(filename,16384)))
+                primary = validate_connection(read_json(saved,16384)) if saved.exists() else None
+        connection = primary if selected is None else selected[0]
         if connection is not None:
             lobby=DirectClient(connection, proximity_settings=local/'proximity-voice.json')
             try:lobby.capabilities()
@@ -2349,6 +2545,8 @@ def main(root=ROOT, *, on_ready=None):
             try:super().close()
             finally:lobby.close()
 
+    next_server = None
+    coordinator = None
     try:
         window=tk.Tk();window.title('TRIBES 3 — Direct Host Starter')
         map_sync=MapSync(lobby,root,workspace)
@@ -2392,6 +2590,17 @@ def main(root=ROOT, *, on_ready=None):
                       bg=sidebar_bg, fg='#9fb3c6', activebackground=sidebar_bg, activeforeground='#eff7ff',
                       relief='flat', bd=0, padx=0, pady=2, anchor='w', cursor='hand2',
                       font=('Segoe UI', 9)).pack(anchor='w')
+        if primary is not None and isinstance(lobby, DirectClient):
+            coordinator = lobby if selected is None else DirectClient(primary)
+
+            def switch(connection, server):
+                nonlocal next_server
+                next_server = (connection, server)
+                gui.close()
+
+            RegionalServerPicker(gui, coordinator, selected[1] if selected else None, switch)
+            if selected is not None:
+                gui.show_panel('live')
         window.protocol('WM_DELETE_WINDOW',gui.close)
         if on_ready is not None:
             window.update_idletasks()
@@ -2400,7 +2609,12 @@ def main(root=ROOT, *, on_ready=None):
         if os.name == 'nt':
             window.after_idle(gui.offer_windows_retail_import, workspace)
         window.mainloop()
+        if next_server is not None:
+            gui.close_worker.join()
+            return primary, next_server
     finally:
+        if coordinator is not None and coordinator is not lobby:
+            coordinator.close()
         lobby.close()
         if 'gui' in locals() and gui.local_host is not None:
             gui.local_host.stop()
