@@ -1,7 +1,7 @@
 # M8: Self-hosting, local play and environments (client side)
 
 - Status: in progress
-- Updated: 2026-11-27
+- Updated: 2026-11-28
 - Target: not set
 - Repos: client, backend
 
@@ -25,3 +25,4 @@ Players can host and join locally, Starter updates stay verified, and developmen
 ## Progress log
 
 - 2026-11-27: Milestone created when the client adopted the backend's milestone structure; lists the open client issues for M8.
+- 2026-11-28: `feat/regional-server-picker` adds server selection in Windows and Linux Starter using the configured coordinator directory and host-bound enrollment (Tribes3-Modded/T3BackEndServer#23). The selected host owns the browser, lobby and match connection. Live regional gameplay remains pending.

@@ -384,7 +384,7 @@ def dispatch(command):
             claimed.unlink(missing_ok=True)
 
 
-def show_starter(lobby, state, on_ready=None):
+def show_starter(lobby, state, on_ready=None, *, coordinator=None, selected=None, browser=False):
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
     from desktop_launcher import BG, MUTED, TEXT, Desktop, starter_version
@@ -695,6 +695,16 @@ def show_starter(lobby, state, on_ready=None):
             queue_retail_settings(offer[0], storage, first_launch=True)
         return 'Retail settings are queued for your next game. Check Settings for the import result.'
 
+    next_server = None
+    if coordinator is not None:
+        def switch(connection, server):
+            nonlocal next_server
+            next_server = connection, server
+            app.close()
+        direct_client.RegionalServerPicker(app, coordinator, selected, switch)
+        if browser:
+            app.show_panel('live')
+
     window.after_idle(app.offer_retail_import, storage, check_retail_import, import_first_launch_settings)
     if on_ready is not None:
         window.update_idletasks()
@@ -702,6 +712,7 @@ def show_starter(lobby, state, on_ready=None):
     window.mainloop()
     if getattr(app, 'close_worker', None):
         app.close_worker.join()
+    return next_server
 
 
 def main(args=None, *, owned_state=None, on_ready=None):
@@ -720,17 +731,29 @@ def main(args=None, *, owned_state=None, on_ready=None):
     from direct_client import DirectClient, group_connection
     state = private_area() if owned_state is None else owned_state
     with exclusive(state/'starter.lock') if owned_state is None else nullcontext():
-        lobby = DirectClient(group_connection(ROOT,state))
+        primary = group_connection(ROOT,state)
+        connection, selected, browser = primary, None, False
+        coordinator = DirectClient(primary)
         try:
-            capabilities = lobby.capabilities()
-            if parsed.check_lobby:
-                lobby.live_matches()
-                print(f'Connected to Clan Wars. {len(lobby.server_maps)} maps; '
-                      f'Public CTF: {capabilities.get("publicCTF") is True}. Proton was not started.')
-            else:
-                show_starter(lobby,state,on_ready)
+            while True:
+                lobby = DirectClient(connection)
+                try:
+                    capabilities = lobby.capabilities()
+                    if parsed.check_lobby:
+                        lobby.live_matches()
+                        print(f'Connected to Clan Wars. {len(lobby.server_maps)} maps; '
+                              f'Public CTF: {capabilities.get("publicCTF") is True}. Proton was not started.')
+                        break
+                    next_server = show_starter(lobby,state,on_ready,coordinator=coordinator,
+                                               selected=selected,browser=browser)
+                finally:
+                    lobby.close()
+                if next_server is None:
+                    break
+                connection, selected = next_server
+                on_ready, browser = None, True
         finally:
-            lobby.close()
+            coordinator.close()
     return 0
 
 
