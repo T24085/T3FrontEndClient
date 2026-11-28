@@ -476,10 +476,10 @@ def main():
         raise ValueError('Invalid expected map content fingerprint.')
     from client_preparation import lock_stable_game
     with (nullcontext() if args.check else lock_stable_game(ROOT, source, workspace)) as stable:
-        prepare_or_join(args, source, workspace, startup, stable)
+        prepare_or_join(args, source, workspace, startup, stable, projectile_settings=projectile_settings)
 
 
-def prepare_or_join(args, source, workspace, startup, stable):
+def prepare_or_join(args, source, workspace, startup, stable, *, projectile_settings):
     from client_preparation import CONTRACT, stage, consume
 
     if args.prepared:

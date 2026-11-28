@@ -1,3 +1,11 @@
+# Starter prepared match launch (M6)
+
+Issue #126 fixes a client startup exception after prepared-file validation.
+The launch worker now receives the validated projectile settings from the
+client entry point. Default joins keep stock settings and configured joins
+install the requested settings. The prepared join regression check reproduces
+the old exception and verifies both paths through the native launcher handoff.
+
 # Per-map objective cache handoff (M5)
 
 Starter now carries the verified per-map cache selection through game

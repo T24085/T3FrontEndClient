@@ -7,11 +7,13 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 import io
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import client_entry
 import client_preparation
 
 from bulk_asset_cache import BulkStageCache
@@ -53,6 +55,50 @@ class ClientPreparationTest(unittest.TestCase):
   self.assertEqual((game/'Topaz/Content/Maps/map.uasset').read_bytes(),b'cooked-map')
   self.assertEqual((game/EXECUTABLE.parent/'ue4ss/runtime.dll').read_bytes(),b'runtime')
   self.assertFalse((run/'profile').exists());self.assertFalse(record['native_started']);self.assertFalse(record['profile_created'])
+ def test_prepared_join_hands_default_and_configured_projectiles_to_the_native_launcher(self):
+  root = Path(client_entry.__file__).resolve().parent
+  self.package_manifest['build_id'] = 'prepared-join-fixture'
+  (self.package / 'package-manifest.json').write_text(json.dumps(self.package_manifest), encoding='utf-8')
+  for name in ('lua/client.lua', 'lua/damnation_water.lua', 'runtime-fixes/projectile_inheritance.lua'):
+   path = self.package / name
+   path.parent.mkdir(parents=True, exist_ok=True)
+   path.write_bytes((root / name).read_bytes())
+  (self.package / 'connection-policy.json').write_text('{}', encoding='utf-8')
+  for settings in ({}, {'thumper': [30, 70]}):
+   with self.subTest(settings=settings):
+    descriptor = self.prepare()
+    argv = ['client.py', '--endpoint', '127.0.0.1:7777', '--expected-map', 'Stonehenge',
+            '--expected-content-hash', 'a'*64, '--prepared', descriptor['path'],
+            '--prepared-sha256', descriptor['sha256']]
+    if settings:
+     argv += ['--projectile-inheritance', json.dumps(settings)]
+    launched = []
+
+    def run_owned_job(argv, game, env, artifact, **kwargs):
+     payload = artifact.parent / 'projectile-inheritance.txt'
+     script = Path(argv[0]).parent / 'ue4ss/Mods/CommunityLauncher/Scripts/main.lua'
+     self.assertEqual('applyProjectileInheritance(gs:GetWorld(),pc)' in script.read_text(encoding='utf-8'),
+                      bool(settings))
+     if settings:
+      self.assertEqual(payload.read_bytes(), b'T3PROJECTILE1\nthumper|30|70\n')
+     else:
+      self.assertFalse(payload.exists())
+     launched.append(argv[0])
+     return {'status': 'terminal', 'exit_code': 0}
+
+    with (patch.object(sys, 'argv', argv), patch.object(client_entry, 'ROOT', self.package),
+          patch.object(client_entry, 'installation_options', return_value=(str(self.source), self.workspace)),
+          patch.object(client_entry, 'discover_game', return_value=self.source),
+          patch.object(client_entry, 'running_image', return_value=True),
+          patch.object(client_entry, 'validate_destination', return_value='127.0.0.1:7777'),
+          patch('client_preparation.lock_stable_game', return_value=nullcontext()),
+          patch('local_http_proxy.loopback_http_failure_preflight'),
+          patch('player_profile.ProfileSession') as profile,
+          patch.dict(sys.modules, {'owned_native_session': SimpleNamespace(run_owned_job=run_owned_job)}),
+          redirect_stdout(io.StringIO())):
+     profile.return_value.__enter__.return_value.directory.side_effect = lambda run: run / 'profile'
+     client_entry.main()
+    self.assertEqual(len(launched), 1)
  def test_private_copy_is_exclusive_and_never_a_hardlink(self):
   source=self.source/EXECUTABLE;target=self.root/'private.exe'
   client_preparation._copy_private(source,target)
